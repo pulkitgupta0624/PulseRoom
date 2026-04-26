@@ -1,0 +1,929 @@
+import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { useDispatch, useSelector } from 'react-redux';
+import SectionHeader from '../components/SectionHeader';
+import MetricCard from '../components/MetricCard';
+import EventEditModal from '../components/EventEditModal';
+import EventBookingsModal from '../components/EventBookingsModal';
+import AnalyticsCharts from '../components/AnalyticsCharts';
+import {
+  createEvent,
+  deleteEvent,
+  fetchOrganizerDashboard,
+  publishEvent
+} from '../features/events/eventsSlice';
+import { api } from '../lib/api';
+import { formatCurrency, formatDate } from '../lib/formatters';
+
+const STATUS_STYLES = {
+  draft: 'bg-amber-100 text-amber-700',
+  published: 'bg-reef/10 text-reef',
+  cancelled: 'bg-ink/8 text-ink/40',
+  completed: 'bg-dusk/10 text-dusk'
+};
+
+const makeId = (prefix) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+const createEmptyTier = () => ({
+  tierId: makeId('tier'),
+  name: 'General Admission',
+  price: 0,
+  quantity: 100,
+  perks: 'Live access, Replay access'
+});
+
+const createEmptySpeaker = () => ({
+  id: makeId('speaker'),
+  name: '',
+  title: '',
+  company: '',
+  bio: ''
+});
+
+const createInitialForm = () => ({
+  title: '',
+  summary: '',
+  description: '',
+  type: 'online',
+  visibility: 'public',
+  startsAt: '',
+  endsAt: '',
+  venueName: '',
+  city: '',
+  country: '',
+  streamUrl: '',
+  organizerSignatureName: '',
+  coverImageUrl: '',
+  coverImagePrompt: '',
+  category: 'technology',
+  tags: 'ai,community',
+  tiers: [createEmptyTier()],
+  speakers: [],
+  sessions: [],
+  assumptions: [],
+  suggestedFaq: []
+});
+
+const toDatetimeLocal = (value) => {
+  if (!value) {
+    return '';
+  }
+
+  const date = new Date(value);
+  const pad = (item) => String(item).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+
+const TierRow = ({ tier, index, onChange, onRemove, canRemove }) => (
+  <div className="rounded-2xl border border-ink/10 bg-sand/60 p-4 space-y-3">
+    <div className="flex items-center justify-between">
+      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-ink/50">
+        Tier {index + 1}
+      </p>
+      {canRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          className="rounded-full border border-ember/20 bg-ember/5 px-3 py-1 text-xs font-medium text-ember hover:bg-ember/10"
+        >
+          Remove
+        </button>
+      )}
+    </div>
+    <div className="grid gap-3 md:grid-cols-3">
+      <input
+        value={tier.name}
+        onChange={(event) => onChange('name', event.target.value)}
+        placeholder="Tier name"
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+        required
+      />
+      <input
+        type="number"
+        min="0"
+        value={tier.price}
+        onChange={(event) => onChange('price', event.target.value)}
+        placeholder="Price (0 = free)"
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+      />
+      <input
+        type="number"
+        min="1"
+        value={tier.quantity}
+        onChange={(event) => onChange('quantity', event.target.value)}
+        placeholder="Capacity"
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+        required
+      />
+    </div>
+    <input
+      value={tier.perks}
+      onChange={(event) => onChange('perks', event.target.value)}
+      placeholder="Perks (comma-separated)"
+      className="w-full rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+    />
+  </div>
+);
+
+const SpeakerRow = ({ speaker, index, onChange, onRemove }) => (
+  <div className="rounded-2xl border border-ink/10 bg-sand/60 p-4 space-y-3">
+    <div className="flex items-center justify-between">
+      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-ink/50">
+        Speaker {index + 1}
+      </p>
+      <button
+        type="button"
+        onClick={onRemove}
+        className="rounded-full border border-ember/20 bg-ember/5 px-3 py-1 text-xs font-medium text-ember hover:bg-ember/10"
+      >
+        Remove
+      </button>
+    </div>
+    <div className="grid gap-3 md:grid-cols-2">
+      <input
+        value={speaker.name}
+        onChange={(event) => onChange('name', event.target.value)}
+        placeholder="Full name"
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+        required
+      />
+      <input
+        value={speaker.title}
+        onChange={(event) => onChange('title', event.target.value)}
+        placeholder="Job title"
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+      />
+    </div>
+    <div className="grid gap-3 md:grid-cols-2">
+      <input
+        value={speaker.company}
+        onChange={(event) => onChange('company', event.target.value)}
+        placeholder="Company"
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+      />
+      <input
+        value={speaker.bio}
+        onChange={(event) => onChange('bio', event.target.value)}
+        placeholder="Short bio"
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+      />
+    </div>
+  </div>
+);
+
+const DashboardPage = () => {
+  const dispatch = useDispatch();
+  const { dashboard, saving, error: sliceError } = useSelector((state) => state.events);
+  const [form, setForm] = useState(() => createInitialForm());
+  const [editingEvent, setEditingEvent] = useState(null);
+  const [bookingsEvent, setBookingsEvent] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [uploadingCover, setUploadingCover] = useState(false);
+  const [createSuccess, setCreateSuccess] = useState(false);
+  const [createTab, setCreateTab] = useState('details');
+  const [aiIdea, setAiIdea] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState(null);
+  const [organizerAnalytics, setOrganizerAnalytics] = useState(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(true);
+  const coverInputRef = useRef(null);
+
+  const refreshOrganizerAnalytics = async () => {
+    setAnalyticsLoading(true);
+    try {
+      const response = await api.get('/api/bookings/analytics/organizer');
+      setOrganizerAnalytics(response.data.data);
+    } catch {
+      setOrganizerAnalytics(null);
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  };
+
+  const refreshDashboard = async () => {
+    await Promise.all([
+      dispatch(fetchOrganizerDashboard()),
+      refreshOrganizerAnalytics()
+    ]);
+  };
+
+  useEffect(() => {
+    refreshDashboard();
+  }, [dispatch]);
+
+  const updateField = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+
+  const updateTier = (index, key, value) =>
+    setForm((current) => ({
+      ...current,
+      tiers: current.tiers.map((tier, itemIndex) =>
+        itemIndex === index ? { ...tier, [key]: value } : tier
+      )
+    }));
+
+  const addTier = () =>
+    setForm((current) => ({ ...current, tiers: [...current.tiers, createEmptyTier()] }));
+
+  const removeTier = (index) =>
+    setForm((current) => ({
+      ...current,
+      tiers: current.tiers.filter((_, itemIndex) => itemIndex !== index)
+    }));
+
+  const updateSpeaker = (index, key, value) =>
+    setForm((current) => ({
+      ...current,
+      speakers: current.speakers.map((speaker, itemIndex) =>
+        itemIndex === index ? { ...speaker, [key]: value } : speaker
+      )
+    }));
+
+  const addSpeaker = () =>
+    setForm((current) => ({ ...current, speakers: [...current.speakers, createEmptySpeaker()] }));
+
+  const removeSpeaker = (index) =>
+    setForm((current) => ({
+      ...current,
+      speakers: current.speakers.filter((_, itemIndex) => itemIndex !== index)
+    }));
+
+  const handleCoverUpload = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    setUploadingCover(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const response = await api.post('/api/uploads/event-cover', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      updateField('coverImageUrl', response.data.data.url);
+    } catch {
+      setAiError('Cover image upload failed. Check your upload configuration.');
+    } finally {
+      setUploadingCover(false);
+    }
+  };
+
+  const applyAiDraft = (draft) => {
+    setForm((current) => ({
+      ...current,
+      title: draft.title || '',
+      summary: draft.summary || '',
+      description: draft.description || '',
+      type: draft.type || 'online',
+      visibility: draft.visibility || 'public',
+      startsAt: toDatetimeLocal(draft.startsAt),
+      endsAt: toDatetimeLocal(draft.endsAt),
+      venueName: draft.venueName || '',
+      city: draft.city || '',
+      country: draft.country || '',
+      organizerSignatureName: draft.organizerSignatureName || '',
+      coverImagePrompt: draft.coverImagePrompt || '',
+      category: draft.categories?.[0] || current.category,
+      tags: (draft.tags || []).join(', '),
+      tiers: (draft.ticketTiers || []).length
+        ? draft.ticketTiers.map((tier) => ({
+            tierId: tier.tierId || makeId('tier'),
+            name: tier.name || 'General Admission',
+            price: tier.price ?? 0,
+            quantity: tier.quantity ?? 50,
+            perks: (tier.perks || []).join(', ')
+          }))
+        : current.tiers,
+      speakers: (draft.speakers || []).map((speaker) => ({
+        id: makeId('speaker'),
+        name: speaker.name || '',
+        title: speaker.title || '',
+        company: speaker.company || '',
+        bio: speaker.bio || ''
+      })),
+      sessions: draft.sessions || [],
+      assumptions: draft.assumptions || [],
+      suggestedFaq: draft.suggestedFaq || []
+    }));
+  };
+
+  const handleGenerateWithAi = async () => {
+    if (!aiIdea.trim()) {
+      setAiError('Describe the event idea first so the assistant has something to work from.');
+      return;
+    }
+
+    setAiLoading(true);
+    setAiError(null);
+    try {
+      const response = await api.post('/api/events/ai/generate', {
+        idea: aiIdea
+      });
+      applyAiDraft(response.data.data);
+      setCreateTab('details');
+    } catch (error) {
+      setAiError(error.response?.data?.message || 'AI draft generation failed.');
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const handleCreateEvent = async (event) => {
+    event.preventDefault();
+
+    const ticketTiers = form.tiers.map((tier) => ({
+      tierId: tier.tierId,
+      name: tier.name,
+      quantity: Number(tier.quantity),
+      price: Number(tier.price),
+      currency: 'INR',
+      isFree: Number(tier.price) === 0,
+      perks: tier.perks
+        .split(',')
+        .map((perk) => perk.trim())
+        .filter(Boolean)
+    }));
+
+    const speakers = form.speakers
+      .filter((speaker) => speaker.name.trim())
+      .map(({ id, ...speaker }) => speaker);
+
+    const sessions = form.sessions?.length
+      ? form.sessions
+      : [
+          {
+            title: 'Opening Session',
+            description: 'Kickoff session',
+            startsAt: form.startsAt,
+            endsAt: form.endsAt,
+            roomLabel: 'Main stage',
+            speakerNames: speakers.map((speaker) => speaker.name)
+          }
+        ];
+
+    const payload = {
+      title: form.title,
+      summary: form.summary,
+      description: form.description,
+      type: form.type,
+      visibility: form.visibility,
+      startsAt: form.startsAt,
+        endsAt: form.endsAt,
+        venueName: form.venueName,
+        city: form.city,
+        country: form.country,
+        organizerSignatureName: form.organizerSignatureName,
+        categories: [form.category],
+      tags: form.tags
+        .split(',')
+        .map((tag) => tag.trim())
+        .filter(Boolean),
+      speakers,
+      sessions,
+      ticketTiers,
+      allowsChat: true,
+      allowsQa: true
+    };
+
+    if (form.coverImageUrl) {
+      payload.coverImageUrl = form.coverImageUrl;
+    }
+    if (form.streamUrl && form.type !== 'offline') {
+      payload.streamUrl = form.streamUrl;
+    }
+
+    const result = await dispatch(createEvent(payload));
+    if (!result.error) {
+      await refreshDashboard();
+      setForm(createInitialForm());
+      setCreateTab('details');
+      setCreateSuccess(true);
+      setTimeout(() => setCreateSuccess(false), 4000);
+    }
+  };
+
+  const handleDelete = async (eventId) => {
+    await dispatch(deleteEvent(eventId));
+    await refreshDashboard();
+    setConfirmDelete(null);
+  };
+
+  const totals = dashboard?.totals || {};
+  const formTabs = [
+    { key: 'details', label: 'Event Details' },
+    { key: 'tiers', label: `Tickets (${form.tiers.length})` },
+    { key: 'speakers', label: `Speakers (${form.speakers.length})` }
+  ];
+
+  return (
+    <div className="space-y-10">
+      <SectionHeader
+        eyebrow="Organizer"
+        title="Command center"
+        description="Create and publish events, manage ticket check-ins, and track demand with real analytics."
+      />
+
+      <section className="grid gap-4 md:grid-cols-4">
+        <MetricCard label="Events" value={totals.events || 0} />
+        <MetricCard label="Published" value={totals.published || 0} accent="text-ember" />
+        <MetricCard label="Upcoming" value={totals.upcoming || 0} accent="text-dusk" />
+        <MetricCard label="Revenue" value={formatCurrency(totals.revenue || 0)} />
+      </section>
+
+      <AnalyticsCharts
+        title="Revenue and demand"
+        description={analyticsLoading ? 'Loading organizer analytics...' : 'Real booking and attendee trends across your events.'}
+        analytics={organizerAnalytics}
+      />
+
+      <section className="grid gap-8 lg:grid-cols-[0.95fr,1.05fr]">
+        <div className="space-y-6 rounded-[32px] border border-ink/10 bg-white/80 p-6 shadow-bloom">
+          <div className="space-y-3 rounded-[28px] border border-ink/10 bg-sand/55 p-5">
+            <p className="text-xs uppercase tracking-[0.26em] text-reef">AI Event Assistant</p>
+            <h2 className="font-display text-3xl text-ink">Describe the idea once</h2>
+            <p className="text-sm text-ink/60">
+              PulseRoom will draft the title, copy, ticket tiers, tags, timing assumptions, and a cover image prompt for you.
+            </p>
+            <textarea
+              value={aiIdea}
+              onChange={(event) => setAiIdea(event.target.value)}
+              rows={4}
+              placeholder="I want to host a React workshop for 50 people in Jaipur..."
+              className="w-full rounded-[24px] border border-ink/10 bg-white px-4 py-3 text-sm outline-none focus:border-reef"
+            />
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={handleGenerateWithAi}
+                disabled={aiLoading}
+                className="rounded-full bg-ink px-5 py-3 text-sm font-semibold text-sand disabled:opacity-60"
+              >
+                {aiLoading ? 'Generating draft...' : 'Generate with AI'}
+              </button>
+              {form.coverImagePrompt && (
+                <span className="rounded-full border border-dusk/20 bg-dusk/5 px-4 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-dusk">
+                  Cover prompt ready
+                </span>
+              )}
+            </div>
+            {aiError && (
+              <p className="rounded-2xl bg-ember/10 px-4 py-3 text-sm text-ember">{aiError}</p>
+            )}
+          </div>
+
+          {(form.coverImagePrompt || form.assumptions.length > 0 || form.suggestedFaq.length > 0) && (
+            <div className="space-y-4 rounded-[28px] border border-ink/10 bg-white p-5">
+              {form.coverImagePrompt && (
+                <div>
+                  <p className="text-xs uppercase tracking-[0.22em] text-ink/45">Cover image prompt</p>
+                  <p className="mt-2 rounded-2xl bg-sand/70 px-4 py-3 text-sm text-ink/70">
+                    {form.coverImagePrompt}
+                  </p>
+                </div>
+              )}
+
+              {form.assumptions.length > 0 && (
+                <div>
+                  <p className="text-xs uppercase tracking-[0.22em] text-ink/45">AI assumptions</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {form.assumptions.map((assumption) => (
+                      <span
+                        key={assumption}
+                        className="rounded-full border border-ink/10 bg-sand px-3 py-1 text-xs text-ink/60"
+                      >
+                        {assumption}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {form.suggestedFaq.length > 0 && (
+                <div>
+                  <p className="text-xs uppercase tracking-[0.22em] text-ink/45">Suggested attendee FAQs</p>
+                  <div className="mt-2 space-y-2">
+                    {form.suggestedFaq.map((question) => (
+                      <p key={question} className="rounded-2xl bg-sand/70 px-4 py-3 text-sm text-ink/70">
+                        {question}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="space-y-0 rounded-[32px] border border-ink/10 bg-white shadow-bloom overflow-hidden">
+            <div className="p-6 pb-0">
+              <h2 className="font-display text-3xl text-ink">Create a new event</h2>
+            </div>
+
+            <div className="px-6 pt-4 pb-0">
+              <div className="flex gap-1 rounded-2xl border border-ink/10 bg-sand p-1 w-fit">
+                {formTabs.map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => setCreateTab(tab.key)}
+                    className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
+                      createTab === tab.key ? 'bg-ink text-sand' : 'text-ink/55 hover:text-ink'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <form onSubmit={handleCreateEvent} className="p-6 space-y-4">
+              {createTab === 'details' && (
+                <>
+                  <div
+                    className="relative overflow-hidden rounded-[20px] border-2 border-dashed border-ink/15 bg-sand/50 cursor-pointer"
+                    onClick={() => coverInputRef.current?.click()}
+                  >
+                    {form.coverImageUrl ? (
+                      <div className="relative">
+                        <img src={form.coverImageUrl} alt="Cover" className="h-32 w-full object-cover" />
+                        <div className="absolute inset-0 flex items-center justify-center bg-ink/30 opacity-0 hover:opacity-100 transition">
+                          <p className="text-sm text-white font-medium">Change cover</p>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center h-24 gap-2">
+                        {uploadingCover ? (
+                          <p className="text-sm text-reef font-medium">Uploading...</p>
+                        ) : (
+                          <>
+                            <svg className="h-6 w-6 text-ink/30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={1.5}
+                                d="M12 4v16m8-8H4"
+                              />
+                            </svg>
+                            <p className="text-xs text-ink/40">Upload cover image (optional)</p>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <input
+                    ref={coverInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleCoverUpload}
+                  />
+
+                  <input
+                    value={form.title}
+                    onChange={(event) => updateField('title', event.target.value)}
+                    placeholder="Event title"
+                    className="w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
+                    required
+                  />
+                  <input
+                    value={form.summary}
+                    onChange={(event) => updateField('summary', event.target.value)}
+                    placeholder="Short summary"
+                    className="w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
+                    required
+                  />
+                  <textarea
+                    value={form.description}
+                    onChange={(event) => updateField('description', event.target.value)}
+                    placeholder="Full event description"
+                    rows="4"
+                    className="w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
+                    required
+                  />
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <select
+                      value={form.type}
+                      onChange={(event) => updateField('type', event.target.value)}
+                      className="rounded-2xl border border-ink/10 bg-sand px-4 py-3 focus:border-reef"
+                    >
+                      <option value="online">Online</option>
+                      <option value="offline">Offline</option>
+                      <option value="hybrid">Hybrid</option>
+                    </select>
+                    <select
+                      value={form.visibility}
+                      onChange={(event) => updateField('visibility', event.target.value)}
+                      className="rounded-2xl border border-ink/10 bg-sand px-4 py-3 focus:border-reef"
+                    >
+                      <option value="public">Public</option>
+                      <option value="private">Private</option>
+                    </select>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div>
+                      <label className="text-xs text-ink/50 mb-1 block">Starts At</label>
+                      <input
+                        type="datetime-local"
+                        value={form.startsAt}
+                        onChange={(event) => updateField('startsAt', event.target.value)}
+                        className="w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 focus:border-reef"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-ink/50 mb-1 block">Ends At</label>
+                      <input
+                        type="datetime-local"
+                        value={form.endsAt}
+                        onChange={(event) => updateField('endsAt', event.target.value)}
+                        className="w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 focus:border-reef"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <input
+                      value={form.venueName}
+                      onChange={(event) => updateField('venueName', event.target.value)}
+                      placeholder="Venue / stream name"
+                      className="rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
+                    />
+                    <input
+                      value={form.city}
+                      onChange={(event) => updateField('city', event.target.value)}
+                      placeholder="City"
+                      className="rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
+                    />
+                    <input
+                      value={form.country}
+                      onChange={(event) => updateField('country', event.target.value)}
+                      placeholder="Country"
+                      className="rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
+                    />
+                  </div>
+
+                  {form.type !== 'offline' && (
+                    <div>
+                      <label className="text-xs text-ink/50 mb-1 block">Backup external stream URL (optional)</label>
+                      <input
+                        value={form.streamUrl}
+                        onChange={(event) => updateField('streamUrl', event.target.value)}
+                        placeholder="https://..."
+                        className="w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
+                        />
+                      </div>
+                    )}
+
+                  <div>
+                    <label className="text-xs text-ink/50 mb-1 block">Certificate signature name</label>
+                    <input
+                      value={form.organizerSignatureName}
+                      onChange={(event) => updateField('organizerSignatureName', event.target.value)}
+                      placeholder="Shown on PDF attendance certificates"
+                      className="w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
+                    />
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <input
+                      value={form.category}
+                      onChange={(event) => updateField('category', event.target.value)}
+                      placeholder="Category"
+                      className="rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
+                    />
+                    <input
+                      value={form.tags}
+                      onChange={(event) => updateField('tags', event.target.value)}
+                      placeholder="Tags (comma-separated)"
+                      className="rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
+                    />
+                  </div>
+                </>
+              )}
+
+              {createTab === 'tiers' && (
+                <div className="space-y-4">
+                  <p className="text-sm text-ink/60">Define one or more ticket tiers for the event.</p>
+                  {form.tiers.map((tier, index) => (
+                    <TierRow
+                      key={tier.tierId}
+                      tier={tier}
+                      index={index}
+                      onChange={(key, value) => updateTier(index, key, value)}
+                      onRemove={() => removeTier(index)}
+                      canRemove={form.tiers.length > 1}
+                    />
+                  ))}
+                  <button
+                    type="button"
+                    onClick={addTier}
+                    className="w-full rounded-2xl border-2 border-dashed border-ink/15 py-3 text-sm font-medium text-ink/50 hover:border-reef/40 hover:text-reef transition"
+                  >
+                    + Add another tier
+                  </button>
+                </div>
+              )}
+
+              {createTab === 'speakers' && (
+                <div className="space-y-4">
+                  <p className="text-sm text-ink/60">Add speakers who will appear on the event page.</p>
+                  {form.speakers.length === 0 && (
+                    <div className="rounded-2xl bg-sand/50 px-5 py-8 text-center">
+                      <p className="text-sm text-ink/45">No speakers added yet.</p>
+                    </div>
+                  )}
+                  {form.speakers.map((speaker, index) => (
+                    <SpeakerRow
+                      key={speaker.id}
+                      speaker={speaker}
+                      index={index}
+                      onChange={(key, value) => updateSpeaker(index, key, value)}
+                      onRemove={() => removeSpeaker(index)}
+                    />
+                  ))}
+                  <button
+                    type="button"
+                    onClick={addSpeaker}
+                    className="w-full rounded-2xl border-2 border-dashed border-ink/15 py-3 text-sm font-medium text-ink/50 hover:border-reef/40 hover:text-reef transition"
+                  >
+                    + Add a speaker
+                  </button>
+                </div>
+              )}
+
+              {sliceError && (
+                <p className="rounded-2xl bg-ember/10 px-4 py-3 text-sm text-ember">{sliceError}</p>
+              )}
+              {createSuccess && (
+                <p className="rounded-2xl bg-reef/10 px-4 py-3 text-sm text-reef">
+                  Event created as a draft. Publish it when you are ready to sell tickets.
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={saving}
+                className="w-full rounded-2xl bg-ink px-5 py-3 font-semibold text-sand disabled:opacity-60"
+              >
+                {saving ? 'Creating...' : 'Create draft event'}
+              </button>
+            </form>
+          </div>
+        </div>
+
+        <div className="space-y-4 rounded-[32px] border border-ink/10 bg-white/80 p-6 shadow-bloom">
+          <div className="flex items-center justify-between">
+            <h2 className="font-display text-3xl text-ink">Your event slate</h2>
+            <span className="rounded-full bg-reef/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-reef">
+              {dashboard?.events?.length || 0} events
+            </span>
+          </div>
+
+          {!dashboard?.events?.length && (
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <p className="text-sm text-ink/50">No events yet. Create your first one.</p>
+            </div>
+          )}
+
+          <div className="space-y-4 max-h-[80vh] overflow-y-auto pr-1">
+            {(dashboard?.events || []).map((event) => (
+              <div key={event._id} className="rounded-[24px] border border-ink/10 bg-sand/70 overflow-hidden">
+                {event.coverImageUrl && (
+                  <img src={event.coverImageUrl} alt={event.title} className="h-24 w-full object-cover" />
+                )}
+                <div className="p-5">
+                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h3 className="font-display text-xl text-ink">{event.title}</h3>
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-xs font-semibold uppercase tracking-[0.15em] ${
+                            STATUS_STYLES[event.status] || 'bg-ink/8 text-ink/50'
+                          }`}
+                        >
+                          {event.status}
+                        </span>
+                        {event.type && (
+                          <span className="rounded-full border border-ink/10 px-2 py-0.5 text-xs text-ink/50 capitalize">
+                            {event.type}
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1 text-sm text-ink/65">{formatDate(event.startsAt)}</p>
+                      <div className="mt-1 flex flex-wrap gap-3 text-sm text-ink/55">
+                        <span>Revenue {formatCurrency(event.analytics?.revenue || 0)}</span>
+                        <span>·</span>
+                        <span>{event.analytics?.bookings || 0} bookings</span>
+                        <span>·</span>
+                        <span>{event.attendeesCount || 0} attendees</span>
+                      </div>
+                      {event.ticketTiers?.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {event.ticketTiers.map((tier) => (
+                            <span
+                              key={tier.tierId}
+                              className="rounded-full border border-ink/10 bg-white px-2 py-0.5 text-xs text-ink/55"
+                            >
+                              {tier.name} · {tier.isFree || tier.price === 0 ? 'Free' : formatCurrency(tier.price, tier.currency)}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setBookingsEvent(event)}
+                        className="rounded-full border border-reef/20 bg-reef/5 px-3 py-2 text-xs font-medium text-reef hover:bg-reef/10"
+                      >
+                        Bookings
+                      </button>
+                      <Link
+                        to={`/events/${event._id}/check-in`}
+                        className="rounded-full border border-dusk/20 bg-dusk/5 px-3 py-2 text-xs font-medium text-dusk hover:bg-dusk/10"
+                      >
+                        Scanner
+                      </Link>
+                      <Link
+                        to={`/events/${event._id}/live`}
+                        className="rounded-full border border-ink/15 bg-white px-3 py-2 text-xs font-medium text-ink hover:bg-sand"
+                      >
+                        Live room
+                      </Link>
+                      <button
+                        type="button"
+                        onClick={() => setEditingEvent(event)}
+                        className="rounded-full border border-ink/15 bg-white px-3 py-2 text-xs font-medium text-ink hover:bg-sand"
+                      >
+                        Edit
+                      </button>
+                      {event.status === 'draft' && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await dispatch(publishEvent(event._id));
+                            await refreshDashboard();
+                          }}
+                          className="rounded-full bg-ink px-3 py-2 text-xs font-semibold text-sand"
+                        >
+                          Publish
+                        </button>
+                      )}
+                      {event.status === 'draft' && (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDelete(event)}
+                          className="rounded-full border border-ember/20 bg-ember/5 px-3 py-2 text-xs font-medium text-ember hover:bg-ember/10"
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {editingEvent && <EventEditModal event={editingEvent} onClose={() => setEditingEvent(null)} />}
+      {bookingsEvent && <EventBookingsModal event={bookingsEvent} onClose={() => setBookingsEvent(null)} />}
+
+      {confirmDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: 'rgba(18,18,18,0.5)', backdropFilter: 'blur(8px)' }}
+        >
+          <div className="w-full max-w-md rounded-[28px] border border-ink/10 bg-white p-6 shadow-bloom">
+            <h3 className="font-display text-2xl text-ink">Delete event?</h3>
+            <p className="mt-3 text-sm text-ink/70">
+              Are you sure you want to permanently delete <strong>{confirmDelete.title}</strong>? This cannot be undone.
+            </p>
+            <div className="mt-6 flex gap-3">
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(null)}
+                className="flex-1 rounded-2xl border border-ink/10 bg-sand px-5 py-3 font-semibold text-ink"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDelete(confirmDelete._id)}
+                className="flex-1 rounded-2xl bg-ember px-5 py-3 font-semibold text-white"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default DashboardPage;

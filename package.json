@@ -1,0 +1,27 @@
+{
+  "name": "pulseroom",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PulseRoom microservices monorepo",
+  "workspaces": [
+    "api-gateway",
+    "frontend",
+    "packages/*",
+    "services/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n gateway,auth,user,event,booking,chat,notification,live,admin,frontend -c cyan,green,magenta,blue,yellow,red,white,gray,orange,purple \"npm run dev --workspace api-gateway\" \"npm run dev --workspace services/auth-service\" \"npm run dev --workspace services/user-service\" \"npm run dev --workspace services/event-service\" \"npm run dev --workspace services/booking-service\" \"npm run dev --workspace services/chat-service\" \"npm run dev --workspace services/notification-service\" \"npm run dev --workspace services/live-service\" \"npm run dev --workspace services/admin-service\" \"npm run dev --workspace frontend\"",
+    "dev:backend": "concurrently -k -n gateway,auth,user,event,booking,chat,notification,live,admin -c cyan,green,magenta,blue,yellow,red,white,gray,orange \"npm run dev --workspace api-gateway\" \"npm run dev --workspace services/auth-service\" \"npm run dev --workspace services/user-service\" \"npm run dev --workspace services/event-service\" \"npm run dev --workspace services/booking-service\" \"npm run dev --workspace services/chat-service\" \"npm run dev --workspace services/notification-service\" \"npm run dev --workspace services/live-service\" \"npm run dev --workspace services/admin-service\"",
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
+  },
+  "overrides": {
+    "rollup": "npm:@rollup/wasm-node@4.60.2"
+  },
+  "devDependencies": {
+    "@rollup/wasm-node": "^4.60.2",
+    "concurrently": "^9.1.2",
+    "rollup": "npm:@rollup/wasm-node@4.60.2"
+  }
+}

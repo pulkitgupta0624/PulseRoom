@@ -1,0 +1,21 @@
+{
+  "name": "@pulseroom/auth-service",
+  "version": "1.0.0",
+  "main": "src/server.js",
+  "license": "MIT",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js",
+    "test": "jest --runInBand --passWithNoTests"
+  },
+  "dependencies": {
+    "@pulseroom/common": "1.0.0",
+    "bcryptjs": "^3.0.2",
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "nodemon": "^3.1.10",
+    "supertest": "^7.1.0"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "@pulseroom/admin-service",
+  "version": "1.0.0",
+  "main": "src/server.js",
+  "license": "MIT",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js",
+    "test": "jest --runInBand --passWithNoTests"
+  },
+  "dependencies": {
+    "@pulseroom/common": "1.0.0",
+    "@socket.io/redis-adapter": "^8.3.0",
+    "dotenv": "^16.4.7",
+    "ioredis": "^5.6.1",
+    "jsonwebtoken": "^9.0.2",
+    "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "nodemon": "^3.1.10",
+    "supertest": "^7.1.0"
+  }
+}

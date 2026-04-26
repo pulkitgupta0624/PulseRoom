@@ -1,0 +1,22 @@
+{
+  "name": "@pulseroom/user-service",
+  "version": "1.0.0",
+  "main": "src/server.js",
+  "license": "MIT",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js",
+    "test": "jest --runInBand --passWithNoTests"
+  },
+  "dependencies": {
+    "@pulseroom/common": "1.0.0",
+    "dotenv": "^16.4.7",
+    "cloudinary": "^2.4.0",
+    "multer": "^1.4.5-lts.1"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "nodemon": "^3.1.10",
+    "supertest": "^7.1.0"
+  }
+}

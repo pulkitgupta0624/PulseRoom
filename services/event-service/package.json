@@ -1,0 +1,23 @@
+{
+  "name": "@pulseroom/event-service",
+  "version": "1.0.0",
+  "main": "src/server.js",
+  "license": "MIT",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js",
+    "test": "jest --runInBand --passWithNoTests"
+  },
+  "dependencies": {
+    "@pulseroom/common": "1.0.0",
+    "bullmq": "^5.76.2",
+    "dotenv": "^16.4.7",
+    "ioredis": "^5.10.1",
+    "typesense": "^3.0.6"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "nodemon": "^3.1.10",
+    "supertest": "^7.1.0"
+  }
+}
