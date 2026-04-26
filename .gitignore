@@ -13,4 +13,5 @@ pnpm-debug.log*
 frontend/build
 frontend/dist
 tmp
+docker-compose.yml
 
