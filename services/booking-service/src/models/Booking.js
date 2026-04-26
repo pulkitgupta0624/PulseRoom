@@ -63,6 +63,11 @@ const bookingSchema = new mongoose.Schema(
         type: String,
         index: true
       },
+      discountType: String,
+      discountValue: Number,
+      originalAmount: Number,
+      discountAmount: Number,
+      finalAmount: Number,
       trackedAt: Date
     },
     eventSnapshot: {

@@ -190,6 +190,40 @@ const eventSchema = new mongoose.Schema(
       code: {
         type: String
       },
+      discountType: {
+        type: String,
+        enum: ['percentage', 'fixed'],
+        default: 'percentage'
+      },
+      discountValue: {
+        type: Number,
+        default: 10
+      },
+      maxRedemptions: {
+        type: Number,
+        default: 1
+      },
+      redemptionsUsed: {
+        type: Number,
+        default: 0
+      },
+      status: {
+        type: String,
+        enum: ['active', 'redeemed', 'expired'],
+        default: 'active'
+      },
+      generatedAt: Date,
+      expiresAt: Date,
+      lastRedeemedAt: Date,
+      lastRedeemedByUserId: String,
+      totalRedemptions: {
+        type: Number,
+        default: 0
+      },
+      totalDiscountGiven: {
+        type: Number,
+        default: 0
+      },
       clicks: {
         type: Number,
         default: 0

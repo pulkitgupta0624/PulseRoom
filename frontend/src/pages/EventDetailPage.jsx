@@ -211,6 +211,20 @@ const EventDetailPage = () => {
     loadOrganizerProfile();
   }, [event?.organizerId, user?.id]);
 
+  useEffect(() => {
+    if (!event) {
+      return;
+    }
+
+    const storageKey = `pulseroom.referral.${eventId}`;
+    const offerStatus = event.referralOffer?.status;
+
+    if (offerStatus && offerStatus !== 'active') {
+      window.sessionStorage.removeItem(storageKey);
+      setActiveReferralCode('');
+    }
+  }, [event, eventId]);
+
   const selectedTier = useMemo(
     () => event?.ticketTiers?.find((tier) => tier.tierId === selectedTierId) || event?.ticketTiers?.[0],
     [event, selectedTierId]
@@ -231,6 +245,13 @@ const EventDetailPage = () => {
   const canonicalEventUrl = typeof window !== 'undefined' ? `${window.location.origin}/events/${eventId}` : '';
   const organizerShareUrl =
     user?.id === event?.organizerId && event?.referralLink ? event.referralLink : canonicalEventUrl;
+  const activeReferralOffer = event?.referralOffer?.status === 'active' ? event.referralOffer : null;
+  const referralPreviewDiscount = selectedTier
+    ? activeReferralOffer?.discountType === 'fixed'
+      ? Math.min(selectedTier.price * quantity, activeReferralOffer.discountValue || 0)
+      : Number(((selectedTier.price * quantity) * ((activeReferralOffer?.discountValue || 0) / 100)).toFixed(2))
+    : 0;
+  const discountedTotal = Math.max(0, (selectedTier?.price || 0) * quantity - referralPreviewDiscount);
 
   const refreshCapacity = async () => {
     try {
@@ -318,10 +339,11 @@ const EventDetailPage = () => {
       });
 
       const createdBooking = response.data.data.booking;
+      const savedAmount = createdBooking.referral?.discountAmount || 0;
       setStatus({
         tone: 'success',
         message: createdBooking.invoice?.invoiceNumber
-          ? `Booking confirmed. Invoice ${createdBooking.invoice.invoiceNumber} is ready and your QR ticket is now in My Tickets.`
+          ? `Booking confirmed. Invoice ${createdBooking.invoice.invoiceNumber} is ready and your QR ticket is now in My Tickets.${savedAmount ? ` You saved ${formatCurrency(savedAmount, createdBooking.currency)} with the referral invite.` : ''}`
           : 'Booking submitted successfully.'
       });
       setWaitlistOffer(null);
@@ -542,6 +564,31 @@ const EventDetailPage = () => {
               )}
 
               <AddToCalendarButton event={event} />
+              {organizerProfile?.canFollowOrganizer ? (
+                <button
+                  type="button"
+                  onClick={handleFollowToggle}
+                  disabled={followLoading}
+                  className={`rounded-full px-4 py-2.5 text-sm font-semibold transition disabled:opacity-60 ${
+                    organizerProfile.isFollowingOrganizer
+                      ? 'border border-ink/10 bg-white text-ink'
+                      : 'bg-reef text-white'
+                  }`}
+                >
+                  {followLoading
+                    ? 'Updating...'
+                    : organizerProfile.isFollowingOrganizer
+                      ? 'Following organizer'
+                      : 'Follow organizer'}
+                </button>
+              ) : !user && organizerProfile ? (
+                <Link
+                  to="/auth"
+                  className="rounded-full border border-ink/10 bg-white px-4 py-2.5 text-sm font-semibold text-ink transition hover:bg-sand"
+                >
+                  Sign in to follow
+                </Link>
+              ) : null}
               <ShareButton event={event} shareUrl={organizerShareUrl} />
             </div>
           </div>
@@ -569,9 +616,15 @@ const EventDetailPage = () => {
               </div>
             )}
 
-            {activeReferralCode && user?.id !== event.organizerId && (
+            {activeReferralOffer && user?.id !== event.organizerId && (
               <div className="rounded-2xl border border-dusk/20 bg-dusk/10 px-4 py-3 text-sm text-dusk">
-                This booking will be attributed to the organizer&apos;s referral link.
+                {event.referralOffer.message}
+              </div>
+            )}
+
+            {event.referralOffer?.status && event.referralOffer.status !== 'active' && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                {event.referralOffer.message}
               </div>
             )}
 
@@ -681,11 +734,25 @@ const EventDetailPage = () => {
               </div>
 
               {selectedTier && quantity > 0 && !isFree && (
-                <div className="flex items-center justify-between rounded-2xl bg-sand px-4 py-3">
-                  <p className="text-sm text-ink/60">Total</p>
-                  <p className="font-semibold text-ink">
-                    {formatCurrency(selectedTier.price * quantity, selectedTier.currency)}
-                  </p>
+                <div className="space-y-2 rounded-2xl bg-sand px-4 py-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm text-ink/60">Subtotal</p>
+                    <p className="font-semibold text-ink">
+                      {formatCurrency(selectedTier.price * quantity, selectedTier.currency)}
+                    </p>
+                  </div>
+                  {activeReferralOffer && referralPreviewDiscount > 0 && (
+                    <div className="flex items-center justify-between text-sm text-reef">
+                      <p>Referral discount</p>
+                      <p>-{formatCurrency(referralPreviewDiscount, selectedTier.currency)}</p>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between border-t border-ink/10 pt-2">
+                    <p className="text-sm text-ink/60">Total</p>
+                    <p className="font-semibold text-ink">
+                      {formatCurrency(activeReferralOffer ? discountedTotal : selectedTier.price * quantity, selectedTier.currency)}
+                    </p>
+                  </div>
                 </div>
               )}
 

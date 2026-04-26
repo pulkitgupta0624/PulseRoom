@@ -25,8 +25,10 @@ const { generateEventDraft, answerEventQuestion } = require('../services/aiAssis
 const { buildCalendarFile, buildCalendarFileName } = require('../services/calendarService');
 const { buildPriceSummary } = require('../services/searchService');
 const {
-  buildReferralCode,
-  ensureEventReferralCode,
+  buildReferralRecord,
+  ensureActiveReferralCode,
+  rotateReferralCode,
+  isReferralExpired,
   serializeEventForViewer
 } = require('../services/referralService');
 
@@ -120,13 +122,14 @@ router.get(
   asyncHandler(async (req, res) => {
     const filter = req.user.role === Roles.ADMIN ? {} : { organizerId: req.user.sub };
     const events = await Event.find(filter).sort({ startsAt: 1 });
-    await Promise.all(events.map((event) => ensureEventReferralCode(event)));
+    await Promise.all(events.map((event) => ensureActiveReferralCode(event)));
 
     const serializedEvents = events.map((event) =>
       serializeEventForViewer({
         event,
         viewer: req.user,
-        appOrigin: req.config.appOrigin
+        appOrigin: req.config.appOrigin,
+        includeReferralLink: true
       })
     );
     const totalRevenue = serializedEvents.reduce((sum, item) => sum + (item.analytics?.revenue || 0), 0);
@@ -292,15 +295,12 @@ router.post(
   validateSchema(createEventSchema),
   asyncHandler(async (req, res) => {
     const slugBase = slugify(req.body.title);
-    const event = await Event.create({
+    const event = new Event({
       ...req.body,
       organizerId: req.user.sub,
-      slug: `${slugBase}-${crypto.randomBytes(3).toString('hex')}`,
-      referral: {
-        code: buildReferralCode(req.body.title),
-        clicks: 0
-      }
+      slug: `${slugBase}-${crypto.randomBytes(3).toString('hex')}`
     });
+    await ensureActiveReferralCode(event);
 
     await syncSearchDocument(req, event);
     await syncCompletionSchedule(req, event);
@@ -312,7 +312,16 @@ router.post(
       startsAt: event.startsAt
     });
 
-    sendSuccess(res, event, 201);
+    sendSuccess(
+      res,
+      serializeEventForViewer({
+        event,
+        viewer: req.user,
+        appOrigin: req.config.appOrigin,
+        includeReferralLink: true
+      }),
+      201
+    );
   })
 );
 
@@ -388,10 +397,11 @@ router.get(
     const isReferralVisit =
       Boolean(req.query.ref) &&
       event.referral?.code === req.query.ref &&
+      event.referral?.status === 'active' &&
       viewer?.sub !== event.organizerId;
 
     if (!event.referral?.code && viewer && (viewer.sub === event.organizerId || viewer.role === Roles.ADMIN)) {
-      await ensureEventReferralCode(event);
+      await ensureActiveReferralCode(event);
     }
 
     await Event.updateOne(
@@ -421,7 +431,8 @@ router.get(
         event,
         viewer,
         appOrigin: req.config.appOrigin,
-        includeReferral: req.headers['x-service-name'] === 'booking-service'
+        includeReferral: req.headers['x-service-name'] === 'booking-service',
+        referralCode: req.query.ref
       })
     );
   })
@@ -457,7 +468,15 @@ router.patch(
       startsAt: event.startsAt
     });
 
-    sendSuccess(res, event);
+    sendSuccess(
+      res,
+      serializeEventForViewer({
+        event,
+        viewer: req.user,
+        appOrigin: req.config.appOrigin,
+        includeReferralLink: true
+      })
+    );
   })
 );
 
@@ -475,20 +494,21 @@ router.post(
     }
 
     if (event.status === 'published') {
-      await ensureEventReferralCode(event);
+      await ensureActiveReferralCode(event);
       return sendSuccess(
         res,
         serializeEventForViewer({
           event,
           viewer: req.user,
-          appOrigin: req.config.appOrigin
+          appOrigin: req.config.appOrigin,
+          includeReferralLink: true
         })
       );
     }
 
     event.status = 'published';
     await event.save();
-    await ensureEventReferralCode(event);
+    await ensureActiveReferralCode(event);
 
     await syncSearchDocument(req, event);
     await syncCompletionSchedule(req, event);
@@ -506,7 +526,8 @@ router.post(
       serializeEventForViewer({
         event,
         viewer: req.user,
-        appOrigin: req.config.appOrigin
+        appOrigin: req.config.appOrigin,
+        includeReferralLink: true
       })
     );
   })
@@ -551,7 +572,7 @@ router.post(
     });
 
     if (previousStatus !== 'published' && event.status === 'published') {
-      await ensureEventReferralCode(event);
+      await ensureActiveReferralCode(event);
       await req.eventBus.publish(DomainEvents.EVENT_PUBLISHED, {
         eventId: event._id.toString(),
         title: event.title,
@@ -566,7 +587,109 @@ router.post(
       serializeEventForViewer({
         event,
         viewer: req.user,
-        appOrigin: req.config.appOrigin
+        appOrigin: req.config.appOrigin,
+        includeReferralLink: true
+      })
+    );
+  })
+);
+
+router.post(
+  '/:eventId/referral/consume',
+  asyncHandler(async (req, res) => {
+    if (req.headers['x-service-name'] !== 'booking-service') {
+      throw new AppError('Forbidden', 403, 'forbidden');
+    }
+
+    const referralCode = req.body?.code?.trim();
+    const redeemedByUserId = req.body?.redeemedByUserId?.trim();
+    const discountAmount = Number(req.body?.discountAmount || 0);
+
+    if (!referralCode || !redeemedByUserId) {
+      throw new AppError('Referral code and redeemedByUserId are required', 400, 'referral_consume_invalid');
+    }
+
+    const event = await Event.findById(req.params.eventId);
+    if (!event) {
+      throw new AppError('Event not found', 404, 'event_not_found');
+    }
+
+    if (event.referral?.code !== referralCode || event.referral?.status !== 'active') {
+      throw new AppError('This referral discount link is no longer active', 409, 'referral_inactive');
+    }
+
+    if (isReferralExpired(event.referral)) {
+      event.referral.status = 'expired';
+      await event.save();
+      throw new AppError('This referral discount link has expired', 409, 'referral_expired');
+    }
+
+    const nextReferral = buildReferralRecord(event, {
+      clicks: Number(event.referral?.clicks || 0),
+      totalRedemptions: Number(event.referral?.totalRedemptions || 0) + 1,
+      totalDiscountGiven: Number(event.referral?.totalDiscountGiven || 0) + discountAmount,
+      lastRedeemedAt: new Date(),
+      lastRedeemedByUserId: redeemedByUserId
+    });
+
+    const updatedEvent = await Event.findOneAndUpdate(
+      {
+        _id: event._id,
+        'referral.code': referralCode,
+        'referral.status': 'active'
+      },
+      {
+        $set: {
+          referral: nextReferral
+        }
+      },
+      {
+        new: true
+      }
+    );
+
+    if (!updatedEvent) {
+      throw new AppError('This referral discount link has already been used', 409, 'referral_redeemed');
+    }
+
+    sendSuccess(res, {
+      consumed: true,
+      nextReferralCode: updatedEvent.referral?.code || null,
+      nextReferralLink:
+        updatedEvent.referral?.code
+          ? serializeEventForViewer({
+              event: updatedEvent,
+              viewer: { sub: updatedEvent.organizerId, role: Roles.ORGANIZER },
+              appOrigin: req.config.appOrigin,
+              includeReferralLink: true
+            }).referralLink
+          : null
+    });
+  })
+);
+
+router.post(
+  '/:eventId/referral/regenerate',
+  authenticate(),
+  authorize(Roles.ORGANIZER, Roles.ADMIN),
+  asyncHandler(async (req, res) => {
+    const event = await Event.findById(req.params.eventId);
+    if (!event) {
+      throw new AppError('Event not found', 404, 'event_not_found');
+    }
+    if (!canManageEvent(event, req.user)) {
+      throw new AppError('Forbidden', 403, 'forbidden');
+    }
+
+    await rotateReferralCode(event);
+
+    sendSuccess(
+      res,
+      serializeEventForViewer({
+        event,
+        viewer: req.user,
+        appOrigin: req.config.appOrigin,
+        includeReferralLink: true
       })
     );
   })

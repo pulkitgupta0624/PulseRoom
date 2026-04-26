@@ -29,6 +29,19 @@ const {
 
 const router = express.Router();
 
+const calculateReferralDiscountAmount = ({ subtotal, referral }) => {
+  const safeSubtotal = Number(subtotal || 0);
+  if (!safeSubtotal || !referral?.code) {
+    return 0;
+  }
+
+  if (referral.discountType === 'fixed') {
+    return Number(Math.min(safeSubtotal, referral.discountValue || 0).toFixed(2));
+  }
+
+  return Number(Math.min(safeSubtotal, safeSubtotal * ((referral.discountValue || 0) / 100)).toFixed(2));
+};
+
 const finalizeSuccessfulPayment = async ({ booking, payment, req, providerPaymentId }) => {
   if (
     booking.status === BookingStatus.CONFIRMED &&
@@ -352,6 +365,7 @@ router.post(
     const referralCode =
       normalizedReferralCode &&
       event.referral?.code === normalizedReferralCode &&
+      event.referral?.status === 'active' &&
       req.user.sub !== event.organizerId
         ? event.referral.code
         : null;
@@ -384,7 +398,50 @@ router.post(
       throw new AppError('Selected tier is sold out', 409, 'tier_sold_out');
     }
 
-    const amount = Number((tier.price * quantity).toFixed(2));
+    const subtotal = Number((tier.price * quantity).toFixed(2));
+    const isEligibleForReferralDiscount = referralCode
+      ? !(await Booking.exists({
+          userId: req.user.sub,
+          status: BookingStatus.CONFIRMED
+        }))
+      : false;
+
+    if (normalizedReferralCode && !referralCode) {
+      throw new AppError('This referral discount link is no longer active', 409, 'referral_inactive');
+    }
+
+    if (referralCode && !isEligibleForReferralDiscount) {
+      throw new AppError(
+        'Referral discounts are only available on a user’s first confirmed PulseRoom booking',
+        409,
+        'referral_not_eligible'
+      );
+    }
+
+    const discountAmount = referralCode
+      ? calculateReferralDiscountAmount({
+          subtotal,
+          referral: event.referral
+        })
+      : 0;
+    const amount = Number((subtotal - discountAmount).toFixed(2));
+
+    if (referralCode) {
+      try {
+        await req.clients.eventService.post(`/api/events/${req.body.eventId}/referral/consume`, {
+          code: referralCode,
+          redeemedByUserId: req.user.sub,
+          discountAmount
+        });
+      } catch (error) {
+        throw new AppError(
+          error.response?.data?.message || 'This referral discount link is no longer active',
+          error.response?.status || 409,
+          error.response?.data?.code || 'referral_inactive'
+        );
+      }
+    }
+
     const booking = await Booking.create({
       bookingNumber: `BK-${Date.now()}`,
       userId: req.user.sub,
@@ -400,6 +457,11 @@ router.post(
             referral: {
               code: referralCode,
               referrerUserId: event.organizerId,
+              discountType: event.referral.discountType,
+              discountValue: event.referral.discountValue,
+              originalAmount: subtotal,
+              discountAmount,
+              finalAmount: amount,
               trackedAt: new Date()
             }
           }

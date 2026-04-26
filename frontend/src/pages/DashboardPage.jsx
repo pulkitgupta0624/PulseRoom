@@ -198,6 +198,7 @@ const DashboardPage = () => {
   const [referralAnalytics, setReferralAnalytics] = useState(null);
   const [referralLoading, setReferralLoading] = useState(true);
   const [copiedReferralEventId, setCopiedReferralEventId] = useState(null);
+  const [regeneratingReferralEventId, setRegeneratingReferralEventId] = useState(null);
   const coverInputRef = useRef(null);
 
   const refreshOrganizerAnalytics = async () => {
@@ -449,6 +450,16 @@ const DashboardPage = () => {
     }
   };
 
+  const handleRegenerateReferralLink = async (eventId) => {
+    setRegeneratingReferralEventId(eventId);
+    try {
+      await api.post(`/api/events/${eventId}/referral/regenerate`);
+      await refreshDashboard();
+    } finally {
+      setRegeneratingReferralEventId(null);
+    }
+  };
+
   const totals = dashboard?.totals || {};
   const formTabs = [
     { key: 'details', label: 'Event Details' },
@@ -484,13 +495,13 @@ const DashboardPage = () => {
           description={
             referralLoading
               ? 'Loading referral analytics...'
-              : 'Share each event-specific referral link and track which events convert attention into bookings.'
+              : 'Each event keeps one active single-use referral invite. Every claimed invite rotates automatically to a fresh discounted link for the next new user.'
           }
         />
 
         {referralAnalytics ? (
           <>
-            <div className="grid gap-4 md:grid-cols-5">
+            <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
               <ReferralMetric
                 label="Active Links"
                 value={referralAnalytics.totals?.activeReferralLinks || 0}
@@ -511,6 +522,11 @@ const DashboardPage = () => {
                 accent="text-ember"
               />
               <ReferralMetric
+                label="Discounts Given"
+                value={formatCurrency(referralAnalytics.totals?.discountsGiven || 0)}
+                accent="text-dusk"
+              />
+              <ReferralMetric
                 label="Conversion"
                 value={formatPercent(referralAnalytics.totals?.conversionRate || 0)}
               />
@@ -521,7 +537,7 @@ const DashboardPage = () => {
                 <div>
                   <h2 className="font-display text-3xl text-ink">Referral links by event</h2>
                   <p className="mt-2 text-sm text-ink/60">
-                    Every event gets a unique organizer share link. Bookings completed through that link are tracked here.
+                    Each active link gives a one-time discount to a first-time PulseRoom booker, then rotates to a fresh link after that checkout claims it.
                   </p>
                 </div>
                 <span className="rounded-full bg-dusk/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-dusk">
@@ -538,6 +554,14 @@ const DashboardPage = () => {
                           <h3 className="font-display text-2xl text-ink">{item.title}</h3>
                           <span className="rounded-full border border-ink/10 bg-white px-2 py-0.5 text-xs text-ink/50">
                             {item.referralCode || 'Pending link'}
+                          </span>
+                          <span className="rounded-full border border-dusk/20 bg-dusk/5 px-2 py-0.5 text-xs text-dusk">
+                            {item.referralDiscountType === 'fixed'
+                              ? `${formatCurrency(item.referralDiscountValue || 0)} off`
+                              : `${item.referralDiscountValue || 0}% off`}
+                          </span>
+                          <span className="rounded-full border border-reef/20 bg-reef/5 px-2 py-0.5 text-xs text-reef capitalize">
+                            {item.currentLinkStatus || 'active'}
                           </span>
                         </div>
                         <p className="mt-2 truncate text-sm text-ink/55">{item.referralLink || 'Referral link unavailable'}</p>
@@ -556,6 +580,14 @@ const DashboardPage = () => {
                             {copiedReferralEventId === item.eventId ? 'Copied link' : 'Copy link'}
                           </button>
                         )}
+                        <button
+                          type="button"
+                          onClick={() => handleRegenerateReferralLink(item.eventId)}
+                          disabled={regeneratingReferralEventId === item.eventId}
+                          className="rounded-full border border-ember/20 bg-ember/5 px-4 py-2 text-xs font-semibold text-ember hover:bg-ember/10 disabled:opacity-60"
+                        >
+                          {regeneratingReferralEventId === item.eventId ? 'Refreshing...' : 'Refresh link'}
+                        </button>
                         <Link
                           to={`/events/${item.eventId}`}
                           className="rounded-full border border-dusk/20 bg-dusk/5 px-4 py-2 text-xs font-semibold text-dusk hover:bg-dusk/10"
@@ -565,7 +597,7 @@ const DashboardPage = () => {
                       </div>
                     </div>
 
-                    <div className="mt-4 grid gap-4 md:grid-cols-5">
+                    <div className="mt-4 grid gap-4 md:grid-cols-3 xl:grid-cols-6">
                       <div className="rounded-2xl bg-white px-4 py-3">
                         <p className="text-xs uppercase tracking-[0.18em] text-ink/45">Link opens</p>
                         <p className="mt-2 font-semibold text-ink">{item.linkOpens || 0}</p>
@@ -581,6 +613,10 @@ const DashboardPage = () => {
                       <div className="rounded-2xl bg-white px-4 py-3">
                         <p className="text-xs uppercase tracking-[0.18em] text-ink/45">Revenue</p>
                         <p className="mt-2 font-semibold text-ink">{formatCurrency(item.revenue || 0)}</p>
+                      </div>
+                      <div className="rounded-2xl bg-white px-4 py-3">
+                        <p className="text-xs uppercase tracking-[0.18em] text-ink/45">Discounts</p>
+                        <p className="mt-2 font-semibold text-ink">{formatCurrency(item.discountsGiven || 0)}</p>
                       </div>
                       <div className="rounded-2xl bg-white px-4 py-3">
                         <p className="text-xs uppercase tracking-[0.18em] text-ink/45">Conversion</p>

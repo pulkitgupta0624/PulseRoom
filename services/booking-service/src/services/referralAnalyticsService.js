@@ -34,10 +34,14 @@ const buildReferralAnalytics = ({ bookings, events, days = 30 }) => {
         title: event.title,
         referralCode: event.referral?.code || null,
         referralLink: event.referralLink || null,
+        referralDiscountType: event.referral?.discountType || 'percentage',
+        referralDiscountValue: Number(event.referral?.discountValue || 0),
+        currentLinkStatus: event.referral?.status || 'active',
         linkOpens: Number(event.referral?.clicks || 0),
         referredBookings: 0,
         ticketsSold: 0,
         revenue: 0,
+        discountsGiven: 0,
         conversionRate: 0,
         lastReferredAt: null
       }
@@ -48,6 +52,7 @@ const buildReferralAnalytics = ({ bookings, events, days = 30 }) => {
   let ticketsSold = 0;
   let revenue = 0;
   let linkOpens = 0;
+  let discountsGiven = 0;
 
   for (const event of eventMap.values()) {
     linkOpens += event.linkOpens;
@@ -62,10 +67,14 @@ const buildReferralAnalytics = ({ bookings, events, days = 30 }) => {
       title: booking.eventSnapshot?.title || 'Event',
       referralCode: booking.referral?.code || null,
       referralLink: null,
+      referralDiscountType: booking.referral?.discountType || 'percentage',
+      referralDiscountValue: Number(booking.referral?.discountValue || 0),
+      currentLinkStatus: 'active',
       linkOpens: 0,
       referredBookings: 0,
       ticketsSold: 0,
       revenue: 0,
+      discountsGiven: 0,
       conversionRate: 0,
       lastReferredAt: null
     };
@@ -73,6 +82,7 @@ const buildReferralAnalytics = ({ bookings, events, days = 30 }) => {
     referredBookings += 1;
     ticketsSold += booking.quantity || 0;
     revenue += booking.amount || 0;
+    discountsGiven += booking.referral?.discountAmount || 0;
 
     if (bucket) {
       bucket.bookings += 1;
@@ -83,6 +93,7 @@ const buildReferralAnalytics = ({ bookings, events, days = 30 }) => {
     eventEntry.referredBookings += 1;
     eventEntry.ticketsSold += booking.quantity || 0;
     eventEntry.revenue += booking.amount || 0;
+    eventEntry.discountsGiven += booking.referral?.discountAmount || 0;
     eventEntry.lastReferredAt =
       !eventEntry.lastReferredAt || new Date(eventEntry.lastReferredAt) < new Date(effectiveDate)
         ? effectiveDate
@@ -106,11 +117,12 @@ const buildReferralAnalytics = ({ bookings, events, days = 30 }) => {
   return {
     windowDays,
     totals: {
-      activeReferralLinks: events.filter((event) => event.referral?.code).length,
+      activeReferralLinks: events.filter((event) => event.referral?.code && event.referral?.status === 'active').length,
       linkOpens,
       referredBookings,
       ticketsSold,
       revenue,
+      discountsGiven,
       conversionRate: linkOpens > 0 ? Number(((referredBookings / linkOpens) * 100).toFixed(1)) : 0
     },
     series: orderedDays.map((key) => bucketMap.get(key)),
