@@ -9,7 +9,7 @@ import { fetchEventById } from '../features/events/eventsSlice';
 import { api } from '../lib/api';
 import { formatCurrency, formatDate } from '../lib/formatters';
 
-const ShareButton = ({ event }) => {
+const ShareButton = ({ event, shareUrl }) => {
   const [copied, setCopied] = useState(false);
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
@@ -29,7 +29,7 @@ const ShareButton = ({ event }) => {
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
 
-  const url = window.location.href;
+  const url = shareUrl || window.location.href;
   const title = event?.title || 'PulseRoom Event';
 
   const copyLink = async () => {
@@ -127,13 +127,50 @@ const EventDetailPage = () => {
   const [waitlistEntry, setWaitlistEntry] = useState(null);
   const [waitlistOffer, setWaitlistOffer] = useState(null);
   const [showReport, setShowReport] = useState(false);
+  const [activeReferralCode, setActiveReferralCode] = useState('');
+  const [organizerProfile, setOrganizerProfile] = useState(null);
+  const [followLoading, setFollowLoading] = useState(false);
+  const [organizerStatus, setOrganizerStatus] = useState(null);
+  const referralVisitTrackedRef = useRef(false);
 
   const waitlistOfferToken = searchParams.get('waitlistOfferToken');
   const requestedTierFromLink = searchParams.get('tierId');
+  const referralCodeFromLink = searchParams.get('ref');
 
   useEffect(() => {
-    dispatch(fetchEventById(eventId));
-  }, [dispatch, eventId]);
+    referralVisitTrackedRef.current = false;
+  }, [eventId]);
+
+  useEffect(() => {
+    const storageKey = `pulseroom.referral.${eventId}`;
+    const storedReferralCode = window.sessionStorage.getItem(storageKey);
+
+    if (referralCodeFromLink) {
+      window.sessionStorage.setItem(storageKey, referralCodeFromLink);
+      setActiveReferralCode(referralCodeFromLink);
+      return;
+    }
+
+    setActiveReferralCode(storedReferralCode || '');
+  }, [eventId, referralCodeFromLink]);
+
+  useEffect(() => {
+    const shouldTrackReferral = Boolean(referralCodeFromLink && !referralVisitTrackedRef.current);
+    dispatch(
+      fetchEventById(
+        shouldTrackReferral
+          ? {
+              eventId,
+              referralCode: referralCodeFromLink
+            }
+          : eventId
+      )
+    );
+
+    if (shouldTrackReferral) {
+      referralVisitTrackedRef.current = true;
+    }
+  }, [dispatch, eventId, referralCodeFromLink]);
 
   useEffect(() => {
     if (user) {
@@ -156,6 +193,24 @@ const EventDetailPage = () => {
     }
   }, [event, selectedTierId]);
 
+  useEffect(() => {
+    const loadOrganizerProfile = async () => {
+      if (!event?.organizerId) {
+        setOrganizerProfile(null);
+        return;
+      }
+
+      try {
+        const response = await api.get(`/api/users/profile/${event.organizerId}`);
+        setOrganizerProfile(response.data.data);
+      } catch (_error) {
+        setOrganizerProfile(null);
+      }
+    };
+
+    loadOrganizerProfile();
+  }, [event?.organizerId, user?.id]);
+
   const selectedTier = useMemo(
     () => event?.ticketTiers?.find((tier) => tier.tierId === selectedTierId) || event?.ticketTiers?.[0],
     [event, selectedTierId]
@@ -173,6 +228,9 @@ const EventDetailPage = () => {
   const selectedCapacity = selectedTier ? capacityByTier[selectedTier.tierId] : null;
   const isSelectedTierSoldOut = Boolean(selectedCapacity && selectedCapacity.remaining === 0);
   const waitlistOfferActive = Boolean(waitlistOffer?.isOfferActive);
+  const canonicalEventUrl = typeof window !== 'undefined' ? `${window.location.origin}/events/${eventId}` : '';
+  const organizerShareUrl =
+    user?.id === event?.organizerId && event?.referralLink ? event.referralLink : canonicalEventUrl;
 
   const refreshCapacity = async () => {
     try {
@@ -255,6 +313,7 @@ const EventDetailPage = () => {
         tierId: selectedTier?.tierId,
         quantity,
         attendee,
+        referralCode: activeReferralCode || undefined,
         waitlistOfferToken: waitlistOffer?.offerToken
       });
 
@@ -306,6 +365,45 @@ const EventDetailPage = () => {
       });
     } finally {
       setJoiningWaitlist(false);
+    }
+  };
+
+  const handleFollowToggle = async () => {
+    if (!user || !organizerProfile?.canFollowOrganizer || !event?.organizerId) {
+      return;
+    }
+
+    setFollowLoading(true);
+    setOrganizerStatus(null);
+
+    try {
+      const response = organizerProfile.isFollowingOrganizer
+        ? await api.delete(`/api/users/organizers/${event.organizerId}/follow`)
+        : await api.post(`/api/users/organizers/${event.organizerId}/follow`);
+      const followState = response.data.data;
+
+      setOrganizerProfile((current) =>
+        current
+          ? {
+              ...current,
+              isFollowingOrganizer: followState.isFollowing,
+              followersCount: followState.followersCount
+            }
+          : current
+      );
+      setOrganizerStatus({
+        tone: 'success',
+        message: followState.isFollowing
+          ? 'You will now get notified when this organizer publishes new events.'
+          : 'You will no longer receive new-event notifications from this organizer.'
+      });
+    } catch (error) {
+      setOrganizerStatus({
+        tone: 'error',
+        message: error.response?.data?.message || 'Unable to update organizer follow status.'
+      });
+    } finally {
+      setFollowLoading(false);
     }
   };
 
@@ -444,7 +542,7 @@ const EventDetailPage = () => {
               )}
 
               <AddToCalendarButton event={event} />
-              <ShareButton event={event} />
+              <ShareButton event={event} shareUrl={organizerShareUrl} />
             </div>
           </div>
 
@@ -468,6 +566,12 @@ const EventDetailPage = () => {
             {waitlistOfferActive && (
               <div className="rounded-2xl border border-reef/20 bg-reef/10 px-4 py-3 text-sm text-reef">
                 Your waitlist spot is reserved until {formatDate(waitlistOffer.offerExpiresAt)}.
+              </div>
+            )}
+
+            {activeReferralCode && user?.id !== event.organizerId && (
+              <div className="rounded-2xl border border-dusk/20 bg-dusk/10 px-4 py-3 text-sm text-dusk">
+                This booking will be attributed to the organizer&apos;s referral link.
               </div>
             )}
 
@@ -641,6 +745,105 @@ const EventDetailPage = () => {
           </div>
         </div>
       </section>
+
+      {organizerProfile && (
+        <section className="rounded-[32px] border border-ink/10 bg-white/75 p-6 shadow-bloom">
+          <SectionHeader
+            eyebrow="Organizer"
+            title={organizerProfile.organizerProfile?.companyName || organizerProfile.displayName}
+            description={organizerProfile.bio || 'Follow this organizer to hear about their next event drops.'}
+            actions={
+              organizerProfile.canFollowOrganizer ? (
+                <button
+                  type="button"
+                  onClick={handleFollowToggle}
+                  disabled={followLoading}
+                  className={`rounded-full px-5 py-3 text-sm font-semibold transition disabled:opacity-60 ${
+                    organizerProfile.isFollowingOrganizer
+                      ? 'border border-ink/10 bg-sand text-ink'
+                      : 'bg-ink text-sand'
+                  }`}
+                >
+                  {followLoading
+                    ? 'Updating...'
+                    : organizerProfile.isFollowingOrganizer
+                      ? 'Following'
+                      : 'Follow organizer'}
+                </button>
+              ) : !user && ['organizer', 'admin'].includes(organizerProfile.role) ? (
+                <Link
+                  to="/auth"
+                  className="rounded-full border border-ink/10 bg-white px-5 py-3 text-sm font-semibold text-ink transition hover:bg-sand"
+                >
+                  Sign in to follow
+                </Link>
+              ) : null
+            }
+          />
+
+          <div className="mt-6 grid gap-6 md:grid-cols-[auto,1fr]">
+            {organizerProfile.avatarUrl ? (
+              <img
+                src={organizerProfile.avatarUrl}
+                alt={organizerProfile.displayName}
+                className="h-20 w-20 rounded-full object-cover"
+              />
+            ) : (
+              <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-reef/40 to-dusk/40 font-display text-3xl text-ink">
+                {organizerProfile.displayName?.[0]?.toUpperCase() || 'O'}
+              </div>
+            )}
+
+            <div className="space-y-4">
+              <div className="grid gap-4 md:grid-cols-3">
+                <div className="rounded-[24px] bg-sand p-4">
+                  <p className="text-xs uppercase tracking-[0.24em] text-ink/45">Followers</p>
+                  <p className="mt-2 font-semibold text-ink">{organizerProfile.followersCount || 0}</p>
+                </div>
+                <div className="rounded-[24px] bg-sand p-4">
+                  <p className="text-xs uppercase tracking-[0.24em] text-ink/45">Role</p>
+                  <p className="mt-2 font-semibold capitalize text-ink">{organizerProfile.role}</p>
+                </div>
+                <div className="rounded-[24px] bg-sand p-4">
+                  <p className="text-xs uppercase tracking-[0.24em] text-ink/45">Location</p>
+                  <p className="mt-2 font-semibold text-ink">{organizerProfile.location || 'Remote / not set'}</p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-3 text-sm text-ink/65">
+                {organizerProfile.organizerProfile?.supportEmail && (
+                  <a
+                    href={`mailto:${organizerProfile.organizerProfile.supportEmail}`}
+                    className="rounded-full border border-ink/10 bg-white px-4 py-2 hover:bg-sand"
+                  >
+                    {organizerProfile.organizerProfile.supportEmail}
+                  </a>
+                )}
+                {organizerProfile.organizerProfile?.website && (
+                  <a
+                    href={organizerProfile.organizerProfile.website}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-full border border-ink/10 bg-white px-4 py-2 hover:bg-sand"
+                  >
+                    Visit website
+                  </a>
+                )}
+              </div>
+
+              {organizerStatus && (
+                <p
+                  className={`rounded-2xl px-4 py-3 text-sm ${
+                    organizerStatus.tone === 'success' ? 'bg-reef/10 text-reef' : 'bg-ember/10 text-ember'
+                  }`}
+                >
+                  {organizerStatus.message}
+                </p>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
 
       <section className="grid gap-8 lg:grid-cols-[1fr,1fr]">
         <div className="space-y-6 rounded-[32px] border border-ink/10 bg-white/75 p-6 shadow-bloom">

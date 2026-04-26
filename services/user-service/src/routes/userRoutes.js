@@ -4,6 +4,7 @@ const {
   asyncHandler,
   authenticate,
   authorize,
+  decodeOptionalToken,
   sendSuccess,
   validateSchema,
   DomainEvents,
@@ -21,7 +22,49 @@ const {
 
 const router = express.Router();
 
-// ── My profile ────────────────────────────────────────────────────────────────
+const FOLLOWABLE_ROLES = new Set([Roles.ORGANIZER, Roles.ADMIN]);
+const PUBLIC_PROFILE_FIELDS = [
+  'userId',
+  'displayName',
+  'avatarUrl',
+  'bio',
+  'role',
+  'verifiedOrganizer',
+  'interests',
+  'socialLinks',
+  'location',
+  'organizerProfile',
+  'followersCount'
+].join(' ');
+
+const isFollowableOrganizer = (profile) =>
+  Boolean(profile && profile.isActive && FOLLOWABLE_ROLES.has(profile.role));
+
+const getFollowState = async ({ viewerId, organizerId }) => {
+  if (!viewerId || !organizerId || viewerId === organizerId) {
+    return false;
+  }
+
+  const viewerProfile = await UserProfile.findOne({ userId: viewerId })
+    .select('followingOrganizerIds')
+    .lean();
+
+  return Boolean(viewerProfile?.followingOrganizerIds?.includes(organizerId));
+};
+
+const getOrganizerProfileOrThrow = async (organizerId) => {
+  const organizerProfile = await UserProfile.findOne({
+    userId: organizerId,
+    isActive: true
+  });
+
+  if (!isFollowableOrganizer(organizerProfile)) {
+    throw new AppError('Organizer not found', 404, 'organizer_not_found');
+  }
+
+  return organizerProfile;
+};
+
 router.get(
   '/me',
   authenticate(),
@@ -34,7 +77,6 @@ router.get(
   })
 );
 
-// ── User search (authenticated, used by MessagesPage etc.) ────────────────────
 router.get(
   '/search',
   authenticate(),
@@ -60,7 +102,6 @@ router.get(
   })
 );
 
-// ── Update my profile ─────────────────────────────────────────────────────────
 router.patch(
   '/me',
   authenticate(),
@@ -87,8 +128,6 @@ router.patch(
   })
 );
 
-// ── Recommendation context (internal service-to-service, no PII leak) ─────────
-// Returns only the fields needed for recommendation scoring.
 router.get(
   '/recommendation-context/:userId',
   asyncHandler(async (req, res) => {
@@ -109,26 +148,168 @@ router.get(
   })
 );
 
-// ── Public profile by userId ──────────────────────────────────────────────────
-// Used by MessagesPage, EventDetailPage speaker links, etc.
+router.get(
+  '/organizers/:organizerId/followers',
+  asyncHandler(async (req, res) => {
+    if (req.headers['x-service-name'] !== 'notification-service') {
+      throw new AppError('Forbidden', 403, 'forbidden');
+    }
+
+    const organizerProfile = await getOrganizerProfileOrThrow(req.params.organizerId);
+
+    const followers = await UserProfile.find({
+      followingOrganizerIds: req.params.organizerId,
+      isActive: true
+    })
+      .select('userId email displayName')
+      .lean();
+
+    sendSuccess(res, {
+      organizer: {
+        userId: organizerProfile.userId,
+        displayName: organizerProfile.displayName,
+        avatarUrl: organizerProfile.avatarUrl,
+        followersCount: organizerProfile.followersCount || 0,
+        organizerProfile: organizerProfile.organizerProfile || {}
+      },
+      followers
+    });
+  })
+);
+
+router.post(
+  '/organizers/:organizerId/follow',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const organizerId = req.params.organizerId;
+    if (organizerId === req.user.sub) {
+      throw new AppError('You cannot follow yourself', 409, 'cannot_follow_self');
+    }
+
+    const [viewerProfile, organizerProfile] = await Promise.all([
+      UserProfile.findOne({ userId: req.user.sub }).select('userId'),
+      getOrganizerProfileOrThrow(organizerId)
+    ]);
+
+    if (!viewerProfile) {
+      throw new AppError('Profile not found', 404, 'profile_not_found');
+    }
+
+    const updateResult = await UserProfile.updateOne(
+      {
+        userId: req.user.sub,
+        followingOrganizerIds: { $ne: organizerId }
+      },
+      {
+        $addToSet: {
+          followingOrganizerIds: organizerId
+        }
+      }
+    );
+
+    let followersCount = organizerProfile.followersCount || 0;
+    if (updateResult.modifiedCount > 0) {
+      followersCount += 1;
+      await UserProfile.updateOne(
+        { userId: organizerId },
+        {
+          $inc: { followersCount: 1 }
+        }
+      );
+    }
+
+    sendSuccess(res, {
+      organizerId,
+      isFollowing: true,
+      followersCount
+    });
+  })
+);
+
+router.delete(
+  '/organizers/:organizerId/follow',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const organizerId = req.params.organizerId;
+    if (organizerId === req.user.sub) {
+      throw new AppError('You cannot unfollow yourself', 409, 'cannot_unfollow_self');
+    }
+
+    const [viewerProfile, organizerProfile] = await Promise.all([
+      UserProfile.findOne({ userId: req.user.sub }).select('userId'),
+      getOrganizerProfileOrThrow(organizerId)
+    ]);
+
+    if (!viewerProfile) {
+      throw new AppError('Profile not found', 404, 'profile_not_found');
+    }
+
+    const updateResult = await UserProfile.updateOne(
+      {
+        userId: req.user.sub,
+        followingOrganizerIds: organizerId
+      },
+      {
+        $pull: {
+          followingOrganizerIds: organizerId
+        }
+      }
+    );
+
+    let followersCount = organizerProfile.followersCount || 0;
+    if (updateResult.modifiedCount > 0) {
+      followersCount = Math.max(0, followersCount - 1);
+      await UserProfile.updateOne(
+        {
+          userId: organizerId,
+          followersCount: { $gt: 0 }
+        },
+        {
+          $inc: { followersCount: -1 }
+        }
+      );
+    }
+
+    sendSuccess(res, {
+      organizerId,
+      isFollowing: false,
+      followersCount
+    });
+  })
+);
+
 router.get(
   '/profile/:userId',
   asyncHandler(async (req, res) => {
-    const profile = await UserProfile.findOne({ userId: req.params.userId, isActive: true })
-      .select('userId displayName avatarUrl bio role verifiedOrganizer interests socialLinks location organizerProfile')
+    const profile = await UserProfile.findOne({
+      userId: req.params.userId,
+      isActive: true
+    })
+      .select(PUBLIC_PROFILE_FIELDS)
       .lean();
 
     if (!profile) {
       throw new AppError('User not found', 404, 'user_not_found');
     }
 
-    sendSuccess(res, profile);
+    const viewer = decodeOptionalToken(req);
+    const canFollowOrganizer = isFollowableOrganizer(profile) && viewer?.sub !== profile.userId;
+    const isFollowingOrganizer = canFollowOrganizer
+      ? await getFollowState({
+          viewerId: viewer?.sub,
+          organizerId: profile.userId
+        })
+      : false;
+
+    sendSuccess(res, {
+      ...profile,
+      followersCount: profile.followersCount || 0,
+      canFollowOrganizer,
+      isFollowingOrganizer
+    });
   })
 );
 
-// ── Admin: list / search all users ───────────────────────────────────────────
-// FIX: was using $text which doesn't index email. Now uses $or regex so admins
-// can search by name OR email reliably.
 router.get(
   '/',
   authenticate(),
@@ -151,20 +332,16 @@ router.get(
     const page = Math.max(1, Number(req.query.page || 1));
     const limit = Math.min(50, Math.max(1, Number(req.query.limit || 50)));
 
-    const [users, total] = await Promise.all([
-      UserProfile.find(filters)
-        .sort({ createdAt: -1 })
-        .skip((page - 1) * limit)
-        .limit(limit)
-        .lean(),
-      UserProfile.countDocuments(filters)
-    ]);
+    const users = await UserProfile.find(filters)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean();
 
     sendSuccess(res, users);
   })
 );
 
-// ── Admin: update user role / active status ───────────────────────────────────
 router.patch(
   '/:userId/role',
   authenticate(),
@@ -193,7 +370,6 @@ router.patch(
   })
 );
 
-// ── Organizer verification flow ───────────────────────────────────────────────
 router.post(
   '/organizer-verifications',
   authenticate(),

@@ -171,6 +171,15 @@ const SpeakerRow = ({ speaker, index, onChange, onRemove }) => (
   </div>
 );
 
+const ReferralMetric = ({ label, value, accent = 'text-ink' }) => (
+  <div className="rounded-[24px] border border-ink/8 bg-white px-4 py-4">
+    <p className="text-xs uppercase tracking-[0.2em] text-ink/45">{label}</p>
+    <p className={`mt-2 font-display text-3xl ${accent}`}>{value}</p>
+  </div>
+);
+
+const formatPercent = (value) => `${Number(value || 0).toFixed(1)}%`;
+
 const DashboardPage = () => {
   const dispatch = useDispatch();
   const { dashboard, saving, error: sliceError } = useSelector((state) => state.events);
@@ -186,6 +195,9 @@ const DashboardPage = () => {
   const [aiError, setAiError] = useState(null);
   const [organizerAnalytics, setOrganizerAnalytics] = useState(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(true);
+  const [referralAnalytics, setReferralAnalytics] = useState(null);
+  const [referralLoading, setReferralLoading] = useState(true);
+  const [copiedReferralEventId, setCopiedReferralEventId] = useState(null);
   const coverInputRef = useRef(null);
 
   const refreshOrganizerAnalytics = async () => {
@@ -200,10 +212,23 @@ const DashboardPage = () => {
     }
   };
 
+  const refreshReferralAnalytics = async () => {
+    setReferralLoading(true);
+    try {
+      const response = await api.get('/api/bookings/analytics/referrals/organizer');
+      setReferralAnalytics(response.data.data);
+    } catch {
+      setReferralAnalytics(null);
+    } finally {
+      setReferralLoading(false);
+    }
+  };
+
   const refreshDashboard = async () => {
     await Promise.all([
       dispatch(fetchOrganizerDashboard()),
-      refreshOrganizerAnalytics()
+      refreshOrganizerAnalytics(),
+      refreshReferralAnalytics()
     ]);
   };
 
@@ -408,6 +433,22 @@ const DashboardPage = () => {
     setConfirmDelete(null);
   };
 
+  const handleCopyReferralLink = async (eventId, referralLink) => {
+    if (!referralLink) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(referralLink);
+      setCopiedReferralEventId(eventId);
+      setTimeout(() => {
+        setCopiedReferralEventId((current) => (current === eventId ? null : current));
+      }, 2000);
+    } catch {
+      // Ignore clipboard failures in unsupported environments.
+    }
+  };
+
   const totals = dashboard?.totals || {};
   const formTabs = [
     { key: 'details', label: 'Event Details' },
@@ -435,6 +476,128 @@ const DashboardPage = () => {
         description={analyticsLoading ? 'Loading organizer analytics...' : 'Real booking and attendee trends across your events.'}
         analytics={organizerAnalytics}
       />
+
+      <section className="space-y-6">
+        <SectionHeader
+          eyebrow="Referrals"
+          title="Affiliate performance"
+          description={
+            referralLoading
+              ? 'Loading referral analytics...'
+              : 'Share each event-specific referral link and track which events convert attention into bookings.'
+          }
+        />
+
+        {referralAnalytics ? (
+          <>
+            <div className="grid gap-4 md:grid-cols-5">
+              <ReferralMetric
+                label="Active Links"
+                value={referralAnalytics.totals?.activeReferralLinks || 0}
+              />
+              <ReferralMetric
+                label="Link Opens"
+                value={referralAnalytics.totals?.linkOpens || 0}
+                accent="text-dusk"
+              />
+              <ReferralMetric
+                label="Referred Bookings"
+                value={referralAnalytics.totals?.referredBookings || 0}
+                accent="text-reef"
+              />
+              <ReferralMetric
+                label="Referral Revenue"
+                value={formatCurrency(referralAnalytics.totals?.revenue || 0)}
+                accent="text-ember"
+              />
+              <ReferralMetric
+                label="Conversion"
+                value={formatPercent(referralAnalytics.totals?.conversionRate || 0)}
+              />
+            </div>
+
+            <div className="rounded-[32px] border border-ink/10 bg-white/80 p-6 shadow-bloom">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h2 className="font-display text-3xl text-ink">Referral links by event</h2>
+                  <p className="mt-2 text-sm text-ink/60">
+                    Every event gets a unique organizer share link. Bookings completed through that link are tracked here.
+                  </p>
+                </div>
+                <span className="rounded-full bg-dusk/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-dusk">
+                  {referralAnalytics.events?.length || 0} tracked events
+                </span>
+              </div>
+
+              <div className="mt-6 space-y-4">
+                {referralAnalytics.events?.map((item) => (
+                  <div key={item.eventId} className="rounded-[24px] border border-ink/10 bg-sand/55 p-5">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="font-display text-2xl text-ink">{item.title}</h3>
+                          <span className="rounded-full border border-ink/10 bg-white px-2 py-0.5 text-xs text-ink/50">
+                            {item.referralCode || 'Pending link'}
+                          </span>
+                        </div>
+                        <p className="mt-2 truncate text-sm text-ink/55">{item.referralLink || 'Referral link unavailable'}</p>
+                        <p className="mt-2 text-xs uppercase tracking-[0.18em] text-ink/40">
+                          {item.lastReferredAt ? `Last referred booking ${formatDate(item.lastReferredAt)}` : 'No referred bookings yet'}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        {item.referralLink && (
+                          <button
+                            type="button"
+                            onClick={() => handleCopyReferralLink(item.eventId, item.referralLink)}
+                            className="rounded-full border border-ink/15 bg-white px-4 py-2 text-xs font-semibold text-ink hover:bg-sand"
+                          >
+                            {copiedReferralEventId === item.eventId ? 'Copied link' : 'Copy link'}
+                          </button>
+                        )}
+                        <Link
+                          to={`/events/${item.eventId}`}
+                          className="rounded-full border border-dusk/20 bg-dusk/5 px-4 py-2 text-xs font-semibold text-dusk hover:bg-dusk/10"
+                        >
+                          View event
+                        </Link>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 grid gap-4 md:grid-cols-5">
+                      <div className="rounded-2xl bg-white px-4 py-3">
+                        <p className="text-xs uppercase tracking-[0.18em] text-ink/45">Link opens</p>
+                        <p className="mt-2 font-semibold text-ink">{item.linkOpens || 0}</p>
+                      </div>
+                      <div className="rounded-2xl bg-white px-4 py-3">
+                        <p className="text-xs uppercase tracking-[0.18em] text-ink/45">Bookings</p>
+                        <p className="mt-2 font-semibold text-ink">{item.referredBookings || 0}</p>
+                      </div>
+                      <div className="rounded-2xl bg-white px-4 py-3">
+                        <p className="text-xs uppercase tracking-[0.18em] text-ink/45">Tickets sold</p>
+                        <p className="mt-2 font-semibold text-ink">{item.ticketsSold || 0}</p>
+                      </div>
+                      <div className="rounded-2xl bg-white px-4 py-3">
+                        <p className="text-xs uppercase tracking-[0.18em] text-ink/45">Revenue</p>
+                        <p className="mt-2 font-semibold text-ink">{formatCurrency(item.revenue || 0)}</p>
+                      </div>
+                      <div className="rounded-2xl bg-white px-4 py-3">
+                        <p className="text-xs uppercase tracking-[0.18em] text-ink/45">Conversion</p>
+                        <p className="mt-2 font-semibold text-ink">{formatPercent(item.conversionRate || 0)}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="rounded-[28px] border border-ink/10 bg-white/70 px-6 py-8 text-sm text-ink/55 shadow-bloom">
+            Referral analytics will show up here after organizer links start generating bookings.
+          </div>
+        )}
+      </section>
 
       <section className="grid gap-8 lg:grid-cols-[0.95fr,1.05fr]">
         <div className="space-y-6 rounded-[32px] border border-ink/10 bg-white/80 p-6 shadow-bloom">

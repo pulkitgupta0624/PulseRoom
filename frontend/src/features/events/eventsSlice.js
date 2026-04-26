@@ -19,9 +19,15 @@ export const fetchRecommendations = createAsyncThunk('events/fetchRecommendation
   }
 });
 
-export const fetchEventById = createAsyncThunk('events/fetchById', async (eventId, thunkApi) => {
+export const fetchEventById = createAsyncThunk('events/fetchById', async (input, thunkApi) => {
   try {
-    const response = await api.get(`/api/events/${eventId}`);
+    const eventId = typeof input === 'string' ? input : input?.eventId;
+    const params = typeof input === 'string'
+      ? undefined
+      : input?.referralCode
+        ? { ref: input.referralCode }
+        : input?.params;
+    const response = await api.get(`/api/events/${eventId}`, { params });
     return response.data.data;
   } catch (error) {
     return thunkApi.rejectWithValue(error.response?.data?.message || 'Unable to load event');

@@ -54,6 +54,17 @@ const bookingSchema = new mongoose.Schema(
       name: String,
       email: String
     },
+    referral: {
+      code: {
+        type: String,
+        index: true
+      },
+      referrerUserId: {
+        type: String,
+        index: true
+      },
+      trackedAt: Date
+    },
     eventSnapshot: {
       title: String,
       startsAt: Date,

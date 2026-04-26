@@ -20,6 +20,7 @@ const { buildInvoiceNumber } = require('../services/invoiceService');
 const { createPaymentIntent, createRefund, constructWebhookEvent } = require('../services/paymentService');
 const { buildTicketToken, serializeBooking } = require('../services/ticketService');
 const { buildBookingAnalytics, clampWindowDays } = require('../services/analyticsService');
+const { buildReferralAnalytics } = require('../services/referralAnalyticsService');
 const {
   serializeWaitlistEntry,
   getCommittedQuantity,
@@ -83,14 +84,14 @@ const finalizeSuccessfulPayment = async ({ booking, payment, req, providerPaymen
   return booking;
 };
 
-const getOrganizerEventIds = async (req) => {
+const getOrganizerEvents = async (req) => {
   const response = await req.clients.eventService.get('/api/events/organizer/dashboard', {
     headers: {
       Authorization: req.headers.authorization
     }
   });
 
-  return response.data.data.events.map((event) => event._id);
+  return response.data.data.events;
 };
 
 router.post(
@@ -128,7 +129,8 @@ router.get(
   authenticate(),
   authorize(Roles.ORGANIZER, Roles.ADMIN),
   asyncHandler(async (req, res) => {
-    const eventIds = await getOrganizerEventIds(req);
+    const events = await getOrganizerEvents(req);
+    const eventIds = events.map((event) => event._id);
 
     if (!eventIds.length) {
       return sendSuccess(
@@ -148,6 +150,44 @@ router.get(
       .lean();
 
     sendSuccess(res, buildBookingAnalytics({ bookings, days: req.query.days }));
+  })
+);
+
+router.get(
+  '/analytics/referrals/organizer',
+  authenticate(),
+  authorize(Roles.ORGANIZER, Roles.ADMIN),
+  asyncHandler(async (req, res) => {
+    const events = await getOrganizerEvents(req);
+    const eventIds = events.map((event) => event._id.toString());
+
+    if (!eventIds.length) {
+      return sendSuccess(
+        res,
+        buildReferralAnalytics({
+          bookings: [],
+          events: [],
+          days: req.query.days
+        })
+      );
+    }
+
+    const bookings = await Booking.find({
+      status: BookingStatus.CONFIRMED,
+      eventId: { $in: eventIds },
+      'referral.code': { $exists: true, $ne: null }
+    })
+      .select('eventId eventSnapshot amount quantity confirmedAt createdAt referral')
+      .lean();
+
+    sendSuccess(
+      res,
+      buildReferralAnalytics({
+        bookings,
+        events,
+        days: req.query.days
+      })
+    );
   })
 );
 
@@ -308,6 +348,14 @@ router.post(
       throw new AppError('Ticket tier not found', 404, 'tier_not_found');
     }
 
+    const normalizedReferralCode = req.body.referralCode?.trim();
+    const referralCode =
+      normalizedReferralCode &&
+      event.referral?.code === normalizedReferralCode &&
+      req.user.sub !== event.organizerId
+        ? event.referral.code
+        : null;
+
     let waitlistOffer = null;
     let quantity = req.body.quantity;
     let attendee = req.body.attendee;
@@ -347,6 +395,15 @@ router.post(
       amount,
       currency: tier.currency || 'INR',
       attendee,
+      ...(referralCode
+        ? {
+            referral: {
+              code: referralCode,
+              referrerUserId: event.organizerId,
+              trackedAt: new Date()
+            }
+          }
+        : {}),
       reservationExpiresAt: new Date(Date.now() + 15 * 60 * 1000),
       eventSnapshot: {
         title: event.title,

@@ -24,6 +24,11 @@ const { slugify } = require('../services/slugify');
 const { generateEventDraft, answerEventQuestion } = require('../services/aiAssistant');
 const { buildCalendarFile, buildCalendarFileName } = require('../services/calendarService');
 const { buildPriceSummary } = require('../services/searchService');
+const {
+  buildReferralCode,
+  ensureEventReferralCode,
+  serializeEventForViewer
+} = require('../services/referralService');
 
 const router = express.Router();
 
@@ -34,8 +39,10 @@ const cacheKeyFromQuery = (query) => `events:list:${JSON.stringify(query)}`;
 const normalizeSearchResult = (events, limit) => ({
   items: events.map((event) => {
     const priceSummary = buildPriceSummary(event.ticketTiers || []);
+    const eventItem = { ...event };
+    delete eventItem.referral;
     return {
-      ...event,
+      ...eventItem,
       lowestPrice: priceSummary.lowestPrice,
       lowestPriceCurrency: priceSummary.lowestPriceCurrency,
       isFree: priceSummary.isFree
@@ -112,17 +119,26 @@ router.get(
   authorize(Roles.ORGANIZER, Roles.ADMIN),
   asyncHandler(async (req, res) => {
     const filter = req.user.role === Roles.ADMIN ? {} : { organizerId: req.user.sub };
-    const events = await Event.find(filter).sort({ startsAt: 1 }).lean();
-    const totalRevenue = events.reduce((sum, item) => sum + (item.analytics?.revenue || 0), 0);
+    const events = await Event.find(filter).sort({ startsAt: 1 });
+    await Promise.all(events.map((event) => ensureEventReferralCode(event)));
+
+    const serializedEvents = events.map((event) =>
+      serializeEventForViewer({
+        event,
+        viewer: req.user,
+        appOrigin: req.config.appOrigin
+      })
+    );
+    const totalRevenue = serializedEvents.reduce((sum, item) => sum + (item.analytics?.revenue || 0), 0);
 
     sendSuccess(res, {
       totals: {
-        events: events.length,
-        published: events.filter((item) => item.status === 'published').length,
-        upcoming: events.filter((item) => new Date(item.startsAt) > new Date()).length,
+        events: serializedEvents.length,
+        published: serializedEvents.filter((item) => item.status === 'published').length,
+        upcoming: serializedEvents.filter((item) => new Date(item.startsAt) > new Date()).length,
         revenue: totalRevenue
       },
-      events
+      events: serializedEvents
     });
   })
 );
@@ -158,8 +174,10 @@ router.get(
         const matchingTags = event.tags.filter((tag) => context.interests.includes(tag)).length;
         const matchingCategories = event.categories.filter((category) => context.interests.includes(category)).length;
         const popularityScore = Math.min(event.attendeesCount / 10, 15);
+        const publicEvent = { ...event };
+        delete publicEvent.referral;
         return {
-          ...event,
+          ...publicEvent,
           recommendationScore: matchingTags * 6 + matchingCategories * 8 + popularityScore
         };
       })
@@ -277,7 +295,11 @@ router.post(
     const event = await Event.create({
       ...req.body,
       organizerId: req.user.sub,
-      slug: `${slugBase}-${crypto.randomBytes(3).toString('hex')}`
+      slug: `${slugBase}-${crypto.randomBytes(3).toString('hex')}`,
+      referral: {
+        code: buildReferralCode(req.body.title),
+        clicks: 0
+      }
     });
 
     await syncSearchDocument(req, event);
@@ -350,21 +372,58 @@ router.get(
 router.get(
   '/:eventId',
   asyncHandler(async (req, res) => {
-    const event = await Event.findById(req.params.eventId).lean();
+    const viewer = decodeOptionalToken(req);
+    const event = await Event.findById(req.params.eventId);
     if (!event) {
       throw new AppError('Event not found', 404, 'event_not_found');
     }
 
     if (event.visibility === EventVisibility.PRIVATE) {
-      const viewer = decodeOptionalToken(req);
       const canAccessPrivateEvent = viewer && (viewer.sub === event.organizerId || viewer.role === Roles.ADMIN);
       if (!canAccessPrivateEvent) {
         throw new AppError('Event not available', 403, 'event_private');
       }
     }
 
-    await Event.updateOne({ _id: event._id }, { $inc: { 'analytics.views': 1 } });
-    sendSuccess(res, event);
+    const isReferralVisit =
+      Boolean(req.query.ref) &&
+      event.referral?.code === req.query.ref &&
+      viewer?.sub !== event.organizerId;
+
+    if (!event.referral?.code && viewer && (viewer.sub === event.organizerId || viewer.role === Roles.ADMIN)) {
+      await ensureEventReferralCode(event);
+    }
+
+    await Event.updateOne(
+      { _id: event._id },
+      {
+        $inc: {
+          'analytics.views': 1,
+          ...(isReferralVisit ? { 'referral.clicks': 1 } : {})
+        }
+      }
+    );
+
+    if (isReferralVisit) {
+      event.referral = {
+        ...(event.referral || {}),
+        clicks: Number(event.referral?.clicks || 0) + 1
+      };
+    }
+    event.analytics = {
+      ...(event.analytics || {}),
+      views: Number(event.analytics?.views || 0) + 1
+    };
+
+    sendSuccess(
+      res,
+      serializeEventForViewer({
+        event,
+        viewer,
+        appOrigin: req.config.appOrigin,
+        includeReferral: req.headers['x-service-name'] === 'booking-service'
+      })
+    );
   })
 );
 
@@ -415,8 +474,21 @@ router.post(
       throw new AppError('Forbidden', 403, 'forbidden');
     }
 
+    if (event.status === 'published') {
+      await ensureEventReferralCode(event);
+      return sendSuccess(
+        res,
+        serializeEventForViewer({
+          event,
+          viewer: req.user,
+          appOrigin: req.config.appOrigin
+        })
+      );
+    }
+
     event.status = 'published';
     await event.save();
+    await ensureEventReferralCode(event);
 
     await syncSearchDocument(req, event);
     await syncCompletionSchedule(req, event);
@@ -425,10 +497,18 @@ router.post(
       eventId: event._id.toString(),
       title: event.title,
       organizerId: event.organizerId,
-      startsAt: event.startsAt
+      startsAt: event.startsAt,
+      visibility: event.visibility
     });
 
-    sendSuccess(res, event);
+    sendSuccess(
+      res,
+      serializeEventForViewer({
+        event,
+        viewer: req.user,
+        appOrigin: req.config.appOrigin
+      })
+    );
   })
 );
 
@@ -446,7 +526,8 @@ router.post(
       throw new AppError('Forbidden', 403, 'forbidden');
     }
 
-    const wasCompleted = event.status === 'completed';
+    const previousStatus = event.status;
+    const wasCompleted = previousStatus === 'completed';
     event.status = req.body.status;
     await event.save();
 
@@ -469,7 +550,25 @@ router.post(
       status: event.status
     });
 
-    sendSuccess(res, event);
+    if (previousStatus !== 'published' && event.status === 'published') {
+      await ensureEventReferralCode(event);
+      await req.eventBus.publish(DomainEvents.EVENT_PUBLISHED, {
+        eventId: event._id.toString(),
+        title: event.title,
+        organizerId: event.organizerId,
+        startsAt: event.startsAt,
+        visibility: event.visibility
+      });
+    }
+
+    sendSuccess(
+      res,
+      serializeEventForViewer({
+        event,
+        viewer: req.user,
+        appOrigin: req.config.appOrigin
+      })
+    );
   })
 );
 

@@ -136,6 +136,7 @@ const start = async () => {
   await eventBus.subscribe(
     [
       DomainEvents.BOOKING_CONFIRMED,
+      DomainEvents.EVENT_PUBLISHED,
       DomainEvents.EVENT_UPDATED,
       DomainEvents.ANNOUNCEMENT_POSTED,
       DomainEvents.WAITLIST_JOINED,
@@ -249,6 +250,55 @@ const start = async () => {
           title: `Your waitlist hold expired for ${payload.eventTitle}`,
           body: 'The 15-minute claim window ended. You can rejoin the waitlist if more spots open later.'
         });
+      }
+
+      if (event === DomainEvents.EVENT_PUBLISHED) {
+        if (payload.visibility !== 'public') {
+          return;
+        }
+
+        try {
+          const response = await userServiceClient.get(
+            `/api/users/organizers/${payload.organizerId}/followers`
+          );
+          const organizer = response.data.data.organizer;
+          const followers = response.data.data.followers || [];
+          const eventUrl = `${config.appOrigin.replace(/\/$/, '')}/events/${payload.eventId}`;
+          const title = `New event from ${organizer.displayName}: ${payload.title}`;
+          const startsAtLabel = new Date(payload.startsAt).toLocaleString();
+          const body = `${payload.title} is now live on PulseRoom and starts at ${startsAtLabel}.`;
+
+          for (const follower of followers) {
+            await createNotification({
+              userId: follower.userId,
+              eventId: payload.eventId,
+              email: follower.email,
+              type: 'organizer.new_event',
+              title,
+              body,
+              metadata: {
+                ctaUrl: eventUrl,
+                ctaLabel: 'View event',
+                organizerId: payload.organizerId
+              }
+            });
+
+            if (follower.email) {
+              await queue.add('send-email', {
+                to: follower.email,
+                subject: title,
+                html: `${queueEmailHtml(body)}<p><a href="${eventUrl}">View the event</a></p>`
+              });
+            }
+          }
+        } catch (error) {
+          logger.warn({
+            message: 'Failed to notify organizer followers',
+            organizerId: payload.organizerId,
+            eventId: payload.eventId,
+            error: error.message
+          });
+        }
       }
 
       if (event === DomainEvents.EVENT_UPDATED || event === DomainEvents.ANNOUNCEMENT_POSTED) {

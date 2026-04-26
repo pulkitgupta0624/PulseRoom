@@ -186,6 +186,15 @@ const eventSchema = new mongoose.Schema(
       type: Number,
       default: 0
     },
+    referral: {
+      code: {
+        type: String
+      },
+      clicks: {
+        type: Number,
+        default: 0
+      }
+    },
     analytics: {
       views: {
         type: Number,
@@ -213,5 +222,6 @@ eventSchema.index({
   categories: 'text',
   tags: 'text'
 });
+eventSchema.index({ 'referral.code': 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('Event', eventSchema);

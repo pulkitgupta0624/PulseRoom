@@ -49,6 +49,14 @@ const userProfileSchema = new mongoose.Schema(
       type: [String],
       default: []
     },
+    followingOrganizerIds: {
+      type: [String],
+      default: []
+    },
+    followersCount: {
+      type: Number,
+      default: 0
+    },
     socialLinks: {
       website: String,
       linkedin: String,
@@ -68,6 +76,6 @@ const userProfileSchema = new mongoose.Schema(
 );
 
 userProfileSchema.index({ displayName: 'text', bio: 'text', interests: 'text' });
+userProfileSchema.index({ followingOrganizerIds: 1 });
 
 module.exports = mongoose.model('UserProfile', userProfileSchema);
-
