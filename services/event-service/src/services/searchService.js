@@ -228,6 +228,12 @@ class EventSearchService {
       filters.push(`city:=${quoteFilterValue(params.city)}`);
     }
 
+    // ── NEW: filter by organizer ──────────────────────────────────────────────
+    if (params.organizerId) {
+      filters.push(`organizerId:=${quoteFilterValue(params.organizerId)}`);
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     if (params.minPrice) {
       filters.push(`lowestPrice:>=${Number(params.minPrice)}`);
     }

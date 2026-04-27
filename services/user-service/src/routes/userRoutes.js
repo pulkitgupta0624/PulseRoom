@@ -65,6 +65,7 @@ const getOrganizerProfileOrThrow = async (organizerId) => {
   return organizerProfile;
 };
 
+// ── GET /me ───────────────────────────────────────────────────────────────────
 router.get(
   '/me',
   authenticate(),
@@ -77,6 +78,45 @@ router.get(
   })
 );
 
+// ── GET /me/following ─────────────────────────────────────────────────────────
+// Returns the full public profiles of every organizer the current user follows.
+// Used by ProfilePage "Following" tab and OrganizerProfilePage.
+router.get(
+  '/me/following',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    // 1. Load only the IDs array — avoids fetching the entire profile document
+    const myProfile = await UserProfile.findOne({ userId: req.user.sub })
+      .select('followingOrganizerIds')
+      .lean();
+
+    if (!myProfile?.followingOrganizerIds?.length) {
+      return sendSuccess(res, []);
+    }
+
+    // 2. Batch-resolve all followed organizer profiles in a single query
+    const organizers = await UserProfile.find({
+      userId: { $in: myProfile.followingOrganizerIds },
+      isActive: true
+    })
+      .select(PUBLIC_PROFILE_FIELDS)
+      .lean();
+
+    // 3. Attach follow-state flags consumed by the frontend so it doesn't need
+    //    extra round trips to determine button state
+    sendSuccess(
+      res,
+      organizers.map((org) => ({
+        ...org,
+        followersCount: org.followersCount || 0,
+        isFollowingOrganizer: true,
+        canFollowOrganizer: true
+      }))
+    );
+  })
+);
+
+// ── GET /search ───────────────────────────────────────────────────────────────
 router.get(
   '/search',
   authenticate(),
@@ -102,6 +142,7 @@ router.get(
   })
 );
 
+// ── PATCH /me ─────────────────────────────────────────────────────────────────
 router.patch(
   '/me',
   authenticate(),
@@ -128,6 +169,7 @@ router.patch(
   })
 );
 
+// ── GET /recommendation-context/:userId ───────────────────────────────────────
 router.get(
   '/recommendation-context/:userId',
   asyncHandler(async (req, res) => {
@@ -148,6 +190,7 @@ router.get(
   })
 );
 
+// ── GET /organizers/:organizerId/followers ────────────────────────────────────
 router.get(
   '/organizers/:organizerId/followers',
   asyncHandler(async (req, res) => {
@@ -177,6 +220,7 @@ router.get(
   })
 );
 
+// ── POST /organizers/:organizerId/follow ──────────────────────────────────────
 router.post(
   '/organizers/:organizerId/follow',
   authenticate(),
@@ -226,6 +270,7 @@ router.post(
   })
 );
 
+// ── DELETE /organizers/:organizerId/follow ────────────────────────────────────
 router.delete(
   '/organizers/:organizerId/follow',
   authenticate(),
@@ -278,6 +323,7 @@ router.delete(
   })
 );
 
+// ── GET /profile/:userId ──────────────────────────────────────────────────────
 router.get(
   '/profile/:userId',
   asyncHandler(async (req, res) => {
@@ -310,6 +356,7 @@ router.get(
   })
 );
 
+// ── GET / (admin: list all users) ─────────────────────────────────────────────
 router.get(
   '/',
   authenticate(),
@@ -342,6 +389,7 @@ router.get(
   })
 );
 
+// ── PATCH /:userId/role (admin) ───────────────────────────────────────────────
 router.patch(
   '/:userId/role',
   authenticate(),
@@ -370,6 +418,7 @@ router.patch(
   })
 );
 
+// ── POST /organizer-verifications ─────────────────────────────────────────────
 router.post(
   '/organizer-verifications',
   authenticate(),
@@ -398,6 +447,7 @@ router.post(
   })
 );
 
+// ── GET /organizer-verifications (admin) ──────────────────────────────────────
 router.get(
   '/organizer-verifications',
   authenticate(),
@@ -408,6 +458,7 @@ router.get(
   })
 );
 
+// ── PATCH /organizer-verifications/:requestId (admin) ────────────────────────
 router.patch(
   '/organizer-verifications/:requestId',
   authenticate(),

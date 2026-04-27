@@ -12,6 +12,7 @@ import BookingsPage from '../pages/BookingsPage';
 import MessagesPage from '../pages/MessagesPage';
 import CheckInPage from '../pages/CheckInPage';
 import NotFoundPage from '../pages/NotFoundPage';
+import OrganizerProfilePage from '../pages/OrganizerProfilePage'; 
 
 export const router = createBrowserRouter([
   {
@@ -53,6 +54,7 @@ export const router = createBrowserRouter([
         path: 'messages/:userId',
         element: <ProtectedRoute><MessagesPage /></ProtectedRoute>
       },
+      { path: 'organizers/:organizerId', element: <OrganizerProfilePage /> },
       { path: '*', element: <NotFoundPage /> }
     ]
   }
