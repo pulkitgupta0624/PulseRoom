@@ -1,5 +1,10 @@
 const crypto = require('crypto');
 const { slugify } = require('./slugify');
+const {
+  buildSponsorApplicationLink,
+  filterSponsorPackagesForViewer,
+  filterSponsorsForViewer
+} = require('./sponsorService');
 
 const DEFAULT_REFERRAL_DISCOUNT_TYPE = 'percentage';
 const DEFAULT_REFERRAL_DISCOUNT_VALUE = 10;
@@ -172,6 +177,16 @@ const serializeEventForViewer = ({
 
   if (!canViewReferralData) {
     delete raw.referral;
+  }
+
+  raw.sponsorPackages = filterSponsorPackagesForViewer(raw.sponsorPackages || [], {
+    viewerIsOwner
+  });
+  raw.sponsors = filterSponsorsForViewer(raw.sponsors || [], {
+    viewerIsOwner
+  });
+  if (raw.sponsorPackages.length > 0) {
+    raw.sponsorApplicationLink = buildSponsorApplicationLink(raw._id, appOrigin);
   }
 
   if (canViewReferralLink && raw.referral?.code) {

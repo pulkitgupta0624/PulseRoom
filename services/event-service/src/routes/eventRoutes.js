@@ -25,6 +25,10 @@ const { generateEventDraft, answerEventQuestion } = require('../services/aiAssis
 const { buildCalendarFile, buildCalendarFileName } = require('../services/calendarService');
 const { buildPriceSummary } = require('../services/searchService');
 const {
+  buildSponsorRevenueSummary,
+  syncSponsorPackageSlots
+} = require('../services/sponsorService');
+const {
   buildReferralRecord,
   ensureActiveReferralCode,
   rotateReferralCode,
@@ -43,6 +47,8 @@ const normalizeSearchResult = (events, limit) => ({
     const priceSummary = buildPriceSummary(event.ticketTiers || []);
     const eventItem = { ...event };
     delete eventItem.referral;
+    delete eventItem.sponsors;
+    delete eventItem.sponsorPackages;
     return {
       ...eventItem,
       lowestPrice: priceSummary.lowestPrice,
@@ -123,23 +129,35 @@ router.get(
     const filter = req.user.role === Roles.ADMIN ? {} : { organizerId: req.user.sub };
     const events = await Event.find(filter).sort({ startsAt: 1 });
     await Promise.all(events.map((event) => ensureActiveReferralCode(event)));
+    events.forEach((event) => syncSponsorPackageSlots(event));
 
-    const serializedEvents = events.map((event) =>
-      serializeEventForViewer({
+    const serializedEvents = events.map((event) => {
+      const serializedEvent = serializeEventForViewer({
         event,
         viewer: req.user,
         appOrigin: req.config.appOrigin,
         includeReferralLink: true
-      })
+      });
+      return {
+        ...serializedEvent,
+        sponsorSummary: buildSponsorRevenueSummary(serializedEvent.sponsors || [])
+      };
+    }
     );
     const totalRevenue = serializedEvents.reduce((sum, item) => sum + (item.analytics?.revenue || 0), 0);
+    const totalSponsorRevenue = serializedEvents.reduce(
+      (sum, item) => sum + (item.sponsorSummary?.grossRevenue || 0),
+      0
+    );
 
     sendSuccess(res, {
       totals: {
         events: serializedEvents.length,
         published: serializedEvents.filter((item) => item.status === 'published').length,
         upcoming: serializedEvents.filter((item) => new Date(item.startsAt) > new Date()).length,
-        revenue: totalRevenue
+        revenue: totalRevenue,
+        sponsorRevenue: totalSponsorRevenue,
+        totalRevenue: totalRevenue + totalSponsorRevenue
       },
       events: serializedEvents
     });
@@ -393,6 +411,8 @@ router.get(
         throw new AppError('Event not available', 403, 'event_private');
       }
     }
+
+    syncSponsorPackageSlots(event);
 
     const isReferralVisit =
       Boolean(req.query.ref) &&

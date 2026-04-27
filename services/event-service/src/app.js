@@ -1,5 +1,6 @@
 const { buildExpressApp, buildLogger, notFoundHandler, errorHandler, createServiceClient } = require('@pulseroom/common');
 const eventRoutes = require('./routes/eventRoutes');
+const sponsorRoutes = require('./routes/sponsorRoutes');
 const config = require('./config');
 
 const logger = buildLogger('event-service');
@@ -22,6 +23,7 @@ const createApp = ({ eventBus, cache, services = {} }) => {
     next();
   });
 
+  app.use('/api/events', sponsorRoutes);
   app.use('/api/events', eventRoutes);
   app.use(notFoundHandler);
   app.use(errorHandler(logger));

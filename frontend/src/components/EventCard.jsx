@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import clsx from 'clsx';
 import { formatCurrency, formatDate } from '../lib/formatters';
+import OrganizerBadge from './OrganizerBadge';
 
 const EventCard = ({ event, compact = false }) => {
   const lowestTier = [...(event.ticketTiers || [])].sort((left, right) => left.price - right.price)[0];
@@ -33,6 +34,11 @@ const EventCard = ({ event, compact = false }) => {
       </div>
 
       <div className="space-y-2">
+        {event.organizerId && (
+          <div className="flex items-center gap-3">
+            <OrganizerBadge organizerId={event.organizerId} size="sm" />
+          </div>
+        )}
         <div className="flex flex-wrap gap-2">
           {(event.categories || []).map((category) => (
             <span key={category} className="rounded-full bg-reef/10 px-3 py-1 text-xs font-semibold text-reef">

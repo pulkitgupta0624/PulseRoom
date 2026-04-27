@@ -151,4 +151,21 @@ router.post(
   })
 );
 
+router.post(
+  '/sponsor-logo',
+  upload.single('file'),
+  asyncHandler(async (req, res) => {
+    if (!req.file) {
+      throw new AppError('No file uploaded', 400, 'missing_file');
+    }
+
+    const result = await uploadBuffer(req.file.buffer, req.file.mimetype, {
+      folder: 'pulseroom/sponsors',
+      transformation: [{ width: 600, height: 600, crop: 'fit', background: 'white', pad: true }]
+    });
+
+    sendSuccess(res, { url: result.secure_url });
+  })
+);
+
 module.exports = router;

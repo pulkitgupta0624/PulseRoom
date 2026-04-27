@@ -78,6 +78,162 @@ const ticketTierSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const sponsorPackageSchema = new mongoose.Schema(
+  {
+    packageId: {
+      type: String,
+      required: true
+    },
+    tier: {
+      type: String,
+      enum: ['gold', 'silver', 'bronze', 'custom'],
+      default: 'custom'
+    },
+    name: {
+      type: String,
+      required: true
+    },
+    description: String,
+    price: {
+      type: Number,
+      default: 0
+    },
+    currency: {
+      type: String,
+      default: 'INR'
+    },
+    maxSlots: {
+      type: Number,
+      required: true
+    },
+    slotsUsed: {
+      type: Number,
+      default: 0
+    },
+    perks: {
+      type: [String],
+      default: []
+    },
+    paymentLinkUrl: String,
+    paymentInstructions: String,
+    isActive: {
+      type: Boolean,
+      default: true
+    },
+    showOnEventPage: {
+      type: Boolean,
+      default: true
+    },
+    showInLiveRoom: {
+      type: Boolean,
+      default: true
+    },
+    showInEmails: {
+      type: Boolean,
+      default: false
+    },
+    featuredCallout: {
+      type: Boolean,
+      default: false
+    }
+  },
+  { _id: false }
+);
+
+const sponsorSchema = new mongoose.Schema(
+  {
+    sponsorId: {
+      type: String,
+      required: true
+    },
+    applicationId: String,
+    packageId: String,
+    tier: {
+      type: String,
+      enum: ['gold', 'silver', 'bronze', 'custom'],
+      default: 'custom'
+    },
+    packageName: {
+      type: String,
+      required: true
+    },
+    price: {
+      type: Number,
+      default: 0
+    },
+    currency: {
+      type: String,
+      default: 'INR'
+    },
+    companyName: {
+      type: String,
+      required: true
+    },
+    logoUrl: String,
+    description: String,
+    boothUrl: String,
+    websiteUrl: String,
+    contactName: String,
+    contactEmail: String,
+    showOnEventPage: {
+      type: Boolean,
+      default: true
+    },
+    showInLiveRoom: {
+      type: Boolean,
+      default: true
+    },
+    showInEmails: {
+      type: Boolean,
+      default: false
+    },
+    featuredCallout: {
+      type: Boolean,
+      default: false
+    },
+    status: {
+      type: String,
+      enum: ['pending', 'approved', 'active', 'rejected'],
+      default: 'pending'
+    },
+    approvedAt: Date,
+    activatedAt: Date,
+    paymentStatus: {
+      type: String,
+      enum: ['unpaid', 'paid', 'refunded'],
+      default: 'unpaid'
+    },
+    paymentId: String,
+    payout: {
+      grossAmount: {
+        type: Number,
+        default: 0
+      },
+      platformFeePercent: {
+        type: Number,
+        default: 5
+      },
+      platformFeeAmount: {
+        type: Number,
+        default: 0
+      },
+      organizerNetAmount: {
+        type: Number,
+        default: 0
+      }
+    },
+    metrics: {
+      boothClicks: {
+        type: Number,
+        default: 0
+      }
+    },
+    createdAt: Date,
+    updatedAt: Date
+  },
+  { _id: false }
+);
+
 const eventSchema = new mongoose.Schema(
   {
     organizerId: {
@@ -162,6 +318,14 @@ const eventSchema = new mongoose.Schema(
     },
     ticketTiers: {
       type: [ticketTierSchema],
+      default: []
+    },
+    sponsorPackages: {
+      type: [sponsorPackageSchema],
+      default: []
+    },
+    sponsors: {
+      type: [sponsorSchema],
       default: []
     },
     featured: {

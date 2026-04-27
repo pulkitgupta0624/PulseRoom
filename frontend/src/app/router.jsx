@@ -4,6 +4,7 @@ import ProtectedRoute from '../components/ProtectedRoute';
 import HomePage from '../pages/HomePage';
 import AuthPage from '../pages/AuthPage';
 import EventDetailPage from '../pages/EventDetailPage';
+import SponsorApplicationPage from '../pages/SponsorApplicationPage';
 import DashboardPage from '../pages/DashboardPage';
 import LiveEventPage from '../pages/LiveEventPage';
 import AdminPage from '../pages/AdminPage';
@@ -22,6 +23,7 @@ export const router = createBrowserRouter([
       { index: true, element: <HomePage /> },
       { path: 'auth', element: <AuthPage /> },
       { path: 'events/:eventId', element: <EventDetailPage /> },
+      { path: 'events/:eventId/sponsor', element: <SponsorApplicationPage /> },
       {
         path: 'events/:eventId/live',
         element: <ProtectedRoute><LiveEventPage /></ProtectedRoute>

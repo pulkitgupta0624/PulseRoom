@@ -5,6 +5,7 @@ import SectionHeader from '../components/SectionHeader';
 import EventCapacityBar from '../components/EventCapacityBar';
 import EventReportModal from '../components/EventReportModal';
 import AddToCalendarButton from '../components/AddToCalendarButton';
+import EventSponsorSection from '../components/EventSponsorSection';
 import { fetchEventById } from '../features/events/eventsSlice';
 import { api } from '../lib/api';
 import { formatCurrency, formatDate } from '../lib/formatters';
@@ -160,9 +161,9 @@ const EventDetailPage = () => {
       fetchEventById(
         shouldTrackReferral
           ? {
-              eventId,
-              referralCode: referralCodeFromLink
-            }
+            eventId,
+            referralCode: referralCodeFromLink
+          }
           : eventId
       )
     );
@@ -407,10 +408,10 @@ const EventDetailPage = () => {
       setOrganizerProfile((current) =>
         current
           ? {
-              ...current,
-              isFollowingOrganizer: followState.isFollowing,
-              followersCount: followState.followersCount
-            }
+            ...current,
+            isFollowingOrganizer: followState.isFollowing,
+            followersCount: followState.followersCount
+          }
           : current
       );
       setOrganizerStatus({
@@ -443,11 +444,12 @@ const EventDetailPage = () => {
   const isFree = event.ticketTiers?.every((tier) => tier.isFree || tier.price === 0);
   const minPrice = event.ticketTiers?.reduce((minimum, tier) => Math.min(minimum, tier.price), Infinity) || 0;
   const isPublished = event.status === 'published';
+  const canApplyForSponsorship = Boolean(event.sponsorPackages?.length);
   const canBook = Boolean(
     isPublished &&
-      user &&
-      selectedTier &&
-      (!isSelectedTierSoldOut || waitlistOfferActive)
+    user &&
+    selectedTier &&
+    (!isSelectedTierSoldOut || waitlistOfferActive)
   );
 
   return (
@@ -569,11 +571,10 @@ const EventDetailPage = () => {
                   type="button"
                   onClick={handleFollowToggle}
                   disabled={followLoading}
-                  className={`rounded-full px-4 py-2.5 text-sm font-semibold transition disabled:opacity-60 ${
-                    organizerProfile.isFollowingOrganizer
-                      ? 'border border-ink/10 bg-white text-ink'
-                      : 'bg-reef text-white'
-                  }`}
+                  className={`rounded-full px-4 py-2.5 text-sm font-semibold transition disabled:opacity-60 ${organizerProfile.isFollowingOrganizer
+                    ? 'border border-ink/10 bg-white text-ink'
+                    : 'bg-reef text-white'
+                    }`}
                 >
                   {followLoading
                     ? 'Updating...'
@@ -589,6 +590,14 @@ const EventDetailPage = () => {
                   Sign in to follow
                 </Link>
               ) : null}
+              {canApplyForSponsorship && (
+                <Link
+                  to={`/events/${eventId}/sponsor`}
+                  className="rounded-full border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-semibold text-amber-700 transition hover:bg-amber-100"
+                >
+                  Become a sponsor
+                </Link>
+              )}
               <ShareButton event={event} shareUrl={organizerShareUrl} />
             </div>
           </div>
@@ -643,11 +652,10 @@ const EventDetailPage = () => {
                   {event.ticketTiers.map((tier) => (
                     <label
                       key={tier.tierId}
-                      className={`block cursor-pointer rounded-2xl border px-4 py-3 transition ${
-                        selectedTier?.tierId === tier.tierId
-                          ? 'border-reef/40 bg-reef/5'
-                          : 'border-ink/10 bg-white/60 hover:border-ink/20'
-                      }`}
+                      className={`block cursor-pointer rounded-2xl border px-4 py-3 transition ${selectedTier?.tierId === tier.tierId
+                        ? 'border-reef/40 bg-reef/5'
+                        : 'border-ink/10 bg-white/60 hover:border-ink/20'
+                        }`}
                     >
                       <div className="flex items-center gap-3">
                         <input
@@ -758,9 +766,8 @@ const EventDetailPage = () => {
 
               {status && (
                 <p
-                  className={`rounded-2xl px-4 py-3 text-sm ${
-                    status.tone === 'success' ? 'bg-reef/10 text-reef' : 'bg-ember/10 text-ember'
-                  }`}
+                  className={`rounded-2xl px-4 py-3 text-sm ${status.tone === 'success' ? 'bg-reef/10 text-reef' : 'bg-ember/10 text-ember'
+                    }`}
                 >
                   {status.message}
                 </p>
@@ -820,48 +827,67 @@ const EventDetailPage = () => {
             title={organizerProfile.organizerProfile?.companyName || organizerProfile.displayName}
             description={organizerProfile.bio || 'Follow this organizer to hear about their next event drops.'}
             actions={
-              organizerProfile.canFollowOrganizer ? (
-                <button
-                  type="button"
-                  onClick={handleFollowToggle}
-                  disabled={followLoading}
-                  className={`rounded-full px-5 py-3 text-sm font-semibold transition disabled:opacity-60 ${
-                    organizerProfile.isFollowingOrganizer
-                      ? 'border border-ink/10 bg-sand text-ink'
-                      : 'bg-ink text-sand'
-                  }`}
-                >
-                  {followLoading
-                    ? 'Updating...'
-                    : organizerProfile.isFollowingOrganizer
-                      ? 'Following'
-                      : 'Follow organizer'}
-                </button>
-              ) : !user && ['organizer', 'admin'].includes(organizerProfile.role) ? (
+              <div className="flex flex-wrap items-center gap-2">
                 <Link
-                  to="/auth"
+                  to={`/organizers/${event.organizerId}`}
                   className="rounded-full border border-ink/10 bg-white px-5 py-3 text-sm font-semibold text-ink transition hover:bg-sand"
                 >
-                  Sign in to follow
+                  View profile
                 </Link>
-              ) : null
+                {organizerProfile.canFollowOrganizer ? (
+                  <button
+                    type="button"
+                    onClick={handleFollowToggle}
+                    disabled={followLoading}
+                    className={`rounded-full px-5 py-3 text-sm font-semibold transition disabled:opacity-60 ${organizerProfile.isFollowingOrganizer
+                      ? 'border border-ink/10 bg-sand text-ink'
+                      : 'bg-ink text-sand'
+                      }`}
+                  >
+                    {followLoading
+                      ? 'Updating...'
+                      : organizerProfile.isFollowingOrganizer
+                        ? 'Following'
+                        : 'Follow organizer'}
+                  </button>
+                ) : !user && ['organizer', 'admin'].includes(organizerProfile.role) ? (
+                  <Link
+                    to="/auth"
+                    className="rounded-full border border-ink/10 bg-white px-5 py-3 text-sm font-semibold text-ink transition hover:bg-sand"
+                  >
+                    Sign in to follow
+                  </Link>
+                ) : null}
+              </div>
             }
           />
 
           <div className="mt-6 grid gap-6 md:grid-cols-[auto,1fr]">
-            {organizerProfile.avatarUrl ? (
-              <img
-                src={organizerProfile.avatarUrl}
-                alt={organizerProfile.displayName}
-                className="h-20 w-20 rounded-full object-cover"
-              />
-            ) : (
-              <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-reef/40 to-dusk/40 font-display text-3xl text-ink">
-                {organizerProfile.displayName?.[0]?.toUpperCase() || 'O'}
-              </div>
-            )}
+            <Link
+              to={`/organizers/${event.organizerId}`}
+              className="group inline-flex"
+              aria-label={`View ${organizerProfile.displayName}'s profile`}
+            >
+              {organizerProfile.avatarUrl ? (
+                <img
+                  src={organizerProfile.avatarUrl}
+                  alt={organizerProfile.displayName}
+                  className="h-20 w-20 rounded-full object-cover transition group-hover:ring-2 group-hover:ring-reef/40"
+                />
+              ) : (
+                <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-reef/40 to-dusk/40 font-display text-3xl text-ink transition group-hover:ring-2 group-hover:ring-reef/40">
+                  {organizerProfile.displayName?.[0]?.toUpperCase() || 'O'}
+                </div>
+              )}
+            </Link>
 
             <div className="space-y-4">
+              <Link
+                to={`/organizers/${event.organizerId}`}
+                className="inline-block font-display text-xl text-ink hover:text-reef"
+              >
+                {organizerProfile.organizerProfile?.companyName || organizerProfile.displayName}
+              </Link>
               <div className="grid gap-4 md:grid-cols-3">
                 <div className="rounded-[24px] bg-sand p-4">
                   <p className="text-xs uppercase tracking-[0.24em] text-ink/45">Followers</p>
@@ -900,9 +926,8 @@ const EventDetailPage = () => {
 
               {organizerStatus && (
                 <p
-                  className={`rounded-2xl px-4 py-3 text-sm ${
-                    organizerStatus.tone === 'success' ? 'bg-reef/10 text-reef' : 'bg-ember/10 text-ember'
-                  }`}
+                  className={`rounded-2xl px-4 py-3 text-sm ${organizerStatus.tone === 'success' ? 'bg-reef/10 text-reef' : 'bg-ember/10 text-ember'
+                    }`}
                 >
                   {organizerStatus.message}
                 </p>
@@ -911,6 +936,12 @@ const EventDetailPage = () => {
           </div>
         </section>
       )}
+
+      <EventSponsorSection
+        eventId={eventId}
+        sponsors={event.sponsors || []}
+        canApply={canApplyForSponsorship}
+      />
 
       <section className="grid gap-8 lg:grid-cols-[1fr,1fr]">
         <div className="space-y-6 rounded-[32px] border border-ink/10 bg-white/75 p-6 shadow-bloom">

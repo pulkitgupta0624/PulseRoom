@@ -40,11 +40,75 @@ const createNotification = async ({
   });
 
 const queueEmailHtml = (body) => `<p style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6;">${body}</p>`;
+const escapeHtml = (value = '') =>
+  String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const buildSponsorEmailSection = (sponsors = []) => {
+  if (!sponsors.length) {
+    return '';
+  }
+
+  const items = sponsors
+    .map((sponsor) => {
+      const ctaUrl = sponsor.boothUrl || sponsor.websiteUrl;
+      return `
+        <div style="padding:14px 0;border-top:1px solid #ece7e1;">
+          <div style="display:flex;gap:14px;align-items:flex-start;">
+            ${sponsor.logoUrl
+              ? `<img src="${escapeHtml(sponsor.logoUrl)}" alt="${escapeHtml(sponsor.companyName)}" style="width:64px;height:64px;object-fit:contain;border-radius:12px;border:1px solid #ece7e1;padding:8px;background:#ffffff;" />`
+              : ''}
+            <div>
+              <p style="margin:0 0 6px;font-weight:700;color:#1f2937;">${escapeHtml(sponsor.companyName)}</p>
+              ${sponsor.description ? `<p style="margin:0 0 8px;color:#4b5563;">${escapeHtml(sponsor.description)}</p>` : ''}
+              ${ctaUrl ? `<a href="${escapeHtml(ctaUrl)}" style="color:#0f766e;font-weight:600;text-decoration:none;">Visit sponsor booth</a>` : ''}
+            </div>
+          </div>
+        </div>
+      `;
+    })
+    .join('');
+
+  return `
+    <div style="margin-top:28px;padding-top:6px;">
+      <p style="margin:0 0 10px;font-size:12px;letter-spacing:0.18em;text-transform:uppercase;color:#6b7280;">Event sponsors</p>
+      ${items}
+    </div>
+  `;
+};
+
+const buildSponsorApprovalEmail = (payload) => {
+  const amountLine =
+    payload.amount !== undefined && payload.amount !== null
+      ? `<p style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6;margin:14px 0 0;">Amount due: <strong>${escapeHtml(`${payload.currency || 'INR'} ${payload.amount}`)}</strong></p>`
+      : '';
+
+  const paymentLinkBlock = payload.paymentLinkUrl
+    ? `<p style="margin:16px 0 0;"><a href="${escapeHtml(payload.paymentLinkUrl)}" style="display:inline-block;background:#111827;color:#f9fafb;text-decoration:none;padding:12px 18px;border-radius:9999px;font-weight:700;">Complete sponsor payment</a></p>`
+    : '';
+
+  const instructionsBlock = payload.paymentInstructions
+    ? `<p style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6;margin:16px 0 0;"><strong>Payment instructions:</strong><br />${escapeHtml(payload.paymentInstructions).replace(/\n/g, '<br />')}</p>`
+    : '';
+
+  const fallbackBlock = !payload.paymentLinkUrl && !payload.paymentInstructions
+    ? queueEmailHtml('The organizer will share payment instructions with you shortly. Once payment is confirmed, your sponsor placement will go live.')
+    : '';
+
+  return `${queueEmailHtml(
+    `Great news ${payload.contactName || 'there'}! Your ${payload.packageName} sponsor application for ${payload.eventTitle} has been approved.`
+  )}${amountLine}${paymentLinkBlock}${instructionsBlock}${fallbackBlock}`;
+};
 
 const start = async () => {
   await connectMongo(config.mongoUri, logger);
 
   const userServiceClient = createServiceClient(config.userServiceUrl, 'notification-service');
+  const eventServiceClient = createServiceClient(config.eventServiceUrl, 'notification-service');
   const connection = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
   const queue = new Queue('notification-jobs', {
     connection
@@ -133,8 +197,31 @@ const start = async () => {
     }
   };
 
+  const loadEmailSponsors = async (eventId) => {
+    if (!eventId) {
+      return [];
+    }
+
+    try {
+      const response = await eventServiceClient.get(`/api/events/${eventId}/sponsors`);
+      const sponsors = response.data.data || [];
+      return sponsors.filter((sponsor) => sponsor.showInEmails);
+    } catch (error) {
+      logger.warn({
+        message: 'Failed to load sponsor email placements',
+        eventId,
+        error: error.message
+      });
+      return [];
+    }
+  };
+
   await eventBus.subscribe(
     [
+      DomainEvents.SPONSOR_APPLICATION_SUBMITTED,
+      DomainEvents.SPONSOR_APPLICATION_APPROVED,
+      DomainEvents.SPONSOR_APPLICATION_REJECTED,
+      DomainEvents.SPONSOR_ACTIVATED,
       DomainEvents.BOOKING_CONFIRMED,
       DomainEvents.EVENT_PUBLISHED,
       DomainEvents.EVENT_UPDATED,
@@ -178,11 +265,12 @@ const start = async () => {
             bookingId: payload.bookingId
           }
         });
+        const emailSponsors = await loadEmailSponsors(payload.eventId);
 
         await queue.add('send-email', {
           to: payload.attendeeEmail,
           subject: notification.title,
-          html: queueEmailHtml(notification.body)
+          html: `${queueEmailHtml(notification.body)}${buildSponsorEmailSection(emailSponsors)}`
         });
 
         const reminderDelay = new Date(payload.eventStartsAt).getTime() - Date.now() - 60 * 60 * 1000;
@@ -250,6 +338,71 @@ const start = async () => {
           title: `Your waitlist hold expired for ${payload.eventTitle}`,
           body: 'The 15-minute claim window ended. You can rejoin the waitlist if more spots open later.'
         });
+      }
+
+      if (event === DomainEvents.SPONSOR_APPLICATION_SUBMITTED) {
+        await createNotification({
+          userId: payload.organizerId,
+          eventId: payload.eventId,
+          type: 'sponsor.application_submitted',
+          title: `${payload.companyName} applied to sponsor ${payload.eventTitle}`,
+          body: `${payload.packageName} is waiting for review in your sponsor dashboard.`,
+          metadata: {
+            sponsorId: payload.sponsorId
+          }
+        });
+
+        if (payload.contactEmail) {
+          await queue.add('send-email', {
+            to: payload.contactEmail,
+            subject: `We received your sponsor application for ${payload.eventTitle}`,
+            html: `${queueEmailHtml(
+              `Thanks ${payload.contactName || 'there'}, we received your ${payload.packageName} application for ${payload.eventTitle}. The organizer will review it shortly.`
+            )}<p style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6;">Company: <strong>${escapeHtml(payload.companyName || '')}</strong></p>`
+          });
+        }
+      }
+
+      if (event === DomainEvents.SPONSOR_APPLICATION_APPROVED && payload.contactEmail) {
+        await queue.add('send-email', {
+          to: payload.contactEmail,
+          subject: `Your sponsor application was approved for ${payload.eventTitle}`,
+          html: buildSponsorApprovalEmail(payload)
+        });
+      }
+
+      if (event === DomainEvents.SPONSOR_APPLICATION_REJECTED && payload.contactEmail) {
+        await queue.add('send-email', {
+          to: payload.contactEmail,
+          subject: `Update on your sponsor application for ${payload.eventTitle}`,
+          html: queueEmailHtml(
+            `Thanks ${payload.contactName || 'there'} for applying to sponsor ${payload.eventTitle}. The organizer did not move forward with this application at the moment.`
+          )
+        });
+      }
+
+      if (event === DomainEvents.SPONSOR_ACTIVATED) {
+        await createNotification({
+          userId: payload.organizerId,
+          eventId: payload.eventId,
+          type: 'sponsor.activated',
+          title: `${payload.companyName} is now live on ${payload.eventTitle}`,
+          body: `${payload.packageName} sponsor placement is now active.`,
+          metadata: {
+            sponsorId: payload.sponsorId
+          }
+        });
+
+        if (payload.contactEmail) {
+          const eventUrl = `${config.appOrigin.replace(/\/$/, '')}/events/${payload.eventId}`;
+          await queue.add('send-email', {
+            to: payload.contactEmail,
+            subject: `Your sponsor placement is live for ${payload.eventTitle}`,
+            html: `${queueEmailHtml(
+              `Your sponsor placement for ${payload.eventTitle} is now live on PulseRoom. Attendees can discover your booth from the event page and live room.`
+            )}<p><a href="${eventUrl}">View event page</a></p>`
+          });
+        }
       }
 
       if (event === DomainEvents.EVENT_PUBLISHED) {

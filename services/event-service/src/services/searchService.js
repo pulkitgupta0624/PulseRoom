@@ -276,6 +276,7 @@ class EventSearchService {
     return {
       items: (response.hits || []).map((hit) => ({
         _id: hit.document.eventId,
+        organizerId: hit.document.organizerId,
         title: hit.document.title,
         summary: hit.document.summary,
         coverImageUrl: hit.document.coverImageUrl,

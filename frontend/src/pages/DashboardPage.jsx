@@ -5,6 +5,7 @@ import SectionHeader from '../components/SectionHeader';
 import MetricCard from '../components/MetricCard';
 import EventEditModal from '../components/EventEditModal';
 import EventBookingsModal from '../components/EventBookingsModal';
+import SponsorManagerModal from '../components/SponsorManagerModal';
 import AnalyticsCharts from '../components/AnalyticsCharts';
 import {
   createEvent,
@@ -186,6 +187,7 @@ const DashboardPage = () => {
   const [form, setForm] = useState(() => createInitialForm());
   const [editingEvent, setEditingEvent] = useState(null);
   const [bookingsEvent, setBookingsEvent] = useState(null);
+  const [sponsorsEvent, setSponsorsEvent] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [uploadingCover, setUploadingCover] = useState(false);
   const [createSuccess, setCreateSuccess] = useState(false);
@@ -472,14 +474,15 @@ const DashboardPage = () => {
       <SectionHeader
         eyebrow="Organizer"
         title="Command center"
-        description="Create and publish events, manage ticket check-ins, and track demand with real analytics."
+        description="Create and publish events, manage ticket check-ins, sell sponsor placements, and track demand with real analytics."
       />
 
-      <section className="grid gap-4 md:grid-cols-4">
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <MetricCard label="Events" value={totals.events || 0} />
         <MetricCard label="Published" value={totals.published || 0} accent="text-ember" />
         <MetricCard label="Upcoming" value={totals.upcoming || 0} accent="text-dusk" />
-        <MetricCard label="Revenue" value={formatCurrency(totals.revenue || 0)} />
+        <MetricCard label="Ticket Revenue" value={formatCurrency(totals.revenue || 0)} />
+        <MetricCard label="Sponsor Revenue" value={formatCurrency(totals.sponsorRevenue || 0)} accent="text-reef" />
       </section>
 
       <AnalyticsCharts
@@ -1018,6 +1021,13 @@ const DashboardPage = () => {
                         <span>·</span>
                         <span>{event.attendeesCount || 0} attendees</span>
                       </div>
+                      <div className="mt-2 flex flex-wrap gap-3 text-sm text-ink/55">
+                        <span>Sponsor revenue {formatCurrency(event.sponsorSummary?.grossRevenue || 0)}</span>
+                        <span>Â·</span>
+                        <span>{event.sponsorSummary?.activeSponsors || 0} live sponsors</span>
+                        <span>Â·</span>
+                        <span>{event.sponsorSummary?.boothClicks || 0} booth clicks</span>
+                      </div>
                       {event.ticketTiers?.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1">
                           {event.ticketTiers.map((tier) => (
@@ -1039,6 +1049,13 @@ const DashboardPage = () => {
                         className="rounded-full border border-reef/20 bg-reef/5 px-3 py-2 text-xs font-medium text-reef hover:bg-reef/10"
                       >
                         Bookings
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSponsorsEvent(event)}
+                        className="rounded-full border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700 hover:bg-amber-100"
+                      >
+                        Sponsors
                       </button>
                       <Link
                         to={`/events/${event._id}/check-in`}
@@ -1091,6 +1108,13 @@ const DashboardPage = () => {
 
       {editingEvent && <EventEditModal event={editingEvent} onClose={() => setEditingEvent(null)} />}
       {bookingsEvent && <EventBookingsModal event={bookingsEvent} onClose={() => setBookingsEvent(null)} />}
+      {sponsorsEvent && (
+        <SponsorManagerModal
+          event={sponsorsEvent}
+          onClose={() => setSponsorsEvent(null)}
+          onUpdated={refreshDashboard}
+        />
+      )}
 
       {confirmDelete && (
         <div

@@ -33,6 +33,61 @@ const sessionSchema = Joi.object({
   speakerNames: Joi.array().items(Joi.string()).default([])
 });
 
+const sponsorPackageSchema = Joi.object({
+  name: Joi.string().min(2).max(120).required(),
+  tier: Joi.string().valid('gold', 'silver', 'bronze', 'custom').default('custom'),
+  description: Joi.string().max(240).allow(''),
+  price: Joi.number().min(0).required(),
+  currency: Joi.string().length(3).default('INR'),
+  maxSlots: Joi.number().integer().min(1).required(),
+  perks: Joi.array().items(Joi.string().max(120)).min(1).default([]),
+  paymentLinkUrl: Joi.string().uri().allow(''),
+  paymentInstructions: Joi.string().max(500).allow(''),
+  isActive: Joi.boolean().default(true),
+  showOnEventPage: Joi.boolean().default(true),
+  showInLiveRoom: Joi.boolean().default(true),
+  showInEmails: Joi.boolean().default(false),
+  featuredCallout: Joi.boolean().default(false)
+});
+
+const updateSponsorPackageSchema = sponsorPackageSchema.fork(
+  ['name', 'price', 'maxSlots'],
+  (schema) => schema.optional()
+).min(1);
+
+const sponsorApplicationSchema = Joi.object({
+  packageId: Joi.string().required(),
+  companyName: Joi.string().min(2).max(160).required(),
+  logoUrl: Joi.string().uri().allow(''),
+  description: Joi.string().max(240).allow(''),
+  boothUrl: Joi.string().uri().allow(''),
+  websiteUrl: Joi.string().uri().allow(''),
+  contactName: Joi.string().min(2).max(120).required(),
+  contactEmail: Joi.string().email().required(),
+  notes: Joi.string().max(500).allow(''),
+  showOnEventPage: Joi.boolean().optional(),
+  showInLiveRoom: Joi.boolean().optional(),
+  showInEmails: Joi.boolean().optional(),
+  featuredCallout: Joi.boolean().optional()
+});
+
+const sponsorDecisionSchema = Joi.object({
+  status: Joi.string().valid('approved', 'active', 'rejected').required(),
+  paymentStatus: Joi.string().valid('unpaid', 'paid', 'refunded').optional(),
+  paymentId: Joi.string().max(160).allow(''),
+  companyName: Joi.string().min(2).max(160).optional(),
+  logoUrl: Joi.string().uri().allow('').optional(),
+  description: Joi.string().max(240).allow('').optional(),
+  boothUrl: Joi.string().uri().allow('').optional(),
+  websiteUrl: Joi.string().uri().allow('').optional(),
+  contactName: Joi.string().min(2).max(120).optional(),
+  contactEmail: Joi.string().email().optional(),
+  showOnEventPage: Joi.boolean().optional(),
+  showInLiveRoom: Joi.boolean().optional(),
+  showInEmails: Joi.boolean().optional(),
+  featuredCallout: Joi.boolean().optional()
+}).min(1);
+
 const createEventSchema = Joi.object({
   title: Joi.string().min(3).max(160).required(),
   summary: Joi.string().min(10).max(300).required(),
@@ -90,5 +145,9 @@ module.exports = {
   updateEventSchema,
   updateStatusSchema,
   aiEventDraftSchema,
-  aiAssistantQuestionSchema
+  aiAssistantQuestionSchema,
+  sponsorPackageSchema,
+  updateSponsorPackageSchema,
+  sponsorApplicationSchema,
+  sponsorDecisionSchema
 };

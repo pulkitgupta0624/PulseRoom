@@ -12,6 +12,7 @@ module.exports = {
   typesensePort: Number(process.env.TYPESENSE_PORT || 8108),
   typesenseApiKey: process.env.TYPESENSE_API_KEY || 'pulseroom-typesense-key',
   typesenseCollection: process.env.TYPESENSE_COLLECTION || 'events',
+  sponsorPlatformFeePercent: Number(process.env.SPONSOR_PLATFORM_FEE_PERCENT || 5),
   geminiApiKey: process.env.GEMINI_API_KEY,
   geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite'
 };

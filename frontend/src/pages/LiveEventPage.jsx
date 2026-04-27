@@ -5,6 +5,7 @@ import { api } from '../lib/api';
 import { createSocket } from '../lib/socket';
 import { formatDate } from '../lib/formatters';
 import LiveStreamStage from '../components/LiveStreamStage';
+import LiveSponsorsPanel from '../components/LiveSponsorsPanel';
 import LiveViewerCount from '../components/LiveViewerCount';   // ← NEW
 
 const REACTION_EMOJIS = ['🔥', '👏', '❤️', '🚀', '😂', '🤯'];
@@ -470,6 +471,8 @@ const LiveEventPage = () => {
 
         {/* ── AI assistant + reactions + announcements ── */}
         <div className="space-y-4 rounded-[28px] border border-ink/10 bg-white/80 p-5 shadow-bloom">
+          <LiveSponsorsPanel eventId={eventId} sponsors={event?.sponsors || []} />
+
           <div className="rounded-2xl bg-sand/60 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-ink/45 mb-3">AI attendee assistant</p>
             <form onSubmit={askAssistant} className="space-y-3">
