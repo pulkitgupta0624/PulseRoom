@@ -25,7 +25,8 @@ const createBookingAutomationService = ({
   logger,
   eventBus,
   appOrigin,
-  fetchEventById
+  fetchEventById,
+  releasePromoReservation
 }) => {
   const connection = new Redis(redisUrl, { maxRetriesPerRequest: null });
   const queue = new Queue(AUTOMATION_QUEUE, { connection });
@@ -95,6 +96,20 @@ const createBookingAutomationService = ({
     });
   };
 
+  const releasePromoReservationForBooking = async (booking) => {
+    if (
+      !booking?.promoCode?.promoCodeId ||
+      booking?.promoCode?.releasedAt ||
+      typeof releasePromoReservation !== 'function'
+    ) {
+      return false;
+    }
+
+    await releasePromoReservation(booking);
+    booking.promoCode.releasedAt = new Date();
+    return true;
+  };
+
   const expirePendingBooking = async (bookingId) => {
     const booking = await Booking.findById(bookingId);
     if (!booking || booking.status !== BookingStatus.PENDING) {
@@ -116,6 +131,10 @@ const createBookingAutomationService = ({
         payment.status = PaymentStatus.FAILED;
         await payment.save();
       }
+    }
+
+    if (await releasePromoReservationForBooking(booking)) {
+      await booking.save();
     }
 
     if (booking.sourceWaitlistEntryId) {
@@ -277,7 +296,8 @@ const createBookingAutomationService = ({
     getOfferForUser,
     markWaitlistEntryClaimed,
     markWaitlistEntryFulfilled,
-    getMyWaitlistEntry
+    getMyWaitlistEntry,
+    releasePromoReservationForBooking
   };
 };
 

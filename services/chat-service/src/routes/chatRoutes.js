@@ -33,6 +33,33 @@ const checkRestriction = async (eventId, userId) => {
 
 const sanitize = (text) => sanitizeHtml(text, { allowedTags: [], allowedAttributes: {} });
 
+const loadEventMeta = async (req, eventId) => {
+  try {
+    const response = await req.clients.eventService.get(`/api/events/${eventId}/internal-meta`);
+    return response.data.data;
+  } catch (error) {
+    if (error.response?.status === 404) {
+      throw new AppError('Event not found', 404, 'event_not_found');
+    }
+
+    throw new AppError('Unable to verify event ownership', 502, 'event_lookup_failed');
+  }
+};
+
+const assertCanManageEvent = async (req, eventId) => {
+  const eventMeta = await loadEventMeta(req, eventId);
+
+  if ([Roles.ADMIN, Roles.MODERATOR].includes(req.user.role)) {
+    return;
+  }
+
+  if (req.user.role === Roles.ORGANIZER && eventMeta.organizerId === req.user.sub) {
+    return;
+  }
+
+  throw new AppError('Forbidden', 403, 'forbidden');
+};
+
 // ── Event chat ────────────────────────────────────────────────────────────────
 router.get(
   '/event/:eventId/messages',
@@ -173,6 +200,8 @@ router.post(
   authorize(Roles.ORGANIZER, Roles.MODERATOR, Roles.ADMIN),
   validateSchema(moderationSchema),
   asyncHandler(async (req, res) => {
+    await assertCanManageEvent(req, req.params.eventId);
+
     const restriction = await ChatRestriction.create({
       eventId: req.params.eventId,
       userId: req.body.userId,
@@ -202,9 +231,12 @@ router.delete(
       throw new AppError('Message not found', 404, 'message_not_found');
     }
 
-    const canDelete =
-      message.senderId === req.user.sub ||
-      [Roles.ORGANIZER, Roles.MODERATOR, Roles.ADMIN].includes(req.user.role);
+    let canDelete = message.senderId === req.user.sub || [Roles.MODERATOR, Roles.ADMIN].includes(req.user.role);
+
+    if (!canDelete && req.user.role === Roles.ORGANIZER && message.eventId) {
+      await assertCanManageEvent(req, message.eventId);
+      canDelete = true;
+    }
 
     if (!canDelete) {
       throw new AppError('Forbidden', 403, 'forbidden');

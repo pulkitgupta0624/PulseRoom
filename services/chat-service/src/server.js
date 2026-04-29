@@ -9,6 +9,7 @@ const config = require('./config');
 const Message = require('./models/Message');
 const ChatRestriction = require('./models/ChatRestriction');
 const { buildPrivateRoomId } = require('./services/roomUtils');
+const { consumeUserSlidingWindowQuota } = require('./services/socketRateLimiter');
 const sanitizeHtml = require('sanitize-html');
 
 const sanitize = (text) => sanitizeHtml(text, { allowedTags: [], allowedAttributes: {} });
@@ -69,6 +70,28 @@ const start = async () => {
     // Each user joins their personal room so they receive DM deliveries
     socket.join(`user:${socket.user.sub}`);
 
+    const withinMessageRateLimit = async () => {
+      const result = await consumeUserSlidingWindowQuota({
+        cache: pubClient,
+        logger,
+        scope: 'messages',
+        userId: socket.user.sub,
+        windowMs: config.chatUserRateLimitWindowMs,
+        maxRequests: config.chatUserRateLimitMax
+      });
+
+      if (result.allowed) {
+        return true;
+      }
+
+      socket.emit('chat:error', {
+        message: 'You are sending messages too quickly. Please wait a moment and try again.',
+        code: 'chat_rate_limit_exceeded',
+        retryAfterMs: result.retryAfterMs
+      });
+      return false;
+    };
+
     // ── Join event room ──────────────────────────────────────────────────────
     socket.on('chat:join-event', ({ eventId }) => {
       if (!eventId) return;
@@ -86,6 +109,7 @@ const start = async () => {
     socket.on('chat:send-event-message', async ({ eventId, body }) => {
       try {
         if (!eventId || !body?.trim()) return;
+        if (!(await withinMessageRateLimit())) return;
 
         const restriction = await activeRestriction(eventId, socket.user.sub);
         if (restriction.isBanned || restriction.isMuted) {
@@ -119,6 +143,7 @@ const start = async () => {
     socket.on('chat:send-private-message', async ({ recipientId, body, eventId = null }) => {
       try {
         if (!recipientId || !body?.trim()) return;
+        if (!(await withinMessageRateLimit())) return;
 
         const roomId = buildPrivateRoomId(socket.user.sub, recipientId);
 

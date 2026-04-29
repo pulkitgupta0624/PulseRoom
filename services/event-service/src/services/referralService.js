@@ -1,5 +1,7 @@
 const crypto = require('crypto');
 const { slugify } = require('./slugify');
+const { buildEventPageTheme } = require('./eventThemeService');
+const { getReviewWindowOpensAt, hasReviewWindowOpened } = require('./reviewService');
 const {
   buildSponsorApplicationLink,
   filterSponsorPackagesForViewer,
@@ -178,6 +180,9 @@ const serializeEventForViewer = ({
   if (!canViewReferralData) {
     delete raw.referral;
   }
+  if (!viewerIsOwner) {
+    delete raw.promoCodes;
+  }
 
   raw.sponsorPackages = filterSponsorPackagesForViewer(raw.sponsorPackages || [], {
     viewerIsOwner
@@ -185,6 +190,20 @@ const serializeEventForViewer = ({
   raw.sponsors = filterSponsorsForViewer(raw.sponsors || [], {
     viewerIsOwner
   });
+  raw.speakers = (raw.speakers || []).map((speaker) => {
+    if (viewerIsOwner) {
+      return speaker;
+    }
+
+    const sanitizedSpeaker = { ...speaker };
+    delete sanitizedSpeaker.email;
+    return sanitizedSpeaker;
+  });
+  raw.pageTheme = buildEventPageTheme(raw.pageTheme || {});
+  raw.reviewWindow = {
+    opensAt: getReviewWindowOpensAt(raw),
+    isOpen: hasReviewWindowOpened(raw)
+  };
   if (raw.sponsorPackages.length > 0) {
     raw.sponsorApplicationLink = buildSponsorApplicationLink(raw._id, appOrigin);
   }

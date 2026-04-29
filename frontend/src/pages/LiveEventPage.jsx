@@ -10,6 +10,123 @@ import LiveViewerCount from '../components/LiveViewerCount';   // ← NEW
 
 const REACTION_EMOJIS = ['🔥', '👏', '❤️', '🚀', '😂', '🤯'];
 
+const getBadgeClasses = (badge) => {
+  if (badge === 'Speaker') {
+    return 'bg-dusk/10 text-dusk';
+  }
+  if (badge) {
+    return 'bg-reef/10 text-reef';
+  }
+  return 'bg-ink/8 text-ink/45';
+};
+
+const QuestionAuthor = ({ author }) => (
+  <div className="flex flex-wrap items-center gap-2">
+    <span className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/45">
+      {author?.name || 'Attendee'}
+    </span>
+    {author?.badge && (
+      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] ${getBadgeClasses(author.badge)}`}>
+        {author.badge}
+      </span>
+    )}
+  </div>
+);
+
+const ReplyComposer = ({
+  value,
+  onChange,
+  onSubmit,
+  onCancel,
+  busy,
+  placeholder = 'Write a reply...'
+}) => (
+  <form onSubmit={onSubmit} className="mt-3 space-y-2 rounded-2xl border border-ink/8 bg-white/80 p-3">
+    <textarea
+      aria-label={placeholder}
+      value={value}
+      onChange={(eventInput) => onChange(eventInput.target.value)}
+      rows={2}
+      placeholder={placeholder}
+      className="w-full rounded-xl border border-ink/10 bg-sand px-3 py-2 text-sm outline-none focus:border-reef"
+    />
+    <div className="flex flex-wrap gap-2">
+      <button
+        type="submit"
+        disabled={!value.trim() || busy}
+        className="rounded-full bg-ink px-3 py-1.5 text-xs font-semibold text-sand disabled:opacity-60"
+      >
+        {busy ? 'Posting...' : 'Post reply'}
+      </button>
+      <button
+        type="button"
+        onClick={onCancel}
+        className="rounded-full border border-ink/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink/55"
+      >
+        Cancel
+      </button>
+    </div>
+  </form>
+);
+
+const ReplyThread = ({
+  questionId,
+  replies = [],
+  replyDrafts,
+  setReplyDrafts,
+  replyingTo,
+  setReplyingTo,
+  submittingReplyId,
+  onSubmitReply,
+  depth = 0
+}) => (
+  <div className={depth ? 'mt-3 space-y-3 pl-4' : 'mt-4 space-y-3'}>
+    {replies.map((reply) => {
+      const replyKey = reply.replyId;
+      const isReplying = replyingTo === replyKey;
+      return (
+        <div key={replyKey} className="border-l border-ink/10 pl-3">
+          <QuestionAuthor author={reply.author} />
+          <p className="mt-1 text-sm leading-relaxed text-ink/75">{reply.body}</p>
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setReplyingTo(isReplying ? null : replyKey)}
+              className="rounded-full border border-ink/10 bg-white px-2.5 py-1 text-xs font-semibold text-ink/55 hover:border-reef/30 hover:text-reef"
+            >
+              Reply
+            </button>
+            <span className="text-xs text-ink/30">{formatDate(reply.createdAt)}</span>
+          </div>
+          {isReplying && (
+            <ReplyComposer
+              value={replyDrafts[replyKey] || ''}
+              onChange={(value) => setReplyDrafts((current) => ({ ...current, [replyKey]: value }))}
+              onSubmit={(eventInput) => onSubmitReply(eventInput, questionId, replyKey)}
+              onCancel={() => setReplyingTo(null)}
+              busy={submittingReplyId === replyKey}
+              placeholder="Reply in this thread..."
+            />
+          )}
+          {reply.replies?.length > 0 && (
+            <ReplyThread
+              questionId={questionId}
+              replies={reply.replies}
+              replyDrafts={replyDrafts}
+              setReplyDrafts={setReplyDrafts}
+              replyingTo={replyingTo}
+              setReplyingTo={setReplyingTo}
+              submittingReplyId={submittingReplyId}
+              onSubmitReply={onSubmitReply}
+              depth={depth + 1}
+            />
+          )}
+        </div>
+      );
+    })}
+  </div>
+);
+
 const LiveEventPage = () => {
   const { eventId } = useParams();
   const { user } = useSelector((state) => state.auth);
@@ -20,6 +137,10 @@ const LiveEventPage = () => {
   const [reactions, setReactions] = useState([]);
   const [chatMessage, setChatMessage] = useState('');
   const [questionBody, setQuestionBody] = useState('');
+  const [replyDrafts, setReplyDrafts] = useState({});
+  const [replyingTo, setReplyingTo] = useState(null);
+  const [submittingReplyId, setSubmittingReplyId] = useState(null);
+  const [qaError, setQaError] = useState(null);
   const [pollQuestion, setPollQuestion] = useState('');
   const [pollOptions, setPollOptions] = useState('Yes,No');
   const [announcement, setAnnouncement] = useState('');
@@ -33,14 +154,28 @@ const LiveEventPage = () => {
   const chatBottomRef = useRef(null);
 
   const canManage = useMemo(
-    () => ['organizer', 'moderator', 'admin'].includes(user?.role),
-    [user]
+    () =>
+      Boolean(
+        user &&
+          (['moderator', 'admin'].includes(user.role) ||
+            (user.role === 'organizer' && event?.organizerId === user.id))
+      ),
+    [event?.organizerId, user]
   );
   const canBroadcast = Boolean(
     user &&
     event &&
     (user.role === 'admin' || event.organizerId === user.id)
   );
+
+  const upsertQuestion = (nextQuestion) => {
+    setQuestions((current) => {
+      const exists = current.some((question) => question._id === nextQuestion._id);
+      return exists
+        ? current.map((question) => (question._id === nextQuestion._id ? nextQuestion : question))
+        : [nextQuestion, ...current];
+    });
+  };
 
   useEffect(() => {
     const load = async () => {
@@ -91,7 +226,12 @@ const LiveEventPage = () => {
       setPolls((current) => current.map((item) => (item._id === poll._id ? poll : item)));
     const handleQuestionCreated = (question) => setQuestions((current) => [question, ...current]);
     const handleQuestionUpdated = (question) =>
-      setQuestions((current) => current.map((item) => (item._id === question._id ? question : item)));
+      setQuestions((current) => {
+        const exists = current.some((item) => item._id === question._id);
+        return exists
+          ? current.map((item) => (item._id === question._id ? question : item))
+          : [question, ...current];
+      });
     const handleAnnouncement = (payload) => {
       setQuestions((current) => [
         {
@@ -152,6 +292,43 @@ const LiveEventPage = () => {
     if (!questionBody.trim()) return;
     await api.post(`/api/live/${eventId}/questions`, { body: questionBody });
     setQuestionBody('');
+  };
+
+  const submitQuestionReply = async (eventInput, questionId, parentReplyId = null) => {
+    eventInput.preventDefault();
+    const draftKey = parentReplyId || questionId;
+    const body = (replyDrafts[draftKey] || '').trim();
+    if (!body) return;
+
+    setSubmittingReplyId(draftKey);
+    setQaError(null);
+    try {
+      const response = await api.post(`/api/live/questions/${questionId}/replies`, {
+        body,
+        parentReplyId: parentReplyId || undefined
+      });
+      upsertQuestion(response.data.data);
+      setReplyDrafts((current) => {
+        const next = { ...current };
+        delete next[draftKey];
+        return next;
+      });
+      setReplyingTo(null);
+    } catch (error) {
+      setQaError(error.response?.data?.message || 'Unable to post that reply.');
+    } finally {
+      setSubmittingReplyId(null);
+    }
+  };
+
+  const updateQuestionStatus = async (questionId, payload) => {
+    setQaError(null);
+    try {
+      const response = await api.patch(`/api/live/questions/${questionId}`, payload);
+      upsertQuestion(response.data.data);
+    } catch (error) {
+      setQaError(error.response?.data?.message || 'Unable to update that question.');
+    }
   };
 
   const createPoll = async (eventInput) => {
@@ -229,6 +406,25 @@ const LiveEventPage = () => {
   };
 
   const totalReactions = reactions.reduce((sum, reaction) => sum + reaction.count, 0);
+  const orderedQuestions = useMemo(
+    () =>
+      [...questions].sort((left, right) => {
+        if (Boolean(left.pinned) !== Boolean(right.pinned)) {
+          return Number(right.pinned) - Number(left.pinned);
+        }
+        if (Boolean(left.isAnnouncement) !== Boolean(right.isAnnouncement)) {
+          return Number(right.isAnnouncement) - Number(left.isAnnouncement);
+        }
+        if (Boolean(left.answered) !== Boolean(right.answered)) {
+          return Number(left.answered) - Number(right.answered);
+        }
+        if (Number(left.upvotes || 0) !== Number(right.upvotes || 0)) {
+          return Number(right.upvotes || 0) - Number(left.upvotes || 0);
+        }
+        return new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
+      }),
+    [questions]
+  );
 
   return (
     <div className="space-y-6">
@@ -438,15 +634,31 @@ const LiveEventPage = () => {
 
               {!questions.length && <p className="text-sm text-ink/45 text-center py-4">No questions yet.</p>}
 
-              {questions.map((question) => (
+              {qaError && (
+                <p className="rounded-2xl bg-ember/10 px-4 py-3 text-sm text-ember">{qaError}</p>
+              )}
+
+              {orderedQuestions.map((question) => {
+                const questionReplying = replyingTo === question._id;
+                return (
                 <div
                   key={question._id}
-                  className={`rounded-2xl p-4 ${
-                    question.isAnnouncement ? 'border border-ember/20 bg-ember/5' : 'bg-sand/60'
+                  className={`rounded-2xl border p-4 ${
+                    question.isAnnouncement
+                      ? 'border-ember/20 bg-ember/5'
+                      : question.pinned
+                        ? 'border-dusk/25 bg-dusk/5'
+                        : 'border-ink/8 bg-sand/60'
                   }`}
                 >
+                  {!question.isAnnouncement && <QuestionAuthor author={question.author} />}
                   <p className="text-sm text-ink leading-relaxed">{question.body}</p>
                   <div className="mt-2 flex items-center gap-3 flex-wrap">
+                    {question.pinned && (
+                      <span className="rounded-full bg-dusk/10 px-2 py-0.5 text-xs font-semibold text-dusk">
+                        Pinned
+                      </span>
+                    )}
                     {question.answered && !question.isAnnouncement && (
                       <span className="rounded-full bg-reef/10 px-2 py-0.5 text-xs font-semibold text-reef">
                         Answered
@@ -459,12 +671,63 @@ const LiveEventPage = () => {
                         className="flex items-center gap-1 rounded-full border border-ink/10 bg-white/80 px-2.5 py-1 text-xs text-ink/60 hover:border-reef/30 hover:text-reef transition"
                       >
                         ▲ {question.upvotes || 0}
+                        </button>
+                      )}
+                    {!question.isAnnouncement && (
+                      <button
+                        type="button"
+                        onClick={() => setReplyingTo(questionReplying ? null : question._id)}
+                        className="rounded-full border border-ink/10 bg-white/80 px-2.5 py-1 text-xs font-semibold text-ink/60 hover:border-reef/30 hover:text-reef transition"
+                      >
+                        Reply{question.replyCount ? ` (${question.replyCount})` : ''}
                       </button>
+                    )}
+                    {canManage && !question.isAnnouncement && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => updateQuestionStatus(question._id, { answered: !question.answered })}
+                          className="rounded-full border border-ink/10 bg-white/80 px-2.5 py-1 text-xs font-semibold text-ink/60 hover:border-reef/30 hover:text-reef transition"
+                        >
+                          {question.answered ? 'Mark unresolved' : 'Mark answered'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => updateQuestionStatus(question._id, { pinned: !question.pinned })}
+                          disabled={!question.answered}
+                          className="rounded-full border border-dusk/20 bg-white/80 px-2.5 py-1 text-xs font-semibold text-dusk disabled:opacity-40"
+                        >
+                          {question.pinned ? 'Unpin' : 'Pin'}
+                        </button>
+                      </>
                     )}
                     <span className="text-xs text-ink/30">{formatDate(question.createdAt)}</span>
                   </div>
+                  {questionReplying && (
+                    <ReplyComposer
+                      value={replyDrafts[question._id] || ''}
+                      onChange={(value) => setReplyDrafts((current) => ({ ...current, [question._id]: value }))}
+                      onSubmit={(eventInput) => submitQuestionReply(eventInput, question._id)}
+                      onCancel={() => setReplyingTo(null)}
+                      busy={submittingReplyId === question._id}
+                      placeholder="Reply to this question..."
+                    />
+                  )}
+                  {!question.isAnnouncement && question.replies?.length > 0 && (
+                    <ReplyThread
+                      questionId={question._id}
+                      replies={question.replies}
+                      replyDrafts={replyDrafts}
+                      setReplyDrafts={setReplyDrafts}
+                      replyingTo={replyingTo}
+                      setReplyingTo={setReplyingTo}
+                      submittingReplyId={submittingReplyId}
+                      onSubmitReply={submitQuestionReply}
+                    />
+                  )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

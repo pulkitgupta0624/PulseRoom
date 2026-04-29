@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { Link } from 'react-router-dom';
 import SectionHeader from '../components/SectionHeader';
+import TwoFactorSettings from '../components/TwoFactorSettings';
 import {
   fetchProfile,
   updateProfile,
@@ -640,6 +641,8 @@ const ProfilePage = () => {
                   </div>
                 </div>
               )}
+
+              <TwoFactorSettings />
 
               {/* Save */}
               <div>

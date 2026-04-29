@@ -1,4 +1,4 @@
-const { buildExpressApp, buildLogger, notFoundHandler, errorHandler } = require('@pulseroom/common');
+const { buildExpressApp, buildLogger, notFoundHandler, errorHandler, createServiceClient } = require('@pulseroom/common');
 const chatRoutes = require('./routes/chatRoutes');
 const config = require('./config');
 
@@ -14,6 +14,9 @@ const createApp = ({ eventBus, io }) => {
   app.use((req, _res, next) => {
     req.eventBus = eventBus;
     req.io = io;
+    req.clients = {
+      eventService: createServiceClient(config.eventServiceUrl, 'chat-service')
+    };
     next();
   });
 
@@ -28,4 +31,3 @@ module.exports = {
   createApp,
   logger
 };
-

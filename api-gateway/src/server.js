@@ -6,9 +6,11 @@ const {
   buildLogger,
   notFoundHandler,
   errorHandler,
-  createServiceClient
+  createServiceClient,
+  createCacheClient
 } = require('@pulseroom/common');
 const config = require('./config');
+const { createUserSlidingWindowRateLimiter } = require('./userRateLimit');
 
 const logger = buildLogger('api-gateway');
 const app = buildExpressApp({
@@ -16,6 +18,7 @@ const app = buildExpressApp({
   logger,
   corsOrigin: config.corsOrigin
 });
+const cache = createCacheClient(config.redisUrl);
 
 app.use((req, _res, next) => {
   req.requestId = crypto.randomUUID();
@@ -52,6 +55,27 @@ const handleProxyError = (error, _req, res) => {
   }
 };
 
+const bookingUserRateLimit = createUserSlidingWindowRateLimiter({
+  cache,
+  logger,
+  scope: 'bookings',
+  ...config.userRateLimiting.bookings
+});
+
+const chatUserRateLimit = createUserSlidingWindowRateLimiter({
+  cache,
+  logger,
+  scope: 'chat',
+  ...config.userRateLimiting.chat
+});
+
+const liveUserRateLimit = createUserSlidingWindowRateLimiter({
+  cache,
+  logger,
+  scope: 'live',
+  ...config.userRateLimiting.live
+});
+
 const routeMappings = [
   ['/api/auth', config.services.auth],
   ['/api/users', config.services.users],
@@ -65,6 +89,18 @@ const routeMappings = [
 ];
 
 for (const [routePath, target] of routeMappings) {
+  if (routePath === '/api/bookings') {
+    app.use(routePath, bookingUserRateLimit);
+  }
+
+  if (routePath === '/api/chat') {
+    app.use(routePath, chatUserRateLimit);
+  }
+
+  if (routePath === '/api/live') {
+    app.use(routePath, liveUserRateLimit);
+  }
+
   app.use(
     routePath,
     createProxyMiddleware({

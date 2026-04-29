@@ -1,8 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useRef } from 'react';
 import { useDispatch } from 'react-redux';
 import { updateEvent, fetchOrganizerDashboard } from '../features/events/eventsSlice';
 import { api } from '../lib/api';
-import { formatDate } from '../lib/formatters';
+import { normalizeEventTheme } from '../lib/eventTheme';
+import ModalShell from './ModalShell';
+import EventThemeFields from './EventThemeFields';
 
 const toDatetimeLocal = (isoString) => {
   if (!isoString) return '';
@@ -34,6 +36,7 @@ const EventEditModal = ({ event, onClose }) => {
     category: (event.categories || [])[0] || '',
     tags: (event.tags || []).join(', '),
     streamUrl: event.streamUrl || '',
+    pageTheme: normalizeEventTheme(event.pageTheme),
     allowsChat: event.allowsChat !== false,
     allowsQa: event.allowsQa !== false
   });
@@ -78,6 +81,7 @@ const EventEditModal = ({ event, onClose }) => {
         organizerSignatureName: form.organizerSignatureName,
         categories: form.category ? [form.category] : event.categories,
         tags: form.tags.split(',').map((t) => t.trim()).filter(Boolean),
+        pageTheme: form.pageTheme,
         allowsChat: form.allowsChat,
         allowsQa: form.allowsQa
       };
@@ -93,30 +97,22 @@ const EventEditModal = ({ event, onClose }) => {
     }
   };
 
-  // Close on ESC
-  useEffect(() => {
-    const handler = (e) => e.key === 'Escape' && onClose();
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [onClose]);
-
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: 'rgba(18,18,18,0.5)', backdropFilter: 'blur(8px)' }}
+    <ModalShell
+      onClose={onClose}
+      labelledBy="event-edit-title"
+      closeOnBackdrop={false}
+      panelClassName="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-[32px] border border-ink/10 bg-white shadow-bloom"
     >
-      <div
-        className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-[32px] border border-ink/10 bg-white shadow-bloom"
-        onClick={(e) => e.stopPropagation()}
-      >
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-ink/10 bg-white px-6 py-4 rounded-t-[32px]">
           <div>
             <p className="text-xs uppercase tracking-[0.28em] text-reef">Edit Event</p>
-            <h2 className="mt-1 font-display text-2xl text-ink">{event.title}</h2>
+            <h2 id="event-edit-title" className="mt-1 font-display text-2xl text-ink">{event.title}</h2>
           </div>
           <button
             type="button"
             onClick={onClose}
+            aria-label="Close event editor"
             className="rounded-full p-2 text-ink/50 hover:bg-sand/80 hover:text-ink"
           >
             <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -304,6 +300,11 @@ const EventEditModal = ({ event, onClose }) => {
               />
             </div>
 
+            <EventThemeFields
+              value={form.pageTheme}
+              onChange={(pageTheme) => update('pageTheme', pageTheme)}
+            />
+
             <div className="flex gap-6">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
@@ -347,8 +348,7 @@ const EventEditModal = ({ event, onClose }) => {
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </ModalShell>
   );
 };
 

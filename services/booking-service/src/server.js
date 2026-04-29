@@ -19,6 +19,14 @@ const start = async () => {
     fetchEventById: async (eventId) => {
       const response = await eventServiceClient.get(`/api/events/${eventId}`);
       return response.data.data;
+    },
+    releasePromoReservation: async (booking) => {
+      await eventServiceClient.post(`/api/events/${booking.eventId}/promo-codes/release`, {
+        promoCodeId: booking.promoCode.promoCodeId,
+        code: booking.promoCode.code,
+        discountAmount: booking.promoCode.discountAmount || 0,
+        bookingId: booking._id.toString()
+      });
     }
   });
 

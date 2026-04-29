@@ -1,5 +1,64 @@
 const mongoose = require('mongoose');
 
+const authorSchema = new mongoose.Schema(
+  {
+    userId: {
+      type: String,
+      required: true
+    },
+    name: {
+      type: String,
+      required: true
+    },
+    role: {
+      type: String,
+      required: true
+    },
+    badge: String,
+    isSpeaker: {
+      type: Boolean,
+      default: false
+    },
+    speakerTitle: String,
+    speakerCompany: String
+  },
+  { _id: false }
+);
+
+const replySchema = new mongoose.Schema(
+  {
+    replyId: {
+      type: String,
+      default: () => new mongoose.Types.ObjectId().toString()
+    },
+    parentReplyId: {
+      type: String,
+      default: null
+    },
+    body: {
+      type: String,
+      required: true
+    },
+    hidden: {
+      type: Boolean,
+      default: false
+    },
+    author: {
+      type: authorSchema,
+      required: true
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now
+    },
+    updatedAt: {
+      type: Date,
+      default: Date.now
+    }
+  },
+  { _id: false }
+);
+
 const questionSchema = new mongoose.Schema(
   {
     eventId: {
@@ -14,6 +73,10 @@ const questionSchema = new mongoose.Schema(
     },
     body: {
       type: String,
+      required: true
+    },
+    author: {
+      type: authorSchema,
       required: true
     },
     upvotes: {
@@ -34,7 +97,13 @@ const questionSchema = new mongoose.Schema(
       type: Boolean,
       default: false
     },
-    createdByRole: String
+    createdByRole: String,
+    pinnedAt: Date,
+    pinnedBy: String,
+    replies: {
+      type: [replySchema],
+      default: []
+    }
   },
   {
     timestamps: true

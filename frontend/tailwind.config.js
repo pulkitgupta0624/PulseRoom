@@ -5,8 +5,8 @@ module.exports = {
       colors: {
         ink: '#121212',
         sand: '#f5efe4',
-        ember: '#ef6a4a',
-        reef: '#0da7a2',
+        ember: '#b4472d',
+        reef: '#0f766e',
         dusk: '#1f2a44',
         haze: '#fff8ef'
       },
@@ -34,4 +34,3 @@ module.exports = {
   },
   plugins: []
 };
-

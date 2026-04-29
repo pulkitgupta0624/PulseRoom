@@ -2,6 +2,7 @@ const Redis = require('ioredis');
 const { Queue, Worker } = require('bullmq');
 const { DomainEvents } = require('@pulseroom/common');
 const Event = require('../models/Event');
+const { buildReviewWindowOpensAt } = require('./reviewService');
 
 const COMPLETION_QUEUE = 'event-completion-jobs';
 
@@ -51,6 +52,7 @@ const createEventCompletionService = ({ redisUrl, logger, eventBus, onEventChang
       if (event.liveStatus !== 'ended') {
         event.liveStatus = 'ended';
       }
+      event.reviewWindowOpensAt = buildReviewWindowOpensAt();
       await event.save();
 
       if (typeof onEventChanged === 'function') {

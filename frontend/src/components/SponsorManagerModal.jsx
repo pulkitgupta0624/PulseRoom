@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/formatters';
+import ModalShell from './ModalShell';
 
 const STATUS_STYLES = {
   pending: 'bg-amber-100 text-amber-700',
@@ -93,12 +94,6 @@ const SponsorManagerModal = ({ event, onClose, onUpdated }) => {
   useEffect(() => {
     refreshData();
   }, [event._id]);
-
-  useEffect(() => {
-    const handler = (keyboardEvent) => keyboardEvent.key === 'Escape' && onClose();
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [onClose]);
 
   const sponsorById = useMemo(
     () =>
@@ -210,19 +205,15 @@ const SponsorManagerModal = ({ event, onClose, onUpdated }) => {
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: 'rgba(18,18,18,0.55)', backdropFilter: 'blur(8px)' }}
-      onClick={onClose}
+    <ModalShell
+      onClose={onClose}
+      labelledBy="sponsor-manager-title"
+      panelClassName="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-[32px] border border-ink/10 bg-white shadow-bloom"
     >
-      <div
-        className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-[32px] border border-ink/10 bg-white shadow-bloom"
-        onClick={(eventInput) => eventInput.stopPropagation()}
-      >
         <div className="sticky top-0 z-10 flex items-start justify-between border-b border-ink/10 bg-white px-6 py-5">
           <div>
             <p className="text-xs uppercase tracking-[0.28em] text-reef">Sponsor Manager</p>
-            <h2 className="mt-1 font-display text-3xl text-ink">{event.title}</h2>
+            <h2 id="sponsor-manager-title" className="mt-1 font-display text-3xl text-ink">{event.title}</h2>
             <p className="mt-2 text-sm text-ink/55">
               Create packages, review sponsor applications, and activate paid placements.
             </p>
@@ -230,6 +221,7 @@ const SponsorManagerModal = ({ event, onClose, onUpdated }) => {
           <button
             type="button"
             onClick={onClose}
+            aria-label="Close sponsor manager"
             className="rounded-full p-2 text-ink/50 transition hover:bg-sand hover:text-ink"
           >
             <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -719,8 +711,7 @@ const SponsorManagerModal = ({ event, onClose, onUpdated }) => {
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 };
 

@@ -25,6 +25,21 @@ const createAccessToken = (user) =>
     }
   );
 
+const createTwoFactorChallengeToken = (user) =>
+  jwt.sign(
+    {
+      sub: user.userId,
+      purpose: 'login.2fa'
+    },
+    config.twoFactorChallengeSecret,
+    {
+      expiresIn: config.twoFactorChallengeExpiresIn
+    }
+  );
+
+const verifyTwoFactorChallengeToken = (token) =>
+  jwt.verify(token, config.twoFactorChallengeSecret);
+
 const createRefreshSession = async (user, req) => {
   const refreshToken = crypto.randomBytes(48).toString('hex');
   await RefreshToken.create({
@@ -89,9 +104,10 @@ const buildAuthPayload = async (user, req) => {
 module.exports = {
   hashToken,
   createAccessToken,
+  createTwoFactorChallengeToken,
   createRefreshSession,
   rotateRefreshToken,
   revokeRefreshToken,
-  buildAuthPayload
+  buildAuthPayload,
+  verifyTwoFactorChallengeToken
 };
-

@@ -4,6 +4,11 @@ const config = require('./config');
 const Event = require('./models/Event');
 const { EventSearchService } = require('./services/searchService');
 const { createEventCompletionService } = require('./services/eventCompletionService');
+const { createWebhookService, SUPPORTED_WEBHOOK_EVENTS } = require('./services/webhookService');
+const {
+  buildBookingConfirmedUpdate,
+  buildPaymentRefundedUpdate
+} = require('./services/eventCounterService');
 
 const start = async () => {
   await connectMongo(config.mongoUri, logger);
@@ -31,31 +36,41 @@ const start = async () => {
     }
   });
   await completionService.bootstrapExistingSchedules();
+  const webhookService = createWebhookService({
+    redisUrl: config.redisUrl,
+    logger,
+    timeoutMs: config.webhookTimeoutMs,
+    attempts: config.webhookRetryAttempts
+  });
 
-  await eventBus.subscribe([DomainEvents.BOOKING_CONFIRMED, DomainEvents.PAYMENT_REFUNDED], async ({ event, payload }) => {
+  await eventBus.subscribe([
+    DomainEvents.BOOKING_CONFIRMED,
+    DomainEvents.BOOKING_CANCELLED,
+    DomainEvents.EVENT_UPDATED,
+    DomainEvents.EVENT_PUBLISHED,
+    DomainEvents.EVENT_COMPLETED,
+    DomainEvents.SPONSOR_ACTIVATED,
+    DomainEvents.PAYMENT_REFUNDED
+  ], async ({ event, payload }) => {
     if (event === DomainEvents.BOOKING_CONFIRMED) {
       await Event.updateOne(
         { _id: payload.eventId },
-        {
-          $inc: {
-            attendeesCount: payload.quantity || 1,
-            'analytics.bookings': 1,
-            'analytics.revenue': payload.amount || 0
-          }
-        }
+        buildBookingConfirmedUpdate(payload)
       );
     }
 
     if (event === DomainEvents.PAYMENT_REFUNDED) {
       await Event.updateOne(
         { _id: payload.eventId },
-        {
-          $inc: {
-            attendeesCount: -1,
-            'analytics.revenue': -(payload.amount || 0)
-          }
-        }
+        buildPaymentRefundedUpdate(payload)
       );
+    }
+
+    if (SUPPORTED_WEBHOOK_EVENTS.has(event)) {
+      await webhookService.queueEventFanout({
+        eventName: event,
+        payload
+      });
     }
 
     if (searchService.isEnabled()) {
@@ -71,7 +86,8 @@ const start = async () => {
     cache,
     services: {
       searchService,
-      completionService
+      completionService,
+      webhookService
     }
   });
   app.listen(config.port, () => {

@@ -1,5 +1,6 @@
 const Joi = require('joi');
 const { EventTypes, EventVisibility } = require('@pulseroom/common');
+const { FONT_PAIRINGS } = require('../services/eventThemeService');
 
 const ticketTierSchema = Joi.object({
   tierId: Joi.string().required(),
@@ -16,6 +17,7 @@ const ticketTierSchema = Joi.object({
 
 const speakerSchema = Joi.object({
   userId: Joi.string().allow(''),
+  email: Joi.string().email().allow(''),
   name: Joi.string().required(),
   title: Joi.string().allow(''),
   company: Joi.string().allow(''),
@@ -88,6 +90,85 @@ const sponsorDecisionSchema = Joi.object({
   featuredCallout: Joi.boolean().optional()
 }).min(1);
 
+const promoCodeSchema = Joi.object({
+  code: Joi.string().trim().min(3).max(32).pattern(/^[A-Za-z0-9_-]+$/).required(),
+  discountType: Joi.string().valid('percentage', 'fixed').default('percentage'),
+  discountValue: Joi.number().positive().required(),
+  maxRedemptions: Joi.number().integer().min(1).required(),
+  startsAt: Joi.date().optional(),
+  expiresAt: Joi.date().optional(),
+  appliesToTierIds: Joi.array().items(Joi.string()).default([]),
+  active: Joi.boolean().default(true)
+}).custom((value, helpers) => {
+  if (value.discountType === 'percentage' && value.discountValue > 100) {
+    return helpers.error('any.invalid');
+  }
+
+  if (value.startsAt && value.expiresAt && new Date(value.expiresAt) <= new Date(value.startsAt)) {
+    return helpers.error('date.greater');
+  }
+
+  return value;
+}, 'promo code validation');
+
+const updatePromoCodeSchema = promoCodeSchema.fork(
+  ['code', 'discountType', 'discountValue', 'maxRedemptions'],
+  (schema) => schema.optional()
+).min(1);
+
+const webhookEndpointSchema = Joi.object({
+  targetUrl: Joi.string().uri({ scheme: ['http', 'https'] }).required(),
+  subscribedEvents: Joi.array().items(Joi.string()).min(1).required(),
+  active: Joi.boolean().default(true)
+});
+
+const updateWebhookEndpointSchema = Joi.object({
+  targetUrl: Joi.string().uri({ scheme: ['http', 'https'] }),
+  subscribedEvents: Joi.array().items(Joi.string()).min(1),
+  active: Joi.boolean()
+}).min(1);
+
+const networkingSettingsSchema = Joi.object({
+  enabled: Joi.boolean(),
+  matchesPerAttendee: Joi.number().integer().min(1).max(5)
+}).min(1);
+
+const networkingOptInSchema = Joi.object({
+  optedIn: Joi.boolean().required()
+});
+
+const networkingGenerateSchema = Joi.object({
+  forceRegenerate: Joi.boolean().default(false)
+});
+
+const promoPreviewSchema = Joi.object({
+  code: Joi.string().required(),
+  tierId: Joi.string().required(),
+  subtotal: Joi.number().min(0).required()
+});
+
+const promoConsumeSchema = Joi.object({
+  promoCodeId: Joi.string().required(),
+  code: Joi.string().required(),
+  tierId: Joi.string().required(),
+  discountAmount: Joi.number().min(0).required(),
+  redeemedByUserId: Joi.string().required(),
+  bookingId: Joi.string().required()
+});
+
+const promoReleaseSchema = Joi.object({
+  promoCodeId: Joi.string().required(),
+  code: Joi.string().required(),
+  discountAmount: Joi.number().min(0).default(0),
+  bookingId: Joi.string().required()
+});
+
+const pageThemeSchema = Joi.object({
+  primaryColor: Joi.string().pattern(/^#?[0-9A-Fa-f]{6}$|^#?[0-9A-Fa-f]{3}$/).required(),
+  accentColor: Joi.string().pattern(/^#?[0-9A-Fa-f]{6}$|^#?[0-9A-Fa-f]{3}$/).required(),
+  fontPairing: Joi.string().valid(...Object.keys(FONT_PAIRINGS)).required()
+});
+
 const createEventSchema = Joi.object({
   title: Joi.string().min(3).max(160).required(),
   summary: Joi.string().min(10).max(300).required(),
@@ -109,6 +190,7 @@ const createEventSchema = Joi.object({
   speakers: Joi.array().items(speakerSchema).default([]),
   sessions: Joi.array().items(sessionSchema).default([]),
   ticketTiers: Joi.array().items(ticketTierSchema).min(1).required(),
+  pageTheme: pageThemeSchema.optional(),
   featured: Joi.boolean().default(false),
   allowsChat: Joi.boolean().default(true),
   allowsQa: Joi.boolean().default(true)
@@ -140,6 +222,15 @@ const aiAssistantQuestionSchema = Joi.object({
   question: Joi.string().min(3).max(500).required()
 });
 
+const eventReviewSchema = Joi.object({
+  rating: Joi.number().integer().min(1).max(5).required(),
+  reviewText: Joi.string().max(1200).allow('').default('')
+});
+
+const organizerReplySchema = Joi.object({
+  body: Joi.string().min(3).max(1200).required()
+});
+
 module.exports = {
   createEventSchema,
   updateEventSchema,
@@ -149,5 +240,17 @@ module.exports = {
   sponsorPackageSchema,
   updateSponsorPackageSchema,
   sponsorApplicationSchema,
-  sponsorDecisionSchema
+  sponsorDecisionSchema,
+  promoCodeSchema,
+  updatePromoCodeSchema,
+  webhookEndpointSchema,
+  updateWebhookEndpointSchema,
+  networkingSettingsSchema,
+  networkingOptInSchema,
+  networkingGenerateSchema,
+  promoPreviewSchema,
+  promoConsumeSchema,
+  promoReleaseSchema,
+  eventReviewSchema,
+  organizerReplySchema
 };

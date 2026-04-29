@@ -1,4 +1,8 @@
-require('dotenv').config();
+const path = require('path');
+const dotenv = require('dotenv');
+
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
+dotenv.config();
 
 module.exports = {
   port: Number(process.env.ADMIN_PORT || 4008),
@@ -9,4 +13,3 @@ module.exports = {
   userServiceUrl: process.env.USER_SERVICE_URL,
   eventServiceUrl: process.env.EVENT_SERVICE_URL
 };
-

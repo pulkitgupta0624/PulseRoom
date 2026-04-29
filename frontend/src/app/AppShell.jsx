@@ -28,6 +28,7 @@ const AppShell = () => {
 
   return (
     <div className="min-h-screen bg-hero-radial">
+      <a href="#main-content" className="skip-nav">Skip to content</a>
       <header className="sticky top-0 z-30 border-b border-ink/8 bg-sand/80 backdrop-blur-xl">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4 md:px-8">
           <Link to="/" className="flex items-center gap-3">
@@ -142,7 +143,7 @@ const AppShell = () => {
       <NotificationPanel />
       <ToastContainer />
 
-      <main className="mx-auto max-w-7xl px-4 py-8 md:px-8 md:py-12">
+      <main id="main-content" className="mx-auto max-w-7xl px-4 py-8 md:px-8 md:py-12">
         <Outlet />
       </main>
     </div>

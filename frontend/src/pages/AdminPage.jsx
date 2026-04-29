@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import MetricCard from '../components/MetricCard';
 import SectionHeader from '../components/SectionHeader';
 import AnalyticsCharts from '../components/AnalyticsCharts';
+import ModalShell from '../components/ModalShell';
 import { api } from '../lib/api';
 import { createSocket } from '../lib/socket';
 import { formatDate, formatCurrency } from '../lib/formatters';
@@ -581,12 +582,13 @@ const AdminPage = () => {
 
       {/* Ban modal */}
       {banModal && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          style={{ background: 'rgba(18,18,18,0.5)', backdropFilter: 'blur(8px)' }}
+        <ModalShell
+          onClose={() => setBanModal(null)}
+          labelledBy="ban-user-title"
+          closeOnBackdrop={false}
+          panelClassName="w-full max-w-md rounded-[28px] border border-ink/10 bg-white p-6 shadow-bloom"
         >
-          <div className="w-full max-w-md rounded-[28px] border border-ink/10 bg-white p-6 shadow-bloom">
-            <h3 className="font-display text-2xl text-ink">Ban user</h3>
+            <h3 id="ban-user-title" className="font-display text-2xl text-ink">Ban user</h3>
             <p className="mt-2 text-sm text-ink/70">
               You are about to ban <strong>{banModal.displayName}</strong> ({banModal.email}). This
               will deactivate their account.
@@ -620,8 +622,7 @@ const AdminPage = () => {
                 {banning ? 'Banning...' : 'Confirm ban'}
               </button>
             </div>
-          </div>
-        </div>
+        </ModalShell>
       )}
     </div>
   );

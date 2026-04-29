@@ -15,8 +15,24 @@ const loginSchema = Joi.object({
   password: Joi.string().required()
 });
 
+const twoFactorLoginSchema = Joi.object({
+  twoFactorToken: Joi.string().required(),
+  code: Joi.string().min(6).max(20).required()
+});
+
+const twoFactorCodeSchema = Joi.object({
+  code: Joi.string().min(6).max(20).required()
+});
+
+const twoFactorProtectedActionSchema = Joi.object({
+  password: Joi.string().required(),
+  code: Joi.string().min(6).max(20).required()
+});
+
 module.exports = {
   registerSchema,
-  loginSchema
+  loginSchema,
+  twoFactorCodeSchema,
+  twoFactorLoginSchema,
+  twoFactorProtectedActionSchema
 };
-

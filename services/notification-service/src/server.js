@@ -523,7 +523,12 @@ const start = async () => {
     }
   );
 
-  const app = createApp();
+  const app = createApp({
+    services: {
+      queue,
+      createNotification
+    }
+  });
   app.listen(config.port, () => {
     logger.info({
       message: 'Notification service started',

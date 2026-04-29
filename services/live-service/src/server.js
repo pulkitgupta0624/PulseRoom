@@ -3,7 +3,7 @@ const jwt = require('jsonwebtoken');
 const Redis = require('ioredis');
 const { Server } = require('socket.io');
 const { createAdapter } = require('@socket.io/redis-adapter');
-const { connectMongo, RedisEventBus, DomainEvents } = require('@pulseroom/common');
+const { connectMongo, RedisEventBus, DomainEvents, createServiceClient } = require('@pulseroom/common');
 const { createApp, logger } = require('./app');
 const config = require('./config');
 const Poll = require('./models/Poll');
@@ -11,6 +11,8 @@ const Question = require('./models/Question');
 const Announcement = require('./models/Announcement');
 const ReactionCounter = require('./models/ReactionCounter');
 const StreamSession = require('./models/StreamSession');
+const { incrementEngagementMetric } = require('./services/engagementAnalyticsService');
+const { buildAuthorProfile, serializeQuestionThread } = require('./services/questionThreadService');
 
 const ALLOWED_EMOJIS = new Set(['🔥', '👏', '❤️', '🚀', '😂', '🤯']);
 const streamRooms = new Map();
@@ -41,6 +43,65 @@ const start = async () => {
     serviceName: 'live-service',
     logger
   });
+  const eventServiceClient = createServiceClient(config.eventServiceUrl, 'live-service');
+
+  const loadEventMeta = async (eventId) => {
+    const response = await eventServiceClient.get(`/api/events/${eventId}/internal-meta`);
+    return response.data.data;
+  };
+
+  const isEventOwner = (eventMeta, user) =>
+    String(eventMeta?.organizerId || '') === String(user?.sub || '');
+
+  const canBroadcastEvent = async (socket, eventId) => {
+    const eventMeta = await loadEventMeta(eventId);
+    return (
+      socket.user.role === 'admin' ||
+      (socket.user.role === 'organizer' && isEventOwner(eventMeta, socket.user))
+    );
+  };
+
+  const canManageLiveEvent = async (socket, eventId) => {
+    const eventMeta = await loadEventMeta(eventId);
+    return (
+      ['admin', 'moderator'].includes(socket.user.role) ||
+      (socket.user.role === 'organizer' && isEventOwner(eventMeta, socket.user))
+    );
+  };
+
+  await eventBus.subscribe(
+    [
+      DomainEvents.CHAT_MESSAGE_SENT,
+      DomainEvents.POLL_RESPONSE,
+      DomainEvents.QUESTION_POSTED
+    ],
+    async ({ event, payload }) => {
+      if (!payload?.eventId) {
+        return;
+      }
+
+      if (event === DomainEvents.CHAT_MESSAGE_SENT) {
+        await incrementEngagementMetric({
+          eventId: payload.eventId,
+          field: 'chatMessages'
+        });
+      }
+
+      if (event === DomainEvents.POLL_RESPONSE) {
+        await incrementEngagementMetric({
+          eventId: payload.eventId,
+          field: 'pollVotes'
+        });
+      }
+
+      if (event === DomainEvents.QUESTION_POSTED) {
+        await incrementEngagementMetric({
+          eventId: payload.eventId,
+          field: 'questions'
+        });
+      }
+    }
+  );
 
   const pubClient = new Redis(config.redisUrl);
   const subClient = pubClient.duplicate();
@@ -155,8 +216,8 @@ const start = async () => {
           return;
         }
 
-        if (!['organizer', 'admin'].includes(socket.user.role)) {
-          socket.emit('stream:error', { message: 'Only organizers can start a broadcast.' });
+        if (!(await canBroadcastEvent(socket, eventId))) {
+          socket.emit('stream:error', { message: 'Only this event organizer can start the broadcast.' });
           return;
         }
 
@@ -272,14 +333,21 @@ const start = async () => {
           return;
         }
 
+        const eventMetaResponse = await eventServiceClient.get(`/api/events/${eventId}/internal-meta`);
+        const eventMeta = eventMetaResponse.data.data;
+
         const question = await Question.create({
           eventId,
           userId: socket.user.sub,
           body: body.trim().slice(0, 500),
-          createdByRole: socket.user.role
+          createdByRole: socket.user.role,
+          author: buildAuthorProfile({
+            user: socket.user,
+            eventMeta
+          })
         });
 
-        io.to(`live:${eventId}`).emit('live:question-created', question);
+        io.to(`live:${eventId}`).emit('live:question-created', serializeQuestionThread(question));
 
         await eventBus.publish(DomainEvents.QUESTION_POSTED, {
           questionId: question._id.toString(),
@@ -310,6 +378,10 @@ const start = async () => {
         );
 
         io.to(`live:${eventId}`).emit('live:reaction', reaction);
+        await incrementEngagementMetric({
+          eventId,
+          field: 'reactions'
+        });
       } catch (error) {
         logger.error({ message: 'live:react error', error: error.message });
       }
@@ -321,7 +393,7 @@ const start = async () => {
           return;
         }
 
-        if (!['organizer', 'moderator', 'admin'].includes(socket.user.role)) {
+        if (!(await canManageLiveEvent(socket, eventId))) {
           socket.emit('live:error', { message: 'Not authorized.' });
           return;
         }

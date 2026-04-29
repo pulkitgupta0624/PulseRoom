@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
 import { formatCurrency, formatDate } from '../lib/formatters';
+import ModalShell from './ModalShell';
 
 const STATUS_STYLES = {
   confirmed: 'bg-reef/10 text-reef',
@@ -31,12 +32,6 @@ const EventBookingsModal = ({ event, onClose }) => {
     load();
   }, [event._id]);
 
-  useEffect(() => {
-    const handler = (keyboardEvent) => keyboardEvent.key === 'Escape' && onClose();
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [onClose]);
-
   const filtered = bookings.filter((booking) => {
     const query = search.toLowerCase();
     return (
@@ -56,19 +51,15 @@ const EventBookingsModal = ({ event, onClose }) => {
   const currency = bookings[0]?.currency || 'INR';
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: 'rgba(18,18,18,0.55)', backdropFilter: 'blur(8px)' }}
-      onClick={onClose}
+    <ModalShell
+      onClose={onClose}
+      labelledBy="event-bookings-title"
+      panelClassName="w-full max-w-3xl max-h-[90vh] flex flex-col rounded-[32px] border border-ink/10 bg-white shadow-bloom"
     >
-      <div
-        className="w-full max-w-3xl max-h-[90vh] flex flex-col rounded-[32px] border border-ink/10 bg-white shadow-bloom"
-        onClick={(eventInput) => eventInput.stopPropagation()}
-      >
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-ink/10 bg-white px-6 py-4 rounded-t-[32px]">
           <div>
             <p className="text-xs uppercase tracking-[0.28em] text-reef">Attendee Roster</p>
-            <h2 className="mt-1 font-display text-2xl text-ink">{event.title}</h2>
+            <h2 id="event-bookings-title" className="mt-1 font-display text-2xl text-ink">{event.title}</h2>
           </div>
           <div className="flex items-center gap-2">
             <Link
@@ -80,6 +71,7 @@ const EventBookingsModal = ({ event, onClose }) => {
             <button
               type="button"
               onClick={onClose}
+              aria-label="Close attendee roster"
               className="rounded-full p-2 text-ink/50 hover:bg-sand/80 hover:text-ink"
             >
               <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -138,7 +130,7 @@ const EventBookingsModal = ({ event, onClose }) => {
 
           {filtered.map((booking) => (
             <div key={booking._id} className="rounded-[20px] border border-ink/10 bg-sand/60 p-4">
-              <div className="space-y-1 min-w-0 flex-1">
+              <div className="min-w-0 flex-1 space-y-1">
                 <div className="flex items-center gap-2 flex-wrap">
                   <p className="font-semibold text-ink">{booking.attendee?.name || 'Guest'}</p>
                   <span
@@ -153,6 +145,16 @@ const EventBookingsModal = ({ event, onClose }) => {
                       checked in
                     </span>
                   )}
+                  {booking.promoCode?.code && (
+                    <span className="rounded-full bg-dusk/10 px-2 py-0.5 text-xs font-semibold uppercase tracking-[0.15em] text-dusk">
+                      promo {booking.promoCode.code}
+                    </span>
+                  )}
+                  {booking.referral?.code && (
+                    <span className="rounded-full bg-reef/10 px-2 py-0.5 text-xs font-semibold uppercase tracking-[0.15em] text-reef">
+                      referral {booking.referral.code}
+                    </span>
+                  )}
                 </div>
                 <p className="text-sm text-ink/60">{booking.attendee?.email || 'No attendee email'}</p>
                 <div className="flex flex-wrap gap-3 text-xs text-ink/45">
@@ -161,6 +163,16 @@ const EventBookingsModal = ({ event, onClose }) => {
                   <span className="font-semibold text-ink">{formatCurrency(booking.amount, booking.currency)}</span>
                   <span>{formatDate(booking.createdAt)}</span>
                 </div>
+                {(booking.promoCode?.discountAmount || booking.referral?.discountAmount) && (
+                  <p className="text-xs text-ink/45">
+                    Saved{' '}
+                    {formatCurrency(
+                      booking.promoCode?.discountAmount || booking.referral?.discountAmount || 0,
+                      booking.currency
+                    )}{' '}
+                    via {booking.promoCode?.code ? `promo code ${booking.promoCode.code}` : `referral ${booking.referral.code}`}
+                  </p>
+                )}
                 {booking.invoice?.invoiceNumber && (
                   <p className="text-xs text-ink/40">
                     Invoice {booking.invoice.invoiceNumber} · issued {formatDate(booking.invoice.issuedAt)}
@@ -179,8 +191,7 @@ const EventBookingsModal = ({ event, onClose }) => {
             Showing {filtered.length} of {bookings.length} booking{bookings.length !== 1 ? 's' : ''}
           </p>
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 };
 

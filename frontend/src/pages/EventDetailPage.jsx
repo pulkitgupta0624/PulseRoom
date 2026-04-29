@@ -6,9 +6,11 @@ import EventCapacityBar from '../components/EventCapacityBar';
 import EventReportModal from '../components/EventReportModal';
 import AddToCalendarButton from '../components/AddToCalendarButton';
 import EventSponsorSection from '../components/EventSponsorSection';
+import StarRatingInput from '../components/StarRatingInput';
 import { fetchEventById } from '../features/events/eventsSlice';
 import { api } from '../lib/api';
 import { formatCurrency, formatDate } from '../lib/formatters';
+import { parseCssVariablesBlob } from '../lib/eventTheme';
 
 const ShareButton = ({ event, shareUrl }) => {
   const [copied, setCopied] = useState(false);
@@ -112,6 +114,24 @@ const ShareButton = ({ event, shareUrl }) => {
   );
 };
 
+const STATIC_STARS = [1, 2, 3, 4, 5];
+
+const StaticStarRating = ({ rating }) => (
+  <div className="flex items-center gap-1" aria-label={`${rating} star rating`}>
+    {STATIC_STARS.map((star) => (
+      <svg
+        key={star}
+        className={`h-4 w-4 ${star <= rating ? 'text-amber-500' : 'text-ink/15'}`}
+        fill="currentColor"
+        viewBox="0 0 20 20"
+        aria-hidden="true"
+      >
+        <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.148 3.53a1 1 0 00.95.69h3.708c.969 0 1.371 1.24.588 1.81l-3 2.18a1 1 0 00-.364 1.118l1.146 3.53c.3.922-.755 1.688-1.54 1.118l-3-2.18a1 1 0 00-1.176 0l-3 2.18c-.784.57-1.838-.196-1.539-1.118l1.145-3.53a1 1 0 00-.363-1.118l-3-2.18c-.784-.57-.38-1.81.588-1.81h3.708a1 1 0 00.95-.69l1.147-3.53z" />
+      </svg>
+    ))}
+  </div>
+);
+
 const EventDetailPage = () => {
   const { eventId } = useParams();
   const [searchParams] = useSearchParams();
@@ -129,9 +149,28 @@ const EventDetailPage = () => {
   const [waitlistOffer, setWaitlistOffer] = useState(null);
   const [showReport, setShowReport] = useState(false);
   const [activeReferralCode, setActiveReferralCode] = useState('');
+  const [promoCode, setPromoCode] = useState('');
   const [organizerProfile, setOrganizerProfile] = useState(null);
   const [followLoading, setFollowLoading] = useState(false);
   const [organizerStatus, setOrganizerStatus] = useState(null);
+  const [reviewsState, setReviewsState] = useState({
+    summary: {
+      averageRating: 0,
+      totalRatings: 0,
+      distribution: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }
+    },
+    reviewWindow: {
+      opensAt: null,
+      isOpen: false
+    },
+    items: []
+  });
+  const [reviewEligibility, setReviewEligibility] = useState(null);
+  const [reviewDraft, setReviewDraft] = useState({ rating: 0, reviewText: '' });
+  const [reviewSubmitting, setReviewSubmitting] = useState(false);
+  const [reviewFeedback, setReviewFeedback] = useState(null);
+  const [replyDrafts, setReplyDrafts] = useState({});
+  const [replySavingId, setReplySavingId] = useState(null);
   const referralVisitTrackedRef = useRef(false);
 
   const waitlistOfferToken = searchParams.get('waitlistOfferToken');
@@ -226,6 +265,70 @@ const EventDetailPage = () => {
     }
   }, [event, eventId]);
 
+  const eventThemeStyles = useMemo(
+    () => parseCssVariablesBlob(event?.pageTheme?.cssVariables),
+    [event?.pageTheme?.cssVariables]
+  );
+
+  const loadReviews = async () => {
+    try {
+      const response = await api.get(`/api/events/${eventId}/reviews`);
+      setReviewsState(response.data.data);
+    } catch (_error) {
+      setReviewsState({
+        summary: {
+          averageRating: 0,
+          totalRatings: 0,
+          distribution: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }
+        },
+        reviewWindow: {
+          opensAt: null,
+          isOpen: false
+        },
+        items: []
+      });
+    }
+  };
+
+  const loadReviewEligibility = async () => {
+    if (!user) {
+      setReviewEligibility(null);
+      return;
+    }
+
+    try {
+      const response = await api.get(`/api/events/${eventId}/reviews/me`);
+      const nextEligibility = response.data.data;
+      setReviewEligibility(nextEligibility);
+      if (nextEligibility.review) {
+        setReviewDraft({
+          rating: nextEligibility.review.rating || 0,
+          reviewText: nextEligibility.review.reviewText || ''
+        });
+      }
+    } catch (error) {
+      setReviewEligibility({
+        eligible: false,
+        canReview: false,
+        reason: error.response?.data?.message || 'Unable to load review status for your account.',
+        booking: null,
+        reviewWindow: {
+          opensAt: null,
+          isOpen: false
+        },
+        review: null
+      });
+    }
+  };
+
+  useEffect(() => {
+    loadReviews();
+  }, [eventId]);
+
+  useEffect(() => {
+    loadReviewEligibility();
+  }, [eventId, user?.id]);
+
   const selectedTier = useMemo(
     () => event?.ticketTiers?.find((tier) => tier.tierId === selectedTierId) || event?.ticketTiers?.[0],
     [event, selectedTierId]
@@ -246,8 +349,10 @@ const EventDetailPage = () => {
   const canonicalEventUrl = typeof window !== 'undefined' ? `${window.location.origin}/events/${eventId}` : '';
   const organizerShareUrl =
     user?.id === event?.organizerId && event?.referralLink ? event.referralLink : canonicalEventUrl;
+  const normalizedPromoCode = promoCode.trim().toUpperCase();
+  const promoCodeActive = Boolean(normalizedPromoCode);
   const activeReferralOffer = event?.referralOffer?.status === 'active' ? event.referralOffer : null;
-  const referralPreviewDiscount = selectedTier
+  const referralPreviewDiscount = selectedTier && activeReferralOffer && !promoCodeActive
     ? activeReferralOffer?.discountType === 'fixed'
       ? Math.min(selectedTier.price * quantity, activeReferralOffer.discountValue || 0)
       : Number(((selectedTier.price * quantity) * ((activeReferralOffer?.discountValue || 0) / 100)).toFixed(2))
@@ -335,18 +440,26 @@ const EventDetailPage = () => {
         tierId: selectedTier?.tierId,
         quantity,
         attendee,
-        referralCode: activeReferralCode || undefined,
+        referralCode: normalizedPromoCode ? undefined : activeReferralCode || undefined,
+        promoCode: normalizedPromoCode || undefined,
         waitlistOfferToken: waitlistOffer?.offerToken
       });
 
       const createdBooking = response.data.data.booking;
-      const savedAmount = createdBooking.referral?.discountAmount || 0;
+      const promoSavedAmount = createdBooking.promoCode?.discountAmount || 0;
+      const referralSavedAmount = createdBooking.referral?.discountAmount || 0;
+      const savingsMessage = promoSavedAmount
+        ? ` You saved ${formatCurrency(promoSavedAmount, createdBooking.currency)} with promo code ${createdBooking.promoCode.code}.`
+        : referralSavedAmount
+          ? ` You saved ${formatCurrency(referralSavedAmount, createdBooking.currency)} with the referral invite.`
+          : '';
       setStatus({
         tone: 'success',
         message: createdBooking.invoice?.invoiceNumber
-          ? `Booking confirmed. Invoice ${createdBooking.invoice.invoiceNumber} is ready and your QR ticket is now in My Tickets.${savedAmount ? ` You saved ${formatCurrency(savedAmount, createdBooking.currency)} with the referral invite.` : ''}`
+          ? `Booking confirmed. Invoice ${createdBooking.invoice.invoiceNumber} is ready and your QR ticket is now in My Tickets.${savingsMessage}`
           : 'Booking submitted successfully.'
       });
+      setPromoCode('');
       setWaitlistOffer(null);
       await Promise.all([dispatch(fetchEventById(eventId)), refreshCapacity()]);
     } catch (error) {
@@ -430,6 +543,55 @@ const EventDetailPage = () => {
     }
   };
 
+  const handleReviewSubmit = async (formEvent) => {
+    formEvent.preventDefault();
+    setReviewFeedback(null);
+    setReviewSubmitting(true);
+
+    try {
+      await api.post(`/api/events/${eventId}/reviews`, {
+        rating: reviewDraft.rating,
+        reviewText: reviewDraft.reviewText
+      });
+      setReviewFeedback({
+        tone: 'success',
+        message: reviewEligibility?.review ? 'Your review was updated.' : 'Thanks for sharing your review.'
+      });
+      await Promise.all([loadReviews(), loadReviewEligibility()]);
+    } catch (error) {
+      setReviewFeedback({
+        tone: 'error',
+        message: error.response?.data?.message || 'Unable to save your review right now.'
+      });
+    } finally {
+      setReviewSubmitting(false);
+    }
+  };
+
+  const handleReviewReplySave = async (reviewId) => {
+    const body = replyDrafts[reviewId]?.trim();
+    if (!body) {
+      return;
+    }
+
+    setReplySavingId(reviewId);
+    try {
+      await api.patch(`/api/events/${eventId}/reviews/${reviewId}/reply`, {
+        body
+      });
+      await loadReviews();
+      setReplyDrafts((current) => {
+        const next = { ...current };
+        delete next[reviewId];
+        return next;
+      });
+    } catch (_error) {
+      // Keep the draft in place so the organizer can retry.
+    } finally {
+      setReplySavingId(null);
+    }
+  };
+
   if (!event) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -451,12 +613,18 @@ const EventDetailPage = () => {
     selectedTier &&
     (!isSelectedTierSoldOut || waitlistOfferActive)
   );
+  const canManageReviewReplies = Boolean(
+    user &&
+    (user.role === 'admin' || user.id === event.organizerId)
+  );
+  const reviewSummary = reviewsState.summary;
+  const reviewWindow = reviewEligibility?.reviewWindow || reviewsState.reviewWindow;
 
   return (
-    <div className="space-y-10">
-      <section className="overflow-hidden rounded-[36px] border border-ink/10 bg-white/80 shadow-bloom">
+    <div className="event-page-themed space-y-10" style={eventThemeStyles}>
+      <section className="event-page-card overflow-hidden rounded-[36px] border shadow-bloom">
         {event.coverImageUrl && (
-          <div className="relative h-64 overflow-hidden md:h-80">
+          <div className="event-page-banner relative h-64 overflow-hidden md:h-80">
             <img
               src={event.coverImageUrl}
               alt={event.title}
@@ -488,7 +656,7 @@ const EventDetailPage = () => {
               <>
                 <div className="flex flex-wrap gap-2">
                   {(event.categories || []).map((category) => (
-                    <span key={category} className="rounded-full bg-reef/10 px-3 py-1 text-xs font-semibold text-reef">
+                    <span key={category} className="event-page-chip rounded-full px-3 py-1 text-xs font-semibold">
                       {category}
                     </span>
                   ))}
@@ -550,7 +718,7 @@ const EventDetailPage = () => {
               {isPublished ? (
                 <Link
                   to={`/events/${eventId}/live`}
-                  className="inline-flex items-center gap-2 rounded-full bg-ink px-5 py-3 font-semibold text-sand"
+                  className="event-page-primary-button inline-flex items-center gap-2 rounded-full px-5 py-3 font-semibold"
                 >
                   <span className="relative flex h-2 w-2">
                     <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-reef opacity-75" />
@@ -585,7 +753,7 @@ const EventDetailPage = () => {
               ) : !user && organizerProfile ? (
                 <Link
                   to="/auth"
-                  className="rounded-full border border-ink/10 bg-white px-4 py-2.5 text-sm font-semibold text-ink transition hover:bg-sand"
+                  className="event-page-outline-button rounded-full border bg-white px-4 py-2.5 text-sm font-semibold transition hover:bg-sand"
                 >
                   Sign in to follow
                 </Link>
@@ -602,7 +770,7 @@ const EventDetailPage = () => {
             </div>
           </div>
 
-          <div className="space-y-5 rounded-[28px] border border-ink/10 bg-sand/70 p-5">
+          <div className="event-page-card space-y-5 rounded-[28px] border p-5">
             <div className="flex items-center justify-between">
               <h2 className="font-display text-2xl text-ink">Book tickets</h2>
               <div>
@@ -625,9 +793,16 @@ const EventDetailPage = () => {
               </div>
             )}
 
-            {activeReferralOffer && user?.id !== event.organizerId && (
+            {activeReferralOffer && user?.id !== event.organizerId && !promoCodeActive && (
               <div className="rounded-2xl border border-dusk/20 bg-dusk/10 px-4 py-3 text-sm text-dusk">
                 {event.referralOffer.message}
+              </div>
+            )}
+
+            {activeReferralOffer && user?.id !== event.organizerId && promoCodeActive && (
+              <div className="rounded-2xl border border-dusk/20 bg-dusk/10 px-4 py-3 text-sm text-dusk">
+                Promo code <span className="font-semibold">{normalizedPromoCode}</span> will override the referral
+                invite on this checkout.
               </div>
             )}
 
@@ -741,6 +916,20 @@ const EventDetailPage = () => {
                 />
               </div>
 
+              <div>
+                <label className="mb-1 block text-xs text-ink/50">Promo code (optional)</label>
+                <input
+                  value={promoCode}
+                  onChange={(inputEvent) => setPromoCode(inputEvent.target.value.toUpperCase())}
+                  placeholder="EARLYBIRD20"
+                  className="w-full rounded-2xl border border-ink/10 bg-white px-4 py-3 uppercase disabled:opacity-50"
+                  disabled={!isPublished}
+                />
+                <p className="mt-2 text-xs text-ink/45">
+                  Promo codes do not stack with referral discounts. Usage caps and expiry are checked during checkout.
+                </p>
+              </div>
+
               {selectedTier && quantity > 0 && !isFree && (
                 <div className="space-y-2 rounded-2xl bg-sand px-4 py-3">
                   <div className="flex items-center justify-between">
@@ -755,10 +944,19 @@ const EventDetailPage = () => {
                       <p>-{formatCurrency(referralPreviewDiscount, selectedTier.currency)}</p>
                     </div>
                   )}
+                  {promoCodeActive && (
+                    <div className="rounded-2xl border border-dusk/15 bg-white/70 px-3 py-2 text-xs text-ink/55">
+                      Final promo savings for <span className="font-semibold text-ink">{normalizedPromoCode}</span> will
+                      be confirmed during checkout.
+                    </div>
+                  )}
                   <div className="flex items-center justify-between border-t border-ink/10 pt-2">
-                    <p className="text-sm text-ink/60">Total</p>
+                    <p className="text-sm text-ink/60">{promoCodeActive ? 'Estimated total' : 'Total'}</p>
                     <p className="font-semibold text-ink">
-                      {formatCurrency(activeReferralOffer ? discountedTotal : selectedTier.price * quantity, selectedTier.currency)}
+                      {formatCurrency(
+                        activeReferralOffer && !promoCodeActive ? discountedTotal : selectedTier.price * quantity,
+                        selectedTier.currency
+                      )}
                     </p>
                   </div>
                 </div>

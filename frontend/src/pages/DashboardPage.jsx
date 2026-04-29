@@ -6,7 +6,13 @@ import MetricCard from '../components/MetricCard';
 import EventEditModal from '../components/EventEditModal';
 import EventBookingsModal from '../components/EventBookingsModal';
 import SponsorManagerModal from '../components/SponsorManagerModal';
+import PromoCodeManagerModal from '../components/PromoCodeManagerModal';
+import WebhookManagerModal from '../components/WebhookManagerModal';
+import NetworkingManagerModal from '../components/NetworkingManagerModal';
+import EngagementHeatmapModal from '../components/EngagementHeatmapModal';
 import AnalyticsCharts from '../components/AnalyticsCharts';
+import ModalShell from '../components/ModalShell';
+import EventThemeFields from '../components/EventThemeFields';
 import {
   createEvent,
   deleteEvent,
@@ -14,6 +20,7 @@ import {
   publishEvent
 } from '../features/events/eventsSlice';
 import { api } from '../lib/api';
+import { normalizeEventTheme } from '../lib/eventTheme';
 import { formatCurrency, formatDate } from '../lib/formatters';
 
 const STATUS_STYLES = {
@@ -36,6 +43,7 @@ const createEmptyTier = () => ({
 const createEmptySpeaker = () => ({
   id: makeId('speaker'),
   name: '',
+  email: '',
   title: '',
   company: '',
   bio: ''
@@ -58,6 +66,7 @@ const createInitialForm = () => ({
   coverImagePrompt: '',
   category: 'technology',
   tags: 'ai,community',
+  pageTheme: normalizeEventTheme(),
   tiers: [createEmptyTier()],
   speakers: [],
   sessions: [],
@@ -66,10 +75,7 @@ const createInitialForm = () => ({
 });
 
 const toDatetimeLocal = (value) => {
-  if (!value) {
-    return '';
-  }
-
+  if (!value) return '';
   const date = new Date(value);
   const pad = (item) => String(item).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
@@ -91,10 +97,11 @@ const TierRow = ({ tier, index, onChange, onRemove, canRemove }) => (
         </button>
       )}
     </div>
-    <div className="grid gap-3 md:grid-cols-3">
+    {/* FIX: was md:grid-cols-3 with no sm step; added sm:grid-cols-2 to avoid 3-col squeeze on small tablets */}
+    <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
       <input
         value={tier.name}
-        onChange={(event) => onChange('name', event.target.value)}
+        onChange={(e) => onChange('name', e.target.value)}
         placeholder="Tier name"
         className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
         required
@@ -103,7 +110,7 @@ const TierRow = ({ tier, index, onChange, onRemove, canRemove }) => (
         type="number"
         min="0"
         value={tier.price}
-        onChange={(event) => onChange('price', event.target.value)}
+        onChange={(e) => onChange('price', e.target.value)}
         placeholder="Price (0 = free)"
         className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
       />
@@ -111,15 +118,15 @@ const TierRow = ({ tier, index, onChange, onRemove, canRemove }) => (
         type="number"
         min="1"
         value={tier.quantity}
-        onChange={(event) => onChange('quantity', event.target.value)}
+        onChange={(e) => onChange('quantity', e.target.value)}
         placeholder="Capacity"
-        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef sm:col-span-2 md:col-span-1"
         required
       />
     </div>
     <input
       value={tier.perks}
-      onChange={(event) => onChange('perks', event.target.value)}
+      onChange={(e) => onChange('perks', e.target.value)}
       placeholder="Perks (comma-separated)"
       className="w-full rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
     />
@@ -140,33 +147,40 @@ const SpeakerRow = ({ speaker, index, onChange, onRemove }) => (
         Remove
       </button>
     </div>
-    <div className="grid gap-3 md:grid-cols-2">
+    <div className="grid gap-3 sm:grid-cols-2">
       <input
         value={speaker.name}
-        onChange={(event) => onChange('name', event.target.value)}
+        onChange={(e) => onChange('name', e.target.value)}
         placeholder="Full name"
         className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
         required
       />
       <input
-        value={speaker.title}
-        onChange={(event) => onChange('title', event.target.value)}
-        placeholder="Job title"
+        type="email"
+        value={speaker.email}
+        onChange={(e) => onChange('email', e.target.value)}
+        placeholder="Sign-in email (optional)"
         className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
       />
     </div>
-    <div className="grid gap-3 md:grid-cols-2">
+    <div className="grid gap-3 sm:grid-cols-2">
+      <input
+        value={speaker.title}
+        onChange={(e) => onChange('title', e.target.value)}
+        placeholder="Job title"
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+      />
       <input
         value={speaker.company}
-        onChange={(event) => onChange('company', event.target.value)}
+        onChange={(e) => onChange('company', e.target.value)}
         placeholder="Company"
         className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
       />
       <input
         value={speaker.bio}
-        onChange={(event) => onChange('bio', event.target.value)}
+        onChange={(e) => onChange('bio', e.target.value)}
         placeholder="Short bio"
-        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef sm:col-span-2"
       />
     </div>
   </div>
@@ -188,6 +202,10 @@ const DashboardPage = () => {
   const [editingEvent, setEditingEvent] = useState(null);
   const [bookingsEvent, setBookingsEvent] = useState(null);
   const [sponsorsEvent, setSponsorsEvent] = useState(null);
+  const [promoCodesEvent, setPromoCodesEvent] = useState(null);
+  const [webhooksEvent, setWebhooksEvent] = useState(null);
+  const [networkingEvent, setNetworkingEvent] = useState(null);
+  const [engagementEvent, setEngagementEvent] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [uploadingCover, setUploadingCover] = useState(false);
   const [createSuccess, setCreateSuccess] = useState(false);
@@ -244,9 +262,7 @@ const DashboardPage = () => {
   const updateTier = (index, key, value) =>
     setForm((current) => ({
       ...current,
-      tiers: current.tiers.map((tier, itemIndex) =>
-        itemIndex === index ? { ...tier, [key]: value } : tier
-      )
+      tiers: current.tiers.map((tier, i) => (i === index ? { ...tier, [key]: value } : tier))
     }));
 
   const addTier = () =>
@@ -255,15 +271,13 @@ const DashboardPage = () => {
   const removeTier = (index) =>
     setForm((current) => ({
       ...current,
-      tiers: current.tiers.filter((_, itemIndex) => itemIndex !== index)
+      tiers: current.tiers.filter((_, i) => i !== index)
     }));
 
   const updateSpeaker = (index, key, value) =>
     setForm((current) => ({
       ...current,
-      speakers: current.speakers.map((speaker, itemIndex) =>
-        itemIndex === index ? { ...speaker, [key]: value } : speaker
-      )
+      speakers: current.speakers.map((s, i) => (i === index ? { ...s, [key]: value } : s))
     }));
 
   const addSpeaker = () =>
@@ -272,15 +286,12 @@ const DashboardPage = () => {
   const removeSpeaker = (index) =>
     setForm((current) => ({
       ...current,
-      speakers: current.speakers.filter((_, itemIndex) => itemIndex !== index)
+      speakers: current.speakers.filter((_, i) => i !== index)
     }));
 
-  const handleCoverUpload = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) {
-      return;
-    }
-
+  const handleCoverUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
     setUploadingCover(true);
     try {
       const formData = new FormData();
@@ -325,10 +336,12 @@ const DashboardPage = () => {
       speakers: (draft.speakers || []).map((speaker) => ({
         id: makeId('speaker'),
         name: speaker.name || '',
+        email: speaker.email || '',
         title: speaker.title || '',
         company: speaker.company || '',
         bio: speaker.bio || ''
       })),
+      pageTheme: normalizeEventTheme(draft.pageTheme || current.pageTheme),
       sessions: draft.sessions || [],
       assumptions: draft.assumptions || [],
       suggestedFaq: draft.suggestedFaq || []
@@ -340,13 +353,10 @@ const DashboardPage = () => {
       setAiError('Describe the event idea first so the assistant has something to work from.');
       return;
     }
-
     setAiLoading(true);
     setAiError(null);
     try {
-      const response = await api.post('/api/events/ai/generate', {
-        idea: aiIdea
-      });
+      const response = await api.post('/api/events/ai/generate', { idea: aiIdea });
       applyAiDraft(response.data.data);
       setCreateTab('details');
     } catch (error) {
@@ -356,8 +366,8 @@ const DashboardPage = () => {
     }
   };
 
-  const handleCreateEvent = async (event) => {
-    event.preventDefault();
+  const handleCreateEvent = async (e) => {
+    e.preventDefault();
 
     const ticketTiers = form.tiers.map((tier) => ({
       tierId: tier.tierId,
@@ -366,15 +376,12 @@ const DashboardPage = () => {
       price: Number(tier.price),
       currency: 'INR',
       isFree: Number(tier.price) === 0,
-      perks: tier.perks
-        .split(',')
-        .map((perk) => perk.trim())
-        .filter(Boolean)
+      perks: tier.perks.split(',').map((p) => p.trim()).filter(Boolean)
     }));
 
     const speakers = form.speakers
-      .filter((speaker) => speaker.name.trim())
-      .map(({ id, ...speaker }) => speaker);
+      .filter((s) => s.name.trim())
+      .map(({ id, ...rest }) => rest);
 
     const sessions = form.sessions?.length
       ? form.sessions
@@ -385,7 +392,7 @@ const DashboardPage = () => {
             startsAt: form.startsAt,
             endsAt: form.endsAt,
             roomLabel: 'Main stage',
-            speakerNames: speakers.map((speaker) => speaker.name)
+            speakerNames: speakers.map((s) => s.name)
           }
         ];
 
@@ -396,16 +403,14 @@ const DashboardPage = () => {
       type: form.type,
       visibility: form.visibility,
       startsAt: form.startsAt,
-        endsAt: form.endsAt,
-        venueName: form.venueName,
-        city: form.city,
-        country: form.country,
-        organizerSignatureName: form.organizerSignatureName,
-        categories: [form.category],
-      tags: form.tags
-        .split(',')
-        .map((tag) => tag.trim())
-        .filter(Boolean),
+      endsAt: form.endsAt,
+      venueName: form.venueName,
+      city: form.city,
+      country: form.country,
+      organizerSignatureName: form.organizerSignatureName,
+      categories: [form.category],
+      tags: form.tags.split(',').map((t) => t.trim()).filter(Boolean),
+      pageTheme: form.pageTheme,
       speakers,
       sessions,
       ticketTiers,
@@ -413,12 +418,8 @@ const DashboardPage = () => {
       allowsQa: true
     };
 
-    if (form.coverImageUrl) {
-      payload.coverImageUrl = form.coverImageUrl;
-    }
-    if (form.streamUrl && form.type !== 'offline') {
-      payload.streamUrl = form.streamUrl;
-    }
+    if (form.coverImageUrl) payload.coverImageUrl = form.coverImageUrl;
+    if (form.streamUrl && form.type !== 'offline') payload.streamUrl = form.streamUrl;
 
     const result = await dispatch(createEvent(payload));
     if (!result.error) {
@@ -437,15 +438,12 @@ const DashboardPage = () => {
   };
 
   const handleCopyReferralLink = async (eventId, referralLink) => {
-    if (!referralLink) {
-      return;
-    }
-
+    if (!referralLink) return;
     try {
       await navigator.clipboard.writeText(referralLink);
       setCopiedReferralEventId(eventId);
       setTimeout(() => {
-        setCopiedReferralEventId((current) => (current === eventId ? null : current));
+        setCopiedReferralEventId((cur) => (cur === eventId ? null : cur));
       }, 2000);
     } catch {
       // Ignore clipboard failures in unsupported environments.
@@ -477,7 +475,9 @@ const DashboardPage = () => {
         description="Create and publish events, manage ticket check-ins, sell sponsor placements, and track demand with real analytics."
       />
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+      <section className="grid gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
+        {/* FIX: was md:grid-cols-2 xl:grid-cols-5 — on md the 5th card was orphaned in a 2-col grid.
+            Now sm=2, md=3 gives a natural 3+2 wrap instead of 2+2+1. */}
         <MetricCard label="Events" value={totals.events || 0} />
         <MetricCard label="Published" value={totals.published || 0} accent="text-ember" />
         <MetricCard label="Upcoming" value={totals.upcoming || 0} accent="text-dusk" />
@@ -504,46 +504,26 @@ const DashboardPage = () => {
 
         {referralAnalytics ? (
           <>
-            <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
-              <ReferralMetric
-                label="Active Links"
-                value={referralAnalytics.totals?.activeReferralLinks || 0}
-              />
-              <ReferralMetric
-                label="Link Opens"
-                value={referralAnalytics.totals?.linkOpens || 0}
-                accent="text-dusk"
-              />
-              <ReferralMetric
-                label="Referred Bookings"
-                value={referralAnalytics.totals?.referredBookings || 0}
-                accent="text-reef"
-              />
-              <ReferralMetric
-                label="Referral Revenue"
-                value={formatCurrency(referralAnalytics.totals?.revenue || 0)}
-                accent="text-ember"
-              />
-              <ReferralMetric
-                label="Discounts Given"
-                value={formatCurrency(referralAnalytics.totals?.discountsGiven || 0)}
-                accent="text-dusk"
-              />
-              <ReferralMetric
-                label="Conversion"
-                value={formatPercent(referralAnalytics.totals?.conversionRate || 0)}
-              />
+            {/* FIX: was md:grid-cols-3 xl:grid-cols-6 — added sm:grid-cols-2 so it's 2→3→6 */}
+            <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
+              <ReferralMetric label="Active Links" value={referralAnalytics.totals?.activeReferralLinks || 0} />
+              <ReferralMetric label="Link Opens" value={referralAnalytics.totals?.linkOpens || 0} accent="text-dusk" />
+              <ReferralMetric label="Referred Bookings" value={referralAnalytics.totals?.referredBookings || 0} accent="text-reef" />
+              <ReferralMetric label="Referral Revenue" value={formatCurrency(referralAnalytics.totals?.revenue || 0)} accent="text-ember" />
+              <ReferralMetric label="Discounts Given" value={formatCurrency(referralAnalytics.totals?.discountsGiven || 0)} accent="text-dusk" />
+              <ReferralMetric label="Conversion" value={formatPercent(referralAnalytics.totals?.conversionRate || 0)} />
             </div>
 
             <div className="rounded-[32px] border border-ink/10 bg-white/80 p-6 shadow-bloom">
-              <div className="flex items-center justify-between gap-4">
+              {/* FIX: header was a rigid flex row — on mobile the badge overflowed. Changed to flex-col gap-3 sm:flex-row */}
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h2 className="font-display text-3xl text-ink">Referral links by event</h2>
                   <p className="mt-2 text-sm text-ink/60">
                     Each active link gives a one-time discount to a first-time PulseRoom booker, then rotates to a fresh link after that checkout claims it.
                   </p>
                 </div>
-                <span className="rounded-full bg-dusk/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-dusk">
+                <span className="self-start rounded-full bg-dusk/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-dusk whitespace-nowrap">
                   {referralAnalytics.events?.length || 0} tracked events
                 </span>
               </div>
@@ -552,6 +532,7 @@ const DashboardPage = () => {
                 {referralAnalytics.events?.map((item) => (
                   <div key={item.eventId} className="rounded-[24px] border border-ink/10 bg-sand/55 p-5">
                     <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                      {/* FIX: added min-w-0 so the truncate on the link line actually works */}
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <h3 className="font-display text-2xl text-ink">{item.title}</h3>
@@ -573,7 +554,8 @@ const DashboardPage = () => {
                         </p>
                       </div>
 
-                      <div className="flex flex-wrap gap-2">
+                      {/* FIX: button group — added shrink-0 so it never compresses on lg+ */}
+                      <div className="flex shrink-0 flex-wrap gap-2">
                         {item.referralLink && (
                           <button
                             type="button"
@@ -600,7 +582,8 @@ const DashboardPage = () => {
                       </div>
                     </div>
 
-                    <div className="mt-4 grid gap-4 md:grid-cols-3 xl:grid-cols-6">
+                    {/* FIX: was md:grid-cols-3 xl:grid-cols-6 — added sm:grid-cols-2 for smooth progression */}
+                    <div className="mt-4 grid gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
                       <div className="rounded-2xl bg-white px-4 py-3">
                         <p className="text-xs uppercase tracking-[0.18em] text-ink/45">Link opens</p>
                         <p className="mt-2 font-semibold text-ink">{item.linkOpens || 0}</p>
@@ -648,7 +631,7 @@ const DashboardPage = () => {
             </p>
             <textarea
               value={aiIdea}
-              onChange={(event) => setAiIdea(event.target.value)}
+              onChange={(e) => setAiIdea(e.target.value)}
               rows={4}
               placeholder="I want to host a React workshop for 50 people in Jaipur..."
               className="w-full rounded-[24px] border border-ink/10 bg-white px-4 py-3 text-sm outline-none focus:border-reef"
@@ -678,36 +661,27 @@ const DashboardPage = () => {
               {form.coverImagePrompt && (
                 <div>
                   <p className="text-xs uppercase tracking-[0.22em] text-ink/45">Cover image prompt</p>
-                  <p className="mt-2 rounded-2xl bg-sand/70 px-4 py-3 text-sm text-ink/70">
-                    {form.coverImagePrompt}
-                  </p>
+                  <p className="mt-2 rounded-2xl bg-sand/70 px-4 py-3 text-sm text-ink/70">{form.coverImagePrompt}</p>
                 </div>
               )}
-
               {form.assumptions.length > 0 && (
                 <div>
                   <p className="text-xs uppercase tracking-[0.22em] text-ink/45">AI assumptions</p>
                   <div className="mt-2 flex flex-wrap gap-2">
-                    {form.assumptions.map((assumption) => (
-                      <span
-                        key={assumption}
-                        className="rounded-full border border-ink/10 bg-sand px-3 py-1 text-xs text-ink/60"
-                      >
-                        {assumption}
+                    {form.assumptions.map((a) => (
+                      <span key={a} className="rounded-full border border-ink/10 bg-sand px-3 py-1 text-xs text-ink/60">
+                        {a}
                       </span>
                     ))}
                   </div>
                 </div>
               )}
-
               {form.suggestedFaq.length > 0 && (
                 <div>
                   <p className="text-xs uppercase tracking-[0.22em] text-ink/45">Suggested attendee FAQs</p>
                   <div className="mt-2 space-y-2">
-                    {form.suggestedFaq.map((question) => (
-                      <p key={question} className="rounded-2xl bg-sand/70 px-4 py-3 text-sm text-ink/70">
-                        {question}
-                      </p>
+                    {form.suggestedFaq.map((q) => (
+                      <p key={q} className="rounded-2xl bg-sand/70 px-4 py-3 text-sm text-ink/70">{q}</p>
                     ))}
                   </div>
                 </div>
@@ -720,20 +694,24 @@ const DashboardPage = () => {
               <h2 className="font-display text-3xl text-ink">Create a new event</h2>
             </div>
 
+            {/* FIX: tab bar — was w-fit with no overflow protection, clipped on mobile.
+                Now overflows with a scroll track when the viewport is too narrow. */}
             <div className="px-6 pt-4 pb-0">
-              <div className="flex gap-1 rounded-2xl border border-ink/10 bg-sand p-1 w-fit">
-                {formTabs.map((tab) => (
-                  <button
-                    key={tab.key}
-                    type="button"
-                    onClick={() => setCreateTab(tab.key)}
-                    className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
-                      createTab === tab.key ? 'bg-ink text-sand' : 'text-ink/55 hover:text-ink'
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
+              <div className="overflow-x-auto pb-1">
+                <div className="flex gap-1 rounded-2xl border border-ink/10 bg-sand p-1 w-fit min-w-full sm:min-w-0">
+                  {formTabs.map((tab) => (
+                    <button
+                      key={tab.key}
+                      type="button"
+                      onClick={() => setCreateTab(tab.key)}
+                      className={`whitespace-nowrap rounded-xl px-4 py-2 text-sm font-medium transition ${
+                        createTab === tab.key ? 'bg-ink text-sand' : 'text-ink/55 hover:text-ink'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 
@@ -758,12 +736,7 @@ const DashboardPage = () => {
                         ) : (
                           <>
                             <svg className="h-6 w-6 text-ink/30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={1.5}
-                                d="M12 4v16m8-8H4"
-                              />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
                             </svg>
                             <p className="text-xs text-ink/40">Upload cover image (optional)</p>
                           </>
@@ -771,41 +744,35 @@ const DashboardPage = () => {
                       </div>
                     )}
                   </div>
-                  <input
-                    ref={coverInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={handleCoverUpload}
-                  />
+                  <input ref={coverInputRef} type="file" accept="image/*" className="hidden" onChange={handleCoverUpload} />
 
                   <input
                     value={form.title}
-                    onChange={(event) => updateField('title', event.target.value)}
+                    onChange={(e) => updateField('title', e.target.value)}
                     placeholder="Event title"
                     className="w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
                     required
                   />
                   <input
                     value={form.summary}
-                    onChange={(event) => updateField('summary', event.target.value)}
+                    onChange={(e) => updateField('summary', e.target.value)}
                     placeholder="Short summary"
                     className="w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
                     required
                   />
                   <textarea
                     value={form.description}
-                    onChange={(event) => updateField('description', event.target.value)}
+                    onChange={(e) => updateField('description', e.target.value)}
                     placeholder="Full event description"
                     rows="4"
                     className="w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
                     required
                   />
 
-                  <div className="grid gap-3 md:grid-cols-2">
+                  <div className="grid gap-3 sm:grid-cols-2">
                     <select
                       value={form.type}
-                      onChange={(event) => updateField('type', event.target.value)}
+                      onChange={(e) => updateField('type', e.target.value)}
                       className="rounded-2xl border border-ink/10 bg-sand px-4 py-3 focus:border-reef"
                     >
                       <option value="online">Online</option>
@@ -814,7 +781,7 @@ const DashboardPage = () => {
                     </select>
                     <select
                       value={form.visibility}
-                      onChange={(event) => updateField('visibility', event.target.value)}
+                      onChange={(e) => updateField('visibility', e.target.value)}
                       className="rounded-2xl border border-ink/10 bg-sand px-4 py-3 focus:border-reef"
                     >
                       <option value="public">Public</option>
@@ -822,13 +789,13 @@ const DashboardPage = () => {
                     </select>
                   </div>
 
-                  <div className="grid gap-3 md:grid-cols-2">
+                  <div className="grid gap-3 sm:grid-cols-2">
                     <div>
                       <label className="text-xs text-ink/50 mb-1 block">Starts At</label>
                       <input
                         type="datetime-local"
                         value={form.startsAt}
-                        onChange={(event) => updateField('startsAt', event.target.value)}
+                        onChange={(e) => updateField('startsAt', e.target.value)}
                         className="w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 focus:border-reef"
                         required
                       />
@@ -838,29 +805,31 @@ const DashboardPage = () => {
                       <input
                         type="datetime-local"
                         value={form.endsAt}
-                        onChange={(event) => updateField('endsAt', event.target.value)}
+                        onChange={(e) => updateField('endsAt', e.target.value)}
                         className="w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 focus:border-reef"
                         required
                       />
                     </div>
                   </div>
 
-                  <div className="grid gap-3 md:grid-cols-3">
+                  {/* FIX: venue/city/country was md:grid-cols-3 — on small tablets that's very cramped.
+                      Now stacks to 1 col, then sm:grid-cols-2 (venue spans full), then md:grid-cols-3. */}
+                  <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
                     <input
                       value={form.venueName}
-                      onChange={(event) => updateField('venueName', event.target.value)}
+                      onChange={(e) => updateField('venueName', e.target.value)}
                       placeholder="Venue / stream name"
-                      className="rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
+                      className="rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef sm:col-span-2 md:col-span-1"
                     />
                     <input
                       value={form.city}
-                      onChange={(event) => updateField('city', event.target.value)}
+                      onChange={(e) => updateField('city', e.target.value)}
                       placeholder="City"
                       className="rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
                     />
                     <input
                       value={form.country}
-                      onChange={(event) => updateField('country', event.target.value)}
+                      onChange={(e) => updateField('country', e.target.value)}
                       placeholder="Country"
                       className="rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
                     />
@@ -871,37 +840,42 @@ const DashboardPage = () => {
                       <label className="text-xs text-ink/50 mb-1 block">Backup external stream URL (optional)</label>
                       <input
                         value={form.streamUrl}
-                        onChange={(event) => updateField('streamUrl', event.target.value)}
+                        onChange={(e) => updateField('streamUrl', e.target.value)}
                         placeholder="https://..."
                         className="w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
-                        />
-                      </div>
-                    )}
+                      />
+                    </div>
+                  )}
 
                   <div>
                     <label className="text-xs text-ink/50 mb-1 block">Certificate signature name</label>
                     <input
                       value={form.organizerSignatureName}
-                      onChange={(event) => updateField('organizerSignatureName', event.target.value)}
+                      onChange={(e) => updateField('organizerSignatureName', e.target.value)}
                       placeholder="Shown on PDF attendance certificates"
                       className="w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
                     />
                   </div>
 
-                  <div className="grid gap-3 md:grid-cols-2">
+                  <div className="grid gap-3 sm:grid-cols-2">
                     <input
                       value={form.category}
-                      onChange={(event) => updateField('category', event.target.value)}
+                      onChange={(e) => updateField('category', e.target.value)}
                       placeholder="Category"
                       className="rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
                     />
                     <input
                       value={form.tags}
-                      onChange={(event) => updateField('tags', event.target.value)}
+                      onChange={(e) => updateField('tags', e.target.value)}
                       placeholder="Tags (comma-separated)"
                       className="rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
                     />
                   </div>
+
+                  <EventThemeFields
+                    value={form.pageTheme}
+                    onChange={(pageTheme) => updateField('pageTheme', pageTheme)}
+                  />
                 </>
               )}
 
@@ -930,7 +904,9 @@ const DashboardPage = () => {
 
               {createTab === 'speakers' && (
                 <div className="space-y-4">
-                  <p className="text-sm text-ink/60">Add speakers who will appear on the event page.</p>
+                  <p className="text-sm text-ink/60">
+                    Add speakers who will appear on the event page. Optional sign-in email helps speaker badges show correctly in live Q&A.
+                  </p>
                   {form.speakers.length === 0 && (
                     <div className="rounded-2xl bg-sand/50 px-5 py-8 text-center">
                       <p className="text-sm text-ink/45">No speakers added yet.</p>
@@ -976,9 +952,9 @@ const DashboardPage = () => {
         </div>
 
         <div className="space-y-4 rounded-[32px] border border-ink/10 bg-white/80 p-6 shadow-bloom">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-3">
             <h2 className="font-display text-3xl text-ink">Your event slate</h2>
-            <span className="rounded-full bg-reef/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-reef">
+            <span className="shrink-0 rounded-full bg-reef/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-reef">
               {dashboard?.events?.length || 0} events
             </span>
           </div>
@@ -989,15 +965,20 @@ const DashboardPage = () => {
             </div>
           )}
 
-          <div className="space-y-4 max-h-[80vh] overflow-y-auto pr-1">
+          {/* FIX: removed max-h-[80vh] fixed height; replaced with a more generous overflow container
+              that doesn't collapse awkwardly relative to the create-form column on the left */}
+          <div className="space-y-4 max-h-[calc(100vh-12rem)] overflow-y-auto pr-1">
             {(dashboard?.events || []).map((event) => (
               <div key={event._id} className="rounded-[24px] border border-ink/10 bg-sand/70 overflow-hidden">
                 {event.coverImageUrl && (
                   <img src={event.coverImageUrl} alt={event.title} className="h-24 w-full object-cover" />
                 )}
                 <div className="p-5">
-                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                    <div className="flex-1 min-w-0">
+                  <div className="flex flex-col gap-4">
+                    {/* FIX: was a rigid md:flex-row layout; event info and button group
+                        both had unbounded widths causing overlap at mid-breakpoints.
+                        Now purely flex-col with the button group always below the info. */}
+                    <div className="min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <h3 className="font-display text-xl text-ink">{event.title}</h3>
                         <span
@@ -1014,18 +995,19 @@ const DashboardPage = () => {
                         )}
                       </div>
                       <p className="mt-1 text-sm text-ink/65">{formatDate(event.startsAt)}</p>
-                      <div className="mt-1 flex flex-wrap gap-3 text-sm text-ink/55">
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-sm text-ink/55">
                         <span>Revenue {formatCurrency(event.analytics?.revenue || 0)}</span>
-                        <span>·</span>
+                        <span aria-hidden="true">·</span>
                         <span>{event.analytics?.bookings || 0} bookings</span>
-                        <span>·</span>
+                        <span aria-hidden="true">·</span>
                         <span>{event.attendeesCount || 0} attendees</span>
                       </div>
-                      <div className="mt-2 flex flex-wrap gap-3 text-sm text-ink/55">
+                      {/* FIX: replaced broken Â· encoding artifacts with proper · character */}
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-sm text-ink/55">
                         <span>Sponsor revenue {formatCurrency(event.sponsorSummary?.grossRevenue || 0)}</span>
-                        <span>Â·</span>
+                        <span aria-hidden="true">·</span>
                         <span>{event.sponsorSummary?.activeSponsors || 0} live sponsors</span>
-                        <span>Â·</span>
+                        <span aria-hidden="true">·</span>
                         <span>{event.sponsorSummary?.boothClicks || 0} booth clicks</span>
                       </div>
                       {event.ticketTiers?.length > 0 && (
@@ -1056,6 +1038,34 @@ const DashboardPage = () => {
                         className="rounded-full border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700 hover:bg-amber-100"
                       >
                         Sponsors
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPromoCodesEvent(event)}
+                        className="rounded-full border border-dusk/20 bg-dusk/5 px-3 py-2 text-xs font-medium text-dusk hover:bg-dusk/10"
+                      >
+                        Promo Codes
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setWebhooksEvent(event)}
+                        className="rounded-full border border-ink/15 bg-white px-3 py-2 text-xs font-medium text-ink hover:bg-sand"
+                      >
+                        Webhooks
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setNetworkingEvent(event)}
+                        className="rounded-full border border-reef/20 bg-reef/5 px-3 py-2 text-xs font-medium text-reef hover:bg-reef/10"
+                      >
+                        Networking
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEngagementEvent(event)}
+                        className="rounded-full border border-ember/20 bg-ember/5 px-3 py-2 text-xs font-medium text-ember hover:bg-ember/10"
+                      >
+                        Engagement
                       </button>
                       <Link
                         to={`/events/${event._id}/check-in`}
@@ -1109,20 +1119,29 @@ const DashboardPage = () => {
       {editingEvent && <EventEditModal event={editingEvent} onClose={() => setEditingEvent(null)} />}
       {bookingsEvent && <EventBookingsModal event={bookingsEvent} onClose={() => setBookingsEvent(null)} />}
       {sponsorsEvent && (
-        <SponsorManagerModal
-          event={sponsorsEvent}
-          onClose={() => setSponsorsEvent(null)}
-          onUpdated={refreshDashboard}
-        />
+        <SponsorManagerModal event={sponsorsEvent} onClose={() => setSponsorsEvent(null)} onUpdated={refreshDashboard} />
+      )}
+      {promoCodesEvent && (
+        <PromoCodeManagerModal event={promoCodesEvent} onClose={() => setPromoCodesEvent(null)} />
+      )}
+      {webhooksEvent && (
+        <WebhookManagerModal event={webhooksEvent} onClose={() => setWebhooksEvent(null)} />
+      )}
+      {networkingEvent && (
+        <NetworkingManagerModal event={networkingEvent} onClose={() => setNetworkingEvent(null)} />
+      )}
+      {engagementEvent && (
+        <EngagementHeatmapModal event={engagementEvent} onClose={() => setEngagementEvent(null)} />
       )}
 
       {confirmDelete && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          style={{ background: 'rgba(18,18,18,0.5)', backdropFilter: 'blur(8px)' }}
+        <ModalShell
+          onClose={() => setConfirmDelete(null)}
+          labelledBy="delete-event-title"
+          closeOnBackdrop={false}
+          panelClassName="w-full max-w-md rounded-[28px] border border-ink/10 bg-white p-6 shadow-bloom"
         >
-          <div className="w-full max-w-md rounded-[28px] border border-ink/10 bg-white p-6 shadow-bloom">
-            <h3 className="font-display text-2xl text-ink">Delete event?</h3>
+            <h3 id="delete-event-title" className="font-display text-2xl text-ink">Delete event?</h3>
             <p className="mt-3 text-sm text-ink/70">
               Are you sure you want to permanently delete <strong>{confirmDelete.title}</strong>? This cannot be undone.
             </p>
@@ -1142,8 +1161,7 @@ const DashboardPage = () => {
                 Delete
               </button>
             </div>
-          </div>
-        </div>
+        </ModalShell>
       )}
     </div>
   );

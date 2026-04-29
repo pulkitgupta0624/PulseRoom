@@ -16,7 +16,15 @@ const eventAudienceSchema = new mongoose.Schema(
     attendeeName: String,
     organizerId: String,
     eventTitle: String,
-    eventStartsAt: Date
+    eventStartsAt: Date,
+    networking: {
+      optedIn: {
+        type: Boolean,
+        default: false
+      },
+      optedInAt: Date,
+      lastMatchedAt: Date
+    }
   },
   {
     timestamps: true

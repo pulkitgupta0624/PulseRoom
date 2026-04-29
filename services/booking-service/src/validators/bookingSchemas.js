@@ -5,6 +5,7 @@ const checkoutSchema = Joi.object({
   tierId: Joi.string().required(),
   quantity: Joi.number().integer().min(1).max(10).required(),
   referralCode: Joi.string().max(64).allow('').optional(),
+  promoCode: Joi.string().max(64).allow('').optional(),
   waitlistOfferToken: Joi.string().min(16).allow('').optional(),
   attendee: Joi.object({
     name: Joi.string().min(2).max(120).required(),

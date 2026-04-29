@@ -42,6 +42,19 @@ const calculateReferralDiscountAmount = ({ subtotal, referral }) => {
   return Number(Math.min(safeSubtotal, safeSubtotal * ((referral.discountValue || 0) / 100)).toFixed(2));
 };
 
+const releasePromoReservationIfNeeded = async ({ booking, req }) => {
+  if (!booking?.promoCode?.promoCodeId || booking?.promoCode?.releasedAt) {
+    return false;
+  }
+
+  const released = await req.automationService.releasePromoReservationForBooking(booking);
+  if (released) {
+    await booking.save();
+  }
+
+  return released;
+};
+
 const finalizeSuccessfulPayment = async ({ booking, payment, req, providerPaymentId }) => {
   if (
     booking.status === BookingStatus.CONFIRMED &&
@@ -105,6 +118,12 @@ const getOrganizerEvents = async (req) => {
   });
 
   return response.data.data.events;
+};
+
+const assertInternalEventService = (req) => {
+  if (req.headers['x-service-name'] !== 'event-service') {
+    throw new AppError('Forbidden', 403, 'forbidden');
+  }
 };
 
 router.post(
@@ -245,6 +264,39 @@ router.get(
 );
 
 router.get(
+  '/internal/events/:eventId/review-eligibility',
+  asyncHandler(async (req, res) => {
+    assertInternalEventService(req);
+
+    const userId = String(req.query.userId || '').trim();
+    if (!userId) {
+      throw new AppError('userId is required', 400, 'review_eligibility_invalid');
+    }
+
+    const booking = await Booking.findOne({
+      eventId: req.params.eventId,
+      userId,
+      status: BookingStatus.CONFIRMED
+    })
+      .sort({ confirmedAt: -1, createdAt: -1 })
+      .lean();
+
+    sendSuccess(res, {
+      eligible: Boolean(booking),
+      booking: booking
+        ? {
+            bookingId: booking._id.toString(),
+            attendee: booking.attendee || {},
+            confirmedAt: booking.confirmedAt || null,
+            checkedInAt: booking.checkedInAt || null,
+            ticketTierName: booking.tierName || ''
+          }
+        : null
+    });
+  })
+);
+
+router.get(
   '/waitlist/me',
   authenticate(),
   asyncHandler(async (req, res) => {
@@ -362,6 +414,14 @@ router.post(
     }
 
     const normalizedReferralCode = req.body.referralCode?.trim();
+    const normalizedPromoCode = req.body.promoCode?.trim();
+    if (normalizedReferralCode && normalizedPromoCode) {
+      throw new AppError(
+        'Promo codes cannot be combined with referral discounts on the same booking.',
+        409,
+        'discounts_cannot_stack'
+      );
+    }
     const referralCode =
       normalizedReferralCode &&
       event.referral?.code === normalizedReferralCode &&
@@ -399,6 +459,23 @@ router.post(
     }
 
     const subtotal = Number((tier.price * quantity).toFixed(2));
+    let promoCodeQuote = null;
+    if (normalizedPromoCode) {
+      try {
+        const promoResponse = await req.clients.eventService.post(`/api/events/${req.body.eventId}/promo-codes/preview`, {
+          code: normalizedPromoCode,
+          tierId: tier.tierId,
+          subtotal
+        });
+        promoCodeQuote = promoResponse.data.data;
+      } catch (error) {
+        throw new AppError(
+          error.response?.data?.message || 'This promo code is no longer valid',
+          error.response?.status || 409,
+          error.response?.data?.code || 'promo_code_invalid'
+        );
+      }
+    }
     const isEligibleForReferralDiscount = referralCode
       ? !(await Booking.exists({
           userId: req.user.sub,
@@ -423,6 +500,8 @@ router.post(
           subtotal,
           referral: event.referral
         })
+      : promoCodeQuote
+        ? Number(promoCodeQuote.discountAmount || 0)
       : 0;
     const amount = Number((subtotal - discountAmount).toFixed(2));
 
@@ -466,6 +545,20 @@ router.post(
             }
           }
         : {}),
+      ...(promoCodeQuote
+        ? {
+            promoCode: {
+              promoCodeId: promoCodeQuote.promoCodeId,
+              code: promoCodeQuote.code,
+              discountType: promoCodeQuote.discountType,
+              discountValue: promoCodeQuote.discountValue,
+              originalAmount: subtotal,
+              discountAmount,
+              finalAmount: amount,
+              reservedAt: new Date()
+            }
+          }
+        : {}),
       reservationExpiresAt: new Date(Date.now() + 15 * 60 * 1000),
       eventSnapshot: {
         title: event.title,
@@ -474,6 +567,28 @@ router.post(
       },
       sourceWaitlistEntryId: waitlistOffer?._id
     });
+
+    if (promoCodeQuote) {
+      try {
+        await req.clients.eventService.post(`/api/events/${req.body.eventId}/promo-codes/consume`, {
+          promoCodeId: promoCodeQuote.promoCodeId,
+          code: promoCodeQuote.code,
+          tierId: tier.tierId,
+          discountAmount,
+          redeemedByUserId: req.user.sub,
+          bookingId: booking._id.toString()
+        });
+      } catch (error) {
+        await booking.deleteOne();
+        throw new AppError(
+          error.response?.data?.message || 'This promo code has reached its usage cap',
+          error.response?.status || 409,
+          error.response?.data?.code || 'promo_code_invalid'
+        );
+      }
+    }
+
+    await req.automationService.scheduleBookingExpiration(booking);
 
     const payment = await Payment.create({
       bookingId: booking._id,
@@ -487,7 +602,6 @@ router.post(
 
     booking.paymentId = payment._id;
     await booking.save();
-    await req.automationService.scheduleBookingExpiration(booking);
 
     if (waitlistOffer) {
       await req.automationService.markWaitlistEntryClaimed({
@@ -655,6 +769,10 @@ router.post(
     booking.status = BookingStatus.REFUNDED;
     booking.refundedAt = new Date();
     booking.cancelledAt = new Date();
+    await releasePromoReservationIfNeeded({
+      booking,
+      req
+    });
     await payment.save();
     await booking.save();
 
@@ -662,6 +780,7 @@ router.post(
       paymentId: payment._id.toString(),
       bookingId: booking._id.toString(),
       eventId: booking.eventId,
+      quantity: booking.quantity,
       amount: booking.amount
     });
 

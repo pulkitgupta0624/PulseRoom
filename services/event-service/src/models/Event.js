@@ -1,9 +1,11 @@
 const mongoose = require('mongoose');
 const { EventTypes, EventVisibility } = require('@pulseroom/common');
+const { buildEventPageTheme } = require('../services/eventThemeService');
 
 const speakerSchema = new mongoose.Schema(
   {
     userId: String,
+    email: String,
     name: {
       type: String,
       required: true
@@ -234,6 +236,94 @@ const sponsorSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const promoCodeSchema = new mongoose.Schema(
+  {
+    promoCodeId: {
+      type: String,
+      required: true
+    },
+    code: {
+      type: String,
+      required: true
+    },
+    discountType: {
+      type: String,
+      enum: ['percentage', 'fixed'],
+      default: 'percentage'
+    },
+    discountValue: {
+      type: Number,
+      required: true
+    },
+    maxRedemptions: {
+      type: Number,
+      required: true
+    },
+    redemptionsUsed: {
+      type: Number,
+      default: 0
+    },
+    active: {
+      type: Boolean,
+      default: true
+    },
+    startsAt: Date,
+    expiresAt: Date,
+    appliesToTierIds: {
+      type: [String],
+      default: []
+    },
+    totalDiscountGiven: {
+      type: Number,
+      default: 0
+    },
+    lastRedeemedAt: Date,
+    lastRedeemedByUserId: String
+  },
+  { _id: false }
+);
+
+const networkingSchema = new mongoose.Schema(
+  {
+    enabled: {
+      type: Boolean,
+      default: false
+    },
+    matchesPerAttendee: {
+      type: Number,
+      default: 2
+    },
+    lastMatchedAt: Date,
+    lastMatchedCount: {
+      type: Number,
+      default: 0
+    }
+  },
+  { _id: false }
+);
+
+const pageThemeSchema = new mongoose.Schema(
+  {
+    primaryColor: {
+      type: String,
+      required: true
+    },
+    accentColor: {
+      type: String,
+      required: true
+    },
+    fontPairing: {
+      type: String,
+      required: true
+    },
+    cssVariables: {
+      type: String,
+      required: true
+    }
+  },
+  { _id: false }
+);
+
 const eventSchema = new mongoose.Schema(
   {
     organizerId: {
@@ -328,6 +418,18 @@ const eventSchema = new mongoose.Schema(
       type: [sponsorSchema],
       default: []
     },
+    promoCodes: {
+      type: [promoCodeSchema],
+      default: []
+    },
+    networking: {
+      type: networkingSchema,
+      default: () => ({})
+    },
+    pageTheme: {
+      type: pageThemeSchema,
+      default: () => buildEventPageTheme()
+    },
     featured: {
       type: Boolean,
       default: false
@@ -346,6 +448,7 @@ const eventSchema = new mongoose.Schema(
       default: 'scheduled',
       index: true
     },
+    reviewWindowOpensAt: Date,
     attendeesCount: {
       type: Number,
       default: 0
@@ -421,5 +524,6 @@ eventSchema.index({
   tags: 'text'
 });
 eventSchema.index({ 'referral.code': 1 }, { unique: true, sparse: true });
+eventSchema.index({ 'promoCodes.code': 1 });
 
 module.exports = mongoose.model('Event', eventSchema);

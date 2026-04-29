@@ -70,6 +70,23 @@ const bookingSchema = new mongoose.Schema(
       finalAmount: Number,
       trackedAt: Date
     },
+    promoCode: {
+      promoCodeId: {
+        type: String,
+        index: true
+      },
+      code: {
+        type: String,
+        index: true
+      },
+      discountType: String,
+      discountValue: Number,
+      originalAmount: Number,
+      discountAmount: Number,
+      finalAmount: Number,
+      reservedAt: Date,
+      releasedAt: Date
+    },
     eventSnapshot: {
       title: String,
       startsAt: Date,

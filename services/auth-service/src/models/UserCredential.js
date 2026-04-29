@@ -1,6 +1,15 @@
 const mongoose = require('mongoose');
 const { Roles } = require('@pulseroom/common');
 
+const encryptedSecretSchema = new mongoose.Schema(
+  {
+    iv: String,
+    content: String,
+    tag: String
+  },
+  { _id: false }
+);
+
 const userCredentialSchema = new mongoose.Schema(
   {
     userId: {
@@ -41,6 +50,30 @@ const userCredentialSchema = new mongoose.Schema(
         type: String
       }
     },
+    twoFactor: {
+      enabled: {
+        type: Boolean,
+        default: false
+      },
+      secret: encryptedSecretSchema,
+      backupCodeHashes: {
+        type: [String],
+        default: []
+      },
+      enabledAt: Date,
+      lastUsedAt: Date,
+      pendingSecret: encryptedSecretSchema,
+      pendingBackupCodeHashes: {
+        type: [String],
+        default: []
+      },
+      pendingSetupAt: Date,
+      loginFailedAttempts: {
+        type: Number,
+        default: 0
+      },
+      loginLockedUntil: Date
+    },
     lastLoginAt: Date
   },
   {
@@ -49,4 +82,3 @@ const userCredentialSchema = new mongoose.Schema(
 );
 
 module.exports = mongoose.model('UserCredential', userCredentialSchema);
-

@@ -18,7 +18,9 @@ const createApp = ({ eventBus, cache, services = {} }) => {
     req.config = config;
     req.services = services;
     req.clients = {
-      userService: createServiceClient(config.userServiceUrl, 'event-service')
+      userService: createServiceClient(config.userServiceUrl, 'event-service'),
+      bookingService: createServiceClient(config.bookingServiceUrl, 'event-service'),
+      notificationService: createServiceClient(config.notificationServiceUrl, 'event-service')
     };
     next();
   });

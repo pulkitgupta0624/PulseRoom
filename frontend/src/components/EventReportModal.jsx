@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useDispatch } from 'react-redux';
 import { api } from '../lib/api';
 import { showToast } from '../features/ui/uiSlice';
+import ModalShell from './ModalShell';
 
 const REASONS = [
   'Misleading event description',
@@ -27,12 +28,6 @@ const EventReportModal = ({ eventId, onClose }) => {
   const [details, setDetails] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => {
-    const handler = (e) => e.key === 'Escape' && onClose();
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [onClose]);
-
   const handleSubmit = async (e) => {
     e.preventDefault();
     setSubmitting(true);
@@ -55,24 +50,21 @@ const EventReportModal = ({ eventId, onClose }) => {
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: 'rgba(18,18,18,0.55)', backdropFilter: 'blur(8px)' }}
-      onClick={onClose}
+    <ModalShell
+      onClose={onClose}
+      labelledBy="event-report-title"
+      panelClassName="w-full max-w-md rounded-[32px] border border-ink/10 bg-white p-6 shadow-bloom"
     >
-      <div
-        className="w-full max-w-md rounded-[32px] border border-ink/10 bg-white p-6 shadow-bloom"
-        onClick={(e) => e.stopPropagation()}
-      >
         {/* header */}
         <div className="mb-5 flex items-center justify-between">
           <div>
             <p className="text-xs uppercase tracking-[0.28em] text-ember">Moderation</p>
-            <h2 className="mt-1 font-display text-2xl text-ink">Report this event</h2>
+            <h2 id="event-report-title" className="mt-1 font-display text-2xl text-ink">Report this event</h2>
           </div>
           <button
             type="button"
             onClick={onClose}
+            aria-label="Close event report"
             className="rounded-full p-2 text-ink/40 hover:bg-sand hover:text-ink transition"
           >
             <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -140,8 +132,7 @@ const EventReportModal = ({ eventId, onClose }) => {
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </ModalShell>
   );
 };
 

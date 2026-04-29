@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { Link } from 'react-router-dom';
 import SectionHeader from '../components/SectionHeader';
+import BookingNetworkingPanel from '../components/BookingNetworkingPanel';
 import QRCodeTicket from '../components/QRCodeTicket';
 import TicketDownloadButton from '../components/TicketDownloadButton';   // ← NEW
 import { fetchMyBookings, requestRefund } from '../features/bookings/bookingsSlice';
@@ -99,6 +100,8 @@ const BookingsPage = () => {
 const BookingCard = ({ booking, onRefund, refundingId }) => {
   const canRefund = booking.status === 'confirmed';
   const isRefunding = refundingId === booking._id;
+  const isUpcomingConfirmed =
+    booking.status === 'confirmed' && new Date(booking.eventSnapshot?.startsAt) > new Date();
 
   return (
     <div className="rounded-[28px] border border-ink/10 bg-white/80 p-5 shadow-bloom">
@@ -171,6 +174,8 @@ const BookingCard = ({ booking, onRefund, refundingId }) => {
               </button>
             )}
           </div>
+
+          {isUpcomingConfirmed && <BookingNetworkingPanel booking={booking} />}
         </div>
 
         <QRCodeTicket
