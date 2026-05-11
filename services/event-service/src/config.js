@@ -22,5 +22,6 @@ module.exports = {
   webhookTimeoutMs: Number(process.env.WEBHOOK_TIMEOUT_MS || 10000),
   webhookRetryAttempts: Number(process.env.WEBHOOK_RETRY_ATTEMPTS || 5),
   geminiApiKey: process.env.GEMINI_API_KEY,
-  geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite'
+  geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite',
+  reportingCurrency: process.env.REPORTING_CURRENCY || 'USD'
 };

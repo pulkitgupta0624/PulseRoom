@@ -12,6 +12,7 @@ module.exports = {
   appOrigin: process.env.APP_ORIGIN || 'http://localhost:5173',
   userServiceUrl: process.env.USER_SERVICE_URL,
   eventServiceUrl: process.env.EVENT_SERVICE_URL,
+  liveServiceUrl: process.env.LIVE_SERVICE_URL,
   mailFrom: process.env.MAIL_FROM || 'noreply@pulseroom.dev',
   smtpHost: process.env.SMTP_HOST || 'localhost',
   smtpPort: Number(process.env.SMTP_PORT || 1025),

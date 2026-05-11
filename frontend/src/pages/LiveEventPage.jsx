@@ -477,7 +477,13 @@ const LiveEventPage = () => {
         </div>
       </section>
 
-      <LiveStreamStage eventId={eventId} socket={liveSocket} canBroadcast={canBroadcast} />
+      <LiveStreamStage
+        eventId={eventId}
+        socket={liveSocket}
+        canBroadcast={canBroadcast}
+        canManage={canManage}
+        event={event}
+      />
 
       <section className="grid gap-5 xl:grid-cols-[1fr,1.15fr,0.9fr]">
         {/* ── Chat ── */}

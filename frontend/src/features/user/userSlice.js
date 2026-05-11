@@ -43,6 +43,20 @@ export const fetchFollowing = createAsyncThunk('user/fetchFollowing', async (_, 
   }
 });
 
+export const fetchGamificationSummary = createAsyncThunk(
+  'user/fetchGamificationSummary',
+  async (_, thunkApi) => {
+    try {
+      const response = await api.get('/api/gamification/me');
+      return response.data.data;
+    } catch (error) {
+      return thunkApi.rejectWithValue(
+        error.response?.data?.message || 'Unable to load your rewards profile'
+      );
+    }
+  }
+);
+
 /**
  * Optimistically update the following list after a follow/unfollow action.
  * Call this after the API responds so Redux state stays in sync without
@@ -61,13 +75,16 @@ const userSlice = createSlice({
   name: 'user',
   initialState: {
     profile: null,
+    gamification: null,
     searchResults: [],
     following: [],           // array of organizer UserProfile objects
     followingLoaded: false,  // whether we've fetched at least once
     loading: false,
     saving: false,
     followingLoading: false,
+    gamificationLoading: false,
     error: null,
+    gamificationError: null,
     saved: false
   },
   reducers: {
@@ -92,6 +109,18 @@ const userSlice = createSlice({
       .addCase(fetchProfile.rejected, (state, action) => {
         state.loading = false;
         state.error = action.payload;
+      })
+      .addCase(fetchGamificationSummary.pending, (state) => {
+        state.gamificationLoading = true;
+        state.gamificationError = null;
+      })
+      .addCase(fetchGamificationSummary.fulfilled, (state, action) => {
+        state.gamificationLoading = false;
+        state.gamification = action.payload;
+      })
+      .addCase(fetchGamificationSummary.rejected, (state, action) => {
+        state.gamificationLoading = false;
+        state.gamificationError = action.payload;
       })
 
       // ── updateProfile ───────────────────────────────────────────────────────

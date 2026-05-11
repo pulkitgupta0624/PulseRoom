@@ -40,6 +40,31 @@ const bookingSchema = new mongoose.Schema(
       type: String,
       default: 'INR'
     },
+    pricing: {
+      baseCurrency: String,
+      settlementCurrency: String,
+      exchangeRate: Number,
+      reportingCurrency: String,
+      reportingExchangeRate: Number,
+      baseUnitAmount: Number,
+      unitAmount: Number,
+      baseSubtotal: Number,
+      subtotal: Number,
+      baseDiscountAmount: Number,
+      discountAmount: Number,
+      baseTaxableAmount: Number,
+      taxableAmount: Number,
+      taxCountry: String,
+      taxLabel: String,
+      taxRate: Number,
+      baseTaxAmount: Number,
+      taxAmount: Number,
+      baseTotal: Number,
+      total: Number,
+      registrationNumber: String,
+      reportingAmount: Number,
+      reportingDiscountAmount: Number
+    },
     status: {
       type: String,
       enum: Object.values(BookingStatus),
@@ -68,6 +93,9 @@ const bookingSchema = new mongoose.Schema(
       originalAmount: Number,
       discountAmount: Number,
       finalAmount: Number,
+      baseOriginalAmount: Number,
+      baseDiscountAmount: Number,
+      reportingDiscountAmount: Number,
       trackedAt: Date
     },
     promoCode: {
@@ -84,6 +112,9 @@ const bookingSchema = new mongoose.Schema(
       originalAmount: Number,
       discountAmount: Number,
       finalAmount: Number,
+      baseOriginalAmount: Number,
+      baseDiscountAmount: Number,
+      reportingDiscountAmount: Number,
       reservedAt: Date,
       releasedAt: Date
     },

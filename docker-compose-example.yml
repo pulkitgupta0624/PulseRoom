@@ -21,6 +21,7 @@ x-backend-env: &backend-env
   MONGO_NOTIFICATION_URI: mongodb://mongo:27017/pulseroom_notification
   MONGO_LIVE_URI: mongodb://mongo:27017/pulseroom_live
   MONGO_ADMIN_URI: mongodb://mongo:27017/pulseroom_admin
+  MONGO_GAMIFICATION_URI: mongodb://mongo:27017/pulseroom_gamification
   AUTH_SERVICE_URL: http://auth-service:4001
   USER_SERVICE_URL: http://user-service:4002
   EVENT_SERVICE_URL: http://event-service:4003
@@ -29,6 +30,7 @@ x-backend-env: &backend-env
   NOTIFICATION_SERVICE_URL: http://notification-service:4006
   LIVE_SERVICE_URL: http://live-service:4007
   ADMIN_SERVICE_URL: http://admin-service:4008
+  GAMIFICATION_SERVICE_URL: http://gamification-service:4009
   AUTH_PORT: 4001
   USER_PORT: 4002
   EVENT_PORT: 4003
@@ -37,6 +39,7 @@ x-backend-env: &backend-env
   NOTIFICATION_PORT: 4006
   LIVE_PORT: 4007
   ADMIN_PORT: 4008
+  GAMIFICATION_PORT: 4009
   PAYMENT_PROVIDER: manual
   STRIPE_SECRET_KEY: ''
   STRIPE_WEBHOOK_SECRET: ''
@@ -212,6 +215,19 @@ services:
       - pulseroom
     <<: *dns
 
+  gamification-service:
+    build:
+      context: .
+      dockerfile: services/gamification-service/Dockerfile
+    environment:
+      <<: *backend-env
+    depends_on:
+      - mongo
+      - redis
+    networks:
+      - pulseroom
+    <<: *dns
+
   api-gateway:
     build:
       context: .
@@ -229,6 +245,7 @@ services:
       - notification-service
       - live-service
       - admin-service
+      - gamification-service
     networks:
       - pulseroom
     <<: *dns

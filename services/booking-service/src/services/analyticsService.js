@@ -7,6 +7,9 @@ const toDayKey = (value) => {
 
 const clampWindowDays = (value) => Math.max(7, Math.min(Number(value || 30), 90));
 
+const getReportingAmount = (booking) =>
+  Number(booking?.pricing?.reportingAmount ?? booking?.amount ?? 0);
+
 const buildBookingAnalytics = ({ bookings, days = 30 }) => {
   const windowDays = clampWindowDays(days);
   const today = new Date();
@@ -37,9 +40,10 @@ const buildBookingAnalytics = ({ bookings, days = 30 }) => {
     const effectiveDate = booking.confirmedAt || booking.createdAt;
     const dayKey = toDayKey(effectiveDate);
     const bucket = bucketMap.get(dayKey);
+    const bookingRevenue = getReportingAmount(booking);
 
     confirmedBookings += 1;
-    revenue += booking.amount || 0;
+    revenue += bookingRevenue;
     attendees += booking.quantity || 0;
     if (booking.checkedInAt) {
       checkedIns += booking.quantity || 0;
@@ -47,7 +51,7 @@ const buildBookingAnalytics = ({ bookings, days = 30 }) => {
 
     if (bucket) {
       bucket.bookings += 1;
-      bucket.revenue += booking.amount || 0;
+      bucket.revenue += bookingRevenue;
       bucket.attendees += booking.quantity || 0;
       if (booking.checkedInAt) {
         bucket.checkedIns += booking.quantity || 0;
@@ -61,7 +65,7 @@ const buildBookingAnalytics = ({ bookings, days = 30 }) => {
       bookings: 0,
       attendees: 0
     };
-    currentEvent.revenue += booking.amount || 0;
+    currentEvent.revenue += bookingRevenue;
     currentEvent.bookings += 1;
     currentEvent.attendees += booking.quantity || 0;
     topEvents.set(booking.eventId, currentEvent);
@@ -94,5 +98,6 @@ const buildBookingAnalytics = ({ bookings, days = 30 }) => {
 
 module.exports = {
   buildBookingAnalytics,
-  clampWindowDays
+  clampWindowDays,
+  getReportingAmount
 };

@@ -13,6 +13,7 @@
     "bullmq": "^5.76.2",
     "dotenv": "^16.4.7",
     "ioredis": "^5.10.1",
+    "pdfkit": "^0.18.0",
     "stripe": "^18.0.0"
   },
   "devDependencies": {

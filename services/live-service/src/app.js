@@ -10,7 +10,7 @@ const config = require('./config');
 
 const logger = buildLogger('live-service');
 
-const createApp = ({ eventBus, io }) => {
+const createApp = ({ eventBus, io, services = {} }) => {
   const app = buildExpressApp({
     serviceName: 'live-service',
     logger,
@@ -20,8 +20,10 @@ const createApp = ({ eventBus, io }) => {
   app.use((req, _res, next) => {
     req.eventBus = eventBus;
     req.io = io;
+    req.services = services;
     req.clients = {
-      eventService: createServiceClient(config.eventServiceUrl, 'live-service')
+      eventService: createServiceClient(config.eventServiceUrl, 'live-service'),
+      bookingService: createServiceClient(config.bookingServiceUrl, 'live-service')
     };
     next();
   });

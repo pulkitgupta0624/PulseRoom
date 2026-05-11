@@ -14,12 +14,28 @@ let nextId = 1;
  * tone: 'success' | 'error' | 'info' | 'warning'
  * duration: milliseconds before auto-dismiss (default 4000)
  */
+
+const getInitialTheme = () => {
+  if (typeof window !== 'undefined') {
+    const storedPrefs = localStorage.getItem('theme');
+    if (storedPrefs) return storedPrefs;
+    const userMedia = window.matchMedia('(prefers-color-scheme: dark)');
+    if (userMedia.matches) return 'dark';
+  }
+  return 'light';
+};
+
 const uiSlice = createSlice({
   name: 'ui',
   initialState: {
-    toasts: []  // [{ id, message, tone, duration }]
+    toasts: [],  // [{ id, message, tone, duration }]
+    theme: getInitialTheme()  // 'light' | 'dark'
   },
   reducers: {
+    toggleTheme: (state) => {
+      state.theme = state.theme === 'light' ? 'dark' : 'light';
+      localStorage.setItem('theme', state.theme);
+    },
     showToast: (state, action) => {
       const { message, tone = 'info', duration = 4000 } = action.payload;
       state.toasts.push({ id: nextId++, message, tone, duration });
@@ -33,5 +49,5 @@ const uiSlice = createSlice({
   }
 });
 
-export const { showToast, dismissToast, clearToasts } = uiSlice.actions;
+export const { showToast, dismissToast, clearToasts, toggleTheme } = uiSlice.actions;
 export default uiSlice.reducer;

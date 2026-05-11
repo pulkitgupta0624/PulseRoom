@@ -38,6 +38,24 @@ const withProxyHeaders = (proxyReq, req) => {
   }
 };
 
+const forwardStripeWebhookRawBody = (proxyReq, req) => {
+  const isStripeWebhookRequest =
+    req.method === 'POST' &&
+    req.originalUrl?.startsWith('/api/bookings/webhooks/stripe') &&
+    Boolean(req.headers['stripe-signature']) &&
+    typeof req.rawBody === 'string';
+
+  if (!isStripeWebhookRequest) {
+    return false;
+  }
+
+  const bodyBuffer = Buffer.from(req.rawBody, 'utf8');
+  proxyReq.setHeader('content-type', req.headers['content-type'] || 'application/json');
+  proxyReq.setHeader('content-length', bodyBuffer.length);
+  proxyReq.write(bodyBuffer);
+  return true;
+};
+
 const handleProxyError = (error, _req, res) => {
   logger.error({ message: 'Upstream service unavailable', error: error.message });
 
@@ -85,7 +103,8 @@ const routeMappings = [
   ['/api/chat', config.services.chat],
   ['/api/notifications', config.services.notifications],
   ['/api/live', config.services.live],
-  ['/api/admin', config.services.admin]
+  ['/api/admin', config.services.admin],
+  ['/api/gamification', config.services.gamification]
 ];
 
 for (const [routePath, target] of routeMappings) {
@@ -111,7 +130,9 @@ for (const [routePath, target] of routeMappings) {
       on: {
         proxyReq: (proxyReq, req, res) => {
           withProxyHeaders(proxyReq, req);
-          fixRequestBody(proxyReq, req, res);
+          if (!forwardStripeWebhookRawBody(proxyReq, req)) {
+            fixRequestBody(proxyReq, req, res);
+          }
         },
         error: handleProxyError
       }

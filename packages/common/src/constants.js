@@ -62,6 +62,7 @@ const DomainEvents = Object.freeze({
   SPONSOR_ACTIVATED: 'sponsor.activated',
   BOOKING_CREATED: 'booking.created',
   BOOKING_CONFIRMED: 'booking.confirmed',
+  BOOKING_CHECKED_IN: 'booking.checked_in',
   BOOKING_CANCELLED: 'booking.cancelled',
   PAYMENT_CREATED: 'payment.created',
   PAYMENT_SUCCEEDED: 'payment.succeeded',
@@ -75,7 +76,11 @@ const DomainEvents = Object.freeze({
   POLL_CREATED: 'poll.created',
   POLL_RESPONSE: 'poll.response',
   QUESTION_POSTED: 'question.posted',
+  QUESTION_UPVOTED: 'question.upvoted',
   ANNOUNCEMENT_POSTED: 'announcement.posted',
+  REPLAY_AVAILABLE: 'replay.available',
+  EVENT_REVIEW_SUBMITTED: 'event.review.submitted',
+  NETWORKING_OPTED_IN: 'networking.opted_in',
   NOTIFICATION_CREATED: 'notification.created'
 });
 

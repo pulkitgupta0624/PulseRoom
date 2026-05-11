@@ -62,6 +62,13 @@ const buildReferralAnalytics = ({ bookings, events, days = 30 }) => {
     const effectiveDate = booking.confirmedAt || booking.createdAt;
     const dayKey = toDayKey(effectiveDate);
     const bucket = bucketMap.get(dayKey);
+    const bookingRevenue = Number(booking?.pricing?.reportingAmount ?? booking?.amount ?? 0);
+    const bookingDiscount = Number(
+      booking?.pricing?.reportingDiscountAmount ??
+        booking?.referral?.reportingDiscountAmount ??
+        booking?.referral?.discountAmount ??
+        0
+    );
     const eventEntry = eventMap.get(booking.eventId) || {
       eventId: booking.eventId,
       title: booking.eventSnapshot?.title || 'Event',
@@ -81,19 +88,19 @@ const buildReferralAnalytics = ({ bookings, events, days = 30 }) => {
 
     referredBookings += 1;
     ticketsSold += booking.quantity || 0;
-    revenue += booking.amount || 0;
-    discountsGiven += booking.referral?.discountAmount || 0;
+    revenue += bookingRevenue;
+    discountsGiven += bookingDiscount;
 
     if (bucket) {
       bucket.bookings += 1;
-      bucket.revenue += booking.amount || 0;
+      bucket.revenue += bookingRevenue;
       bucket.ticketsSold += booking.quantity || 0;
     }
 
     eventEntry.referredBookings += 1;
     eventEntry.ticketsSold += booking.quantity || 0;
-    eventEntry.revenue += booking.amount || 0;
-    eventEntry.discountsGiven += booking.referral?.discountAmount || 0;
+    eventEntry.revenue += bookingRevenue;
+    eventEntry.discountsGiven += bookingDiscount;
     eventEntry.lastReferredAt =
       !eventEntry.lastReferredAt || new Date(eventEntry.lastReferredAt) < new Date(effectiveDate)
         ? effectiveDate

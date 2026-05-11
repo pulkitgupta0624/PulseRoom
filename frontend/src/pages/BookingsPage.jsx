@@ -4,7 +4,9 @@ import { Link } from 'react-router-dom';
 import SectionHeader from '../components/SectionHeader';
 import BookingNetworkingPanel from '../components/BookingNetworkingPanel';
 import QRCodeTicket from '../components/QRCodeTicket';
-import TicketDownloadButton from '../components/TicketDownloadButton';   // ← NEW
+import ReplayAccessButton from '../components/ReplayAccessButton';
+import TicketDownloadButton from '../components/TicketDownloadButton';
+import InvoiceDownloadButton from '../components/InvoiceDownloadButton';
 import { fetchMyBookings, requestRefund } from '../features/bookings/bookingsSlice';
 import { formatCurrency, formatDate } from '../lib/formatters';
 
@@ -129,6 +131,14 @@ const BookingCard = ({ booking, onRefund, refundingId }) => {
             <span className="font-semibold text-ink">{formatCurrency(booking.amount, booking.currency)}</span>
           </div>
 
+          {booking.pricing?.taxAmount > 0 && (
+            <p className="text-xs text-ink/45">
+              Includes {booking.pricing.taxLabel} {booking.pricing.taxRate}% of{' '}
+              {formatCurrency(booking.pricing.taxAmount, booking.currency)}
+              {booking.pricing.registrationNumber ? ` · Reg ${booking.pricing.registrationNumber}` : ''}
+            </p>
+          )}
+
           {booking.invoice?.invoiceNumber && (
             <p className="text-xs uppercase tracking-[0.2em] text-ink/40">
               Invoice: {booking.invoice.invoiceNumber} · Issued {formatDate(booking.invoice.issuedAt)}
@@ -160,8 +170,9 @@ const BookingCard = ({ booking, onRefund, refundingId }) => {
                 Enter room
               </Link>
             )}
-            {/* ── Download PNG ticket ── */}
-            <TicketDownloadButton booking={booking} />   {/* ← NEW */}
+            <ReplayAccessButton booking={booking} />
+            <TicketDownloadButton booking={booking} />
+            <InvoiceDownloadButton booking={booking} />
 
             {canRefund && (
               <button

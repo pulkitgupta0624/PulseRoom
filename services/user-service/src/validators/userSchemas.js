@@ -37,10 +37,17 @@ const reviewVerificationSchema = Joi.object({
   notes: Joi.string().allow('').max(500)
 });
 
+const internalLocationLookupSchema = Joi.object({
+  userIds: Joi.array()
+    .items(Joi.string().trim().min(1))
+    .max(500)
+    .required()
+});
+
 module.exports = {
   updateProfileSchema,
   updateRoleSchema,
   organizerVerificationSchema,
-  reviewVerificationSchema
+  reviewVerificationSchema,
+  internalLocationLookupSchema
 };
-

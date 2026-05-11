@@ -38,6 +38,7 @@ const { slugify } = require('../services/slugify');
 const { generateEventDraft, answerEventQuestion } = require('../services/aiAssistant');
 const { buildCalendarFile, buildCalendarFileName } = require('../services/calendarService');
 const { buildEventPageTheme } = require('../services/eventThemeService');
+const { buildPublicEventFilters } = require('../services/publicEventFilters');
 const { buildPriceSummary } = require('../services/searchService');
 const {
   buildReviewSummary,
@@ -79,6 +80,23 @@ const canManageEvent = (event, user) => user.role === Roles.ADMIN || event.organ
 
 const cacheKeyFromQuery = (query) => `events:list:${JSON.stringify(query)}`;
 
+const normalizeCurrencyCode = (value, fallback = 'INR') =>
+  String(value || fallback)
+    .trim()
+    .toUpperCase();
+
+const normalizeAcceptedCurrencies = ({ acceptedCurrencies = [], ticketTiers = [], fallbackCurrencies = [] }) => {
+  const currencies = [
+    ...(acceptedCurrencies || []),
+    ...(ticketTiers || []).map((tier) => tier.currency),
+    ...fallbackCurrencies
+  ]
+    .map((currency) => normalizeCurrencyCode(currency))
+    .filter((currency) => /^[A-Z]{3}$/.test(currency));
+
+  return [...new Set(currencies.length ? currencies : ['INR'])];
+};
+
 const assertInternalBookingService = (req) => {
   if (req.headers['x-service-name'] !== 'booking-service') {
     throw new AppError('Forbidden', 403, 'forbidden');
@@ -104,6 +122,29 @@ const assertCanViewEvent = (event, viewer) => {
 
 const getViewerDisplayName = (viewer, fallback = 'Attendee') =>
   viewer?.email?.split('@')?.[0] || fallback;
+
+const normalizeEventFinanceSettings = (payload = {}, existingEvent = null) => {
+  const nextPayload = { ...payload };
+  const nextTicketTiers = (payload.ticketTiers || existingEvent?.ticketTiers || []).map((tier) => ({
+    ...tier,
+    currency: normalizeCurrencyCode(tier.currency || existingEvent?.ticketTiers?.[0]?.currency || 'INR')
+  }));
+
+  nextPayload.ticketTiers = nextTicketTiers;
+  nextPayload.acceptedCurrencies = normalizeAcceptedCurrencies({
+    acceptedCurrencies: payload.acceptedCurrencies || existingEvent?.acceptedCurrencies || [],
+    ticketTiers: nextTicketTiers,
+    fallbackCurrencies: [existingEvent?.ticketTiers?.[0]?.currency || 'INR']
+  });
+
+  if (payload.taxRegistrationNumber !== undefined) {
+    nextPayload.taxRegistrationNumber = payload.taxRegistrationNumber?.trim() || '';
+  } else if (existingEvent?.taxRegistrationNumber) {
+    nextPayload.taxRegistrationNumber = existingEvent.taxRegistrationNumber;
+  }
+
+  return nextPayload;
+};
 
 const loadReviewEligibility = async (req, eventId, userId) => {
   try {
@@ -301,6 +342,7 @@ router.get(
     );
 
     sendSuccess(res, {
+      reportingCurrency: req.config.reportingCurrency,
       totals: {
         events: serializedEvents.length,
         published: serializedEvents.filter((item) => item.status === 'published').length,
@@ -874,6 +916,15 @@ router.post(
       }
     );
 
+    if (req.body.optedIn) {
+      await req.eventBus.publish(DomainEvents.NETWORKING_OPTED_IN, {
+        eventId: req.params.eventId,
+        userId: req.user.sub,
+        eventTitle: event.title,
+        optedInAt: response.data.data.optedInAt || new Date()
+      });
+    }
+
     sendSuccess(res, {
       ...response.data.data,
       settings: serializeNetworkingSettings(event)
@@ -957,45 +1008,7 @@ router.get(
       });
     }
 
-    const filters = {
-      status: 'published',
-      visibility
-    };
-
-    if (req.query.type) {
-      filters.type = req.query.type;
-    }
-    if (req.query.category) {
-      filters.categories = req.query.category;
-    }
-    if (req.query.tag) {
-      filters.tags = req.query.tag;
-    }
-    if (req.query.city) {
-      filters.city = new RegExp(`^${req.query.city}$`, 'i');
-    }
-    if (req.query.startsAfter || req.query.startsBefore) {
-      filters.startsAt = {};
-      if (req.query.startsAfter) {
-        filters.startsAt.$gte = new Date(req.query.startsAfter);
-      }
-      if (req.query.startsBefore) {
-        filters.startsAt.$lte = new Date(req.query.startsBefore);
-      }
-    }
-    if (req.query.q) {
-      filters.$text = { $search: req.query.q };
-    }
-    if (req.query.minPrice || req.query.maxPrice) {
-      filters.ticketTiers = {
-        $elemMatch: {
-          price: {
-            ...(req.query.minPrice ? { $gte: Number(req.query.minPrice) } : {}),
-            ...(req.query.maxPrice ? { $lte: Number(req.query.maxPrice) } : {})
-          }
-        }
-      };
-    }
+    const filters = buildPublicEventFilters(req.query, visibility);
 
     const events = await Event.find(filters)
       .sort(req.query.sort === 'popular' ? { attendeesCount: -1 } : { startsAt: 1 })
@@ -1030,8 +1043,9 @@ router.post(
   validateSchema(createEventSchema),
   asyncHandler(async (req, res) => {
     const slugBase = slugify(req.body.title);
+    const normalizedPayload = normalizeEventFinanceSettings(req.body);
     const event = new Event({
-      ...req.body,
+      ...normalizedPayload,
       pageTheme: buildEventPageTheme(req.body.pageTheme || {}),
       organizerId: req.user.sub,
       slug: `${slugBase}-${crypto.randomBytes(3).toString('hex')}`
@@ -1258,6 +1272,17 @@ router.post(
 
     await review.save();
 
+    if (!existingReview) {
+      await req.eventBus.publish(DomainEvents.EVENT_REVIEW_SUBMITTED, {
+        reviewId: review._id.toString(),
+        eventId: req.params.eventId,
+        userId: req.user.sub,
+        organizerId: event.organizerId,
+        rating: review.rating,
+        createdAt: review.createdAt
+      });
+    }
+
     sendSuccess(
       res,
       {
@@ -1406,7 +1431,7 @@ router.patch(
       throw new AppError('Forbidden', 403, 'forbidden');
     }
 
-    const nextPayload = { ...req.body };
+    const nextPayload = normalizeEventFinanceSettings(req.body, event);
     if (req.body.pageTheme) {
       nextPayload.pageTheme = buildEventPageTheme({
         ...(event.pageTheme || {}),

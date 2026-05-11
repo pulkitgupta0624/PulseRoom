@@ -4,6 +4,7 @@ const {
   asyncHandler,
   authenticate,
   authorize,
+  decodeOptionalToken,
   sendSuccess,
   validateSchema,
   DomainEvents,
@@ -15,12 +16,36 @@ const Booking = require('../models/Booking');
 const Payment = require('../models/Payment');
 const WaitlistEntry = require('../models/WaitlistEntry');
 const config = require('../config');
-const { checkoutSchema, joinWaitlistSchema, checkInSchema } = require('../validators/bookingSchemas');
-const { buildInvoiceNumber } = require('../services/invoiceService');
-const { createPaymentIntent, createRefund, constructWebhookEvent } = require('../services/paymentService');
+const {
+  checkoutSchema,
+  quoteSchema,
+  confirmPaymentSchema,
+  joinWaitlistSchema,
+  checkInSchema
+} = require('../validators/bookingSchemas');
+const {
+  buildInvoiceNumber,
+  buildInvoicePdf
+} = require('../services/invoiceService');
+const {
+  createPaymentIntent,
+  createRefund,
+  retrievePaymentIntent,
+  constructWebhookEvent
+} = require('../services/paymentService');
 const { buildTicketToken, serializeBooking } = require('../services/ticketService');
+const { assertTicketTierAccessible } = require('../services/ticketAccessService');
 const { buildBookingAnalytics, clampWindowDays } = require('../services/analyticsService');
 const { buildReferralAnalytics } = require('../services/referralAnalyticsService');
+const {
+  buildEventBookingsCsv,
+  buildOrganizerGrowthDashboard
+} = require('../services/organizerGrowthService');
+const {
+  roundCurrencyAmount,
+  resolveSettlementCurrency,
+  calculatePricingBreakdown
+} = require('../services/pricingService');
 const {
   serializeWaitlistEntry,
   getCommittedQuantity,
@@ -53,6 +78,119 @@ const releasePromoReservationIfNeeded = async ({ booking, req }) => {
   }
 
   return released;
+};
+
+const buildPricingContext = async ({
+  req,
+  event,
+  tier,
+  quantity,
+  requestedCurrency,
+  discountBaseAmount = 0
+}) => {
+  const currencySelection = resolveSettlementCurrency({
+    event,
+    tier,
+    requestedCurrency
+  });
+
+  if (!currencySelection.isAccepted) {
+    throw new AppError(
+      'This event does not accept the selected currency',
+      409,
+      'currency_not_supported'
+    );
+  }
+
+  const taxRule = await req.services.taxRuleService.findByCountry(event.country);
+  const pricing = await calculatePricingBreakdown({
+    quantity,
+    subtotalBaseAmount: roundCurrencyAmount(Number(tier.price || 0) * Number(quantity || 0)),
+    discountBaseAmount,
+    baseCurrency: tier.currency || currencySelection.settlementCurrency,
+    settlementCurrency: currencySelection.settlementCurrency,
+    taxRule,
+    taxRegistrationNumber: event.taxRegistrationNumber,
+    exchangeRateService: req.services.exchangeRateService,
+    reportingCurrency: req.config.reportingCurrency
+  });
+
+  return {
+    acceptedCurrencies: currencySelection.acceptedCurrencies,
+    pricing
+  };
+};
+
+const buildReferralPreview = async ({ event, referralCode, viewerUserId, subtotal }) => {
+  const normalizedReferralCode = referralCode?.trim();
+  if (
+    !normalizedReferralCode ||
+    event?.referral?.code !== normalizedReferralCode ||
+    event?.referral?.status !== 'active' ||
+    viewerUserId === event?.organizerId
+  ) {
+    return {
+      applied: false,
+      discountBaseAmount: 0
+    };
+  }
+
+  if (viewerUserId) {
+    const isEligible = !(await Booking.exists({
+      userId: viewerUserId,
+      status: BookingStatus.CONFIRMED
+    }));
+    if (!isEligible) {
+      return {
+        applied: false,
+        discountBaseAmount: 0
+      };
+    }
+  }
+
+  return {
+    applied: true,
+    code: event.referral.code,
+    discountBaseAmount: calculateReferralDiscountAmount({
+      subtotal,
+      referral: event.referral
+    })
+  };
+};
+
+const canAccessBooking = (booking, user) =>
+  Boolean(
+    booking &&
+      user &&
+      (booking.userId === user.sub ||
+        booking.eventSnapshot?.organizerId === user.sub ||
+        user.role === Roles.ADMIN)
+  );
+
+const getReportingAmount = (booking) =>
+  Number(booking?.pricing?.reportingAmount ?? booking?.amount ?? 0);
+
+const buildPaymentResponse = (payment, paymentIntentStatus = null) => ({
+  id: payment._id,
+  status: payment.status,
+  provider: payment.provider,
+  clientSecret: payment.clientSecret,
+  paymentIntentId: payment.providerPaymentId,
+  paymentIntentStatus
+});
+
+const syncPaymentStatusFromIntent = (payment, intent) => {
+  if (intent.status === 'succeeded') {
+    payment.status = PaymentStatus.SUCCEEDED;
+    return;
+  }
+
+  if (intent.status === 'requires_payment_method' || intent.status === 'canceled') {
+    payment.status = PaymentStatus.FAILED;
+    return;
+  }
+
+  payment.status = PaymentStatus.REQUIRES_ACTION;
 };
 
 const finalizeSuccessfulPayment = async ({ booking, payment, req, providerPaymentId }) => {
@@ -93,8 +231,10 @@ const finalizeSuccessfulPayment = async ({ booking, payment, req, providerPaymen
     userId: booking.userId,
     quantity: booking.quantity,
     amount: booking.amount,
+    reportingAmount: getReportingAmount(booking),
     eventTitle: booking.eventSnapshot.title,
     eventStartsAt: booking.eventSnapshot.startsAt,
+    confirmedAt: booking.confirmedAt,
     attendeeEmail: booking.attendee.email,
     attendeeName: booking.attendee.name,
     organizerId: booking.eventSnapshot.organizerId
@@ -120,10 +260,40 @@ const getOrganizerEvents = async (req) => {
   return response.data.data.events;
 };
 
-const assertInternalEventService = (req) => {
-  if (req.headers['x-service-name'] !== 'event-service') {
+const loadUserLocations = async (req, userIds = []) => {
+  const uniqueUserIds = [...new Set(userIds.map((userId) => String(userId || '').trim()).filter(Boolean))];
+  if (!uniqueUserIds.length) {
+    return [];
+  }
+
+  try {
+    const response = await req.clients.userService.post('/api/users/internal/profiles/locations', {
+      userIds: uniqueUserIds
+    });
+    return response.data.data || [];
+  } catch (_error) {
+    return [];
+  }
+};
+
+const buildCsvFileName = (title = 'event') => {
+  const slug = String(title || 'event')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+
+  return `${slug || 'event'}-bookings.csv`;
+};
+
+const assertInternalService = (req, allowedServices = []) => {
+  if (!allowedServices.includes(req.headers['x-service-name'])) {
     throw new AppError('Forbidden', 403, 'forbidden');
   }
+};
+
+const assertInternalEventService = (req) => {
+  assertInternalService(req, ['event-service']);
 };
 
 router.post(
@@ -156,6 +326,53 @@ router.post(
   })
 );
 
+router.post(
+  '/quote',
+  validateSchema(quoteSchema),
+  asyncHandler(async (req, res) => {
+    const eventResponse = await req.clients.eventService.get(`/api/events/${req.body.eventId}`);
+    const event = eventResponse.data.data;
+    const tier = event.ticketTiers.find((item) => item.tierId === req.body.tierId);
+    if (!tier) {
+      throw new AppError('Ticket tier not found', 404, 'tier_not_found');
+    }
+
+    const subtotal = roundCurrencyAmount(Number(tier.price || 0) * Number(req.body.quantity || 0));
+    const viewer = decodeOptionalToken(req);
+    const referralPreview = req.body.promoCode
+      ? {
+          applied: false,
+          discountBaseAmount: 0
+        }
+      : await buildReferralPreview({
+          event,
+          referralCode: req.body.referralCode,
+          viewerUserId: viewer?.sub,
+          subtotal
+        });
+
+    const { acceptedCurrencies, pricing } = await buildPricingContext({
+      req,
+      event,
+      tier,
+      quantity: req.body.quantity,
+      requestedCurrency: req.body.currency,
+      discountBaseAmount: referralPreview.discountBaseAmount
+    });
+
+    sendSuccess(res, {
+      pricing,
+      acceptedCurrencies,
+      referral: referralPreview.applied
+        ? {
+            code: referralPreview.code,
+            discountAmount: pricing.discountAmount
+          }
+        : null
+    });
+  })
+);
+
 router.get(
   '/analytics/organizer',
   authenticate(),
@@ -167,10 +384,13 @@ router.get(
     if (!eventIds.length) {
       return sendSuccess(
         res,
-        buildBookingAnalytics({
-          bookings: [],
-          days: clampWindowDays(req.query.days)
-        })
+        {
+          ...buildBookingAnalytics({
+            bookings: [],
+            days: clampWindowDays(req.query.days)
+          }),
+          currency: req.config.reportingCurrency
+        }
       );
     }
 
@@ -178,10 +398,58 @@ router.get(
       status: BookingStatus.CONFIRMED,
       eventId: { $in: eventIds }
     })
-      .select('eventId eventSnapshot amount quantity confirmedAt createdAt checkedInAt')
+      .select('eventId eventSnapshot amount quantity confirmedAt createdAt checkedInAt pricing')
       .lean();
 
-    sendSuccess(res, buildBookingAnalytics({ bookings, days: req.query.days }));
+    sendSuccess(res, {
+      ...buildBookingAnalytics({ bookings, days: req.query.days }),
+      currency: req.config.reportingCurrency
+    });
+  })
+);
+
+router.get(
+  '/analytics/organizer/growth',
+  authenticate(),
+  authorize(Roles.ORGANIZER, Roles.ADMIN),
+  asyncHandler(async (req, res) => {
+    const events = await getOrganizerEvents(req);
+    const eventIds = events.map((event) => event._id);
+
+    if (!eventIds.length) {
+      return sendSuccess(
+        res,
+        buildOrganizerGrowthDashboard({
+          events: [],
+          bookings: [],
+          userLocations: [],
+          reportingCurrency: req.config.reportingCurrency
+        })
+      );
+    }
+
+    const bookings = await Booking.find({
+      eventId: { $in: eventIds }
+    })
+      .select(
+        'bookingNumber userId eventId tierId tierName quantity amount currency status attendee promoCode referral invoice createdAt confirmedAt checkedInAt cancelledAt refundedAt eventSnapshot pricing'
+      )
+      .lean();
+
+    const userLocations = await loadUserLocations(
+      req,
+      bookings.map((booking) => booking.userId)
+    );
+
+    sendSuccess(
+      res,
+      buildOrganizerGrowthDashboard({
+        events,
+        bookings,
+        userLocations,
+        reportingCurrency: req.config.reportingCurrency
+      })
+    );
   })
 );
 
@@ -196,11 +464,14 @@ router.get(
     if (!eventIds.length) {
       return sendSuccess(
         res,
-        buildReferralAnalytics({
-          bookings: [],
-          events: [],
-          days: req.query.days
-        })
+        {
+          ...buildReferralAnalytics({
+            bookings: [],
+            events: [],
+            days: req.query.days
+          }),
+          currency: req.config.reportingCurrency
+        }
       );
     }
 
@@ -209,16 +480,19 @@ router.get(
       eventId: { $in: eventIds },
       'referral.code': { $exists: true, $ne: null }
     })
-      .select('eventId eventSnapshot amount quantity confirmedAt createdAt referral')
+      .select('eventId eventSnapshot amount quantity confirmedAt createdAt referral pricing')
       .lean();
 
     sendSuccess(
       res,
-      buildReferralAnalytics({
-        bookings,
-        events,
-        days: req.query.days
-      })
+      {
+        ...buildReferralAnalytics({
+          bookings,
+          events,
+          days: req.query.days
+        }),
+        currency: req.config.reportingCurrency
+      }
     );
   })
 );
@@ -231,10 +505,13 @@ router.get(
     const bookings = await Booking.find({
       status: BookingStatus.CONFIRMED
     })
-      .select('eventId eventSnapshot amount quantity confirmedAt createdAt checkedInAt')
+      .select('eventId eventSnapshot amount quantity confirmedAt createdAt checkedInAt pricing')
       .lean();
 
-    sendSuccess(res, buildBookingAnalytics({ bookings, days: req.query.days }));
+    sendSuccess(res, {
+      ...buildBookingAnalytics({ bookings, days: req.query.days }),
+      currency: req.config.reportingCurrency
+    });
   })
 );
 
@@ -290,6 +567,38 @@ router.get(
             confirmedAt: booking.confirmedAt || null,
             checkedInAt: booking.checkedInAt || null,
             ticketTierName: booking.tierName || ''
+          }
+        : null
+    });
+  })
+);
+
+router.get(
+  '/internal/events/:eventId/replay-access',
+  asyncHandler(async (req, res) => {
+    assertInternalService(req, ['live-service']);
+
+    const userId = String(req.query.userId || '').trim();
+    if (!userId) {
+      throw new AppError('userId is required', 400, 'replay_access_invalid');
+    }
+
+    const booking = await Booking.findOne({
+      eventId: req.params.eventId,
+      userId,
+      status: BookingStatus.CONFIRMED
+    })
+      .sort({ confirmedAt: -1, createdAt: -1 })
+      .lean();
+
+    sendSuccess(res, {
+      allowed: Boolean(booking),
+      booking: booking
+        ? {
+            bookingId: booking._id.toString(),
+            tierName: booking.tierName || '',
+            attendee: booking.attendee || {},
+            confirmedAt: booking.confirmedAt || null
           }
         : null
     });
@@ -413,6 +722,29 @@ router.post(
       throw new AppError('Ticket tier not found', 404, 'tier_not_found');
     }
 
+    const saleStart = tier.saleStart ? new Date(tier.saleStart) : null;
+    let gamificationEntitlements = null;
+    if (saleStart && saleStart.getTime() > Date.now()) {
+      try {
+        const response = await req.clients.gamificationService.get(
+          `/api/gamification/internal/users/${req.user.sub}/entitlements`
+        );
+        gamificationEntitlements = response.data.data;
+      } catch (_error) {
+        throw new AppError(
+          'Unable to verify early-access eligibility right now',
+          502,
+          'gamification_unavailable'
+        );
+      }
+    }
+
+    assertTicketTierAccessible({
+      tier,
+      entitlements: gamificationEntitlements,
+      now: new Date()
+    });
+
     const normalizedReferralCode = req.body.referralCode?.trim();
     const normalizedPromoCode = req.body.promoCode?.trim();
     if (normalizedReferralCode && normalizedPromoCode) {
@@ -458,7 +790,7 @@ router.post(
       throw new AppError('Selected tier is sold out', 409, 'tier_sold_out');
     }
 
-    const subtotal = Number((tier.price * quantity).toFixed(2));
+    const subtotal = roundCurrencyAmount(Number(tier.price || 0) * Number(quantity || 0));
     let promoCodeQuote = null;
     if (normalizedPromoCode) {
       try {
@@ -495,7 +827,7 @@ router.post(
       );
     }
 
-    const discountAmount = referralCode
+    const discountBaseAmount = referralCode
       ? calculateReferralDiscountAmount({
           subtotal,
           referral: event.referral
@@ -503,14 +835,30 @@ router.post(
       : promoCodeQuote
         ? Number(promoCodeQuote.discountAmount || 0)
       : 0;
-    const amount = Number((subtotal - discountAmount).toFixed(2));
+    const { acceptedCurrencies, pricing } = await buildPricingContext({
+      req,
+      event,
+      tier,
+      quantity,
+      requestedCurrency: req.body.currency,
+      discountBaseAmount
+    });
+    const amount = pricing.total;
+
+    if (config.paymentProvider === 'stripe' && amount > 0 && !config.stripeSecretKey) {
+      throw new AppError(
+        'Stripe is enabled but not configured. Add STRIPE_SECRET_KEY before taking payments.',
+        503,
+        'stripe_not_configured'
+      );
+    }
 
     if (referralCode) {
       try {
         await req.clients.eventService.post(`/api/events/${req.body.eventId}/referral/consume`, {
           code: referralCode,
           redeemedByUserId: req.user.sub,
-          discountAmount
+          discountAmount: discountBaseAmount
         });
       } catch (error) {
         throw new AppError(
@@ -529,7 +877,8 @@ router.post(
       tierName: tier.name,
       quantity,
       amount,
-      currency: tier.currency || 'INR',
+      currency: pricing.settlementCurrency,
+      pricing,
       attendee,
       ...(referralCode
         ? {
@@ -538,9 +887,12 @@ router.post(
               referrerUserId: event.organizerId,
               discountType: event.referral.discountType,
               discountValue: event.referral.discountValue,
-              originalAmount: subtotal,
-              discountAmount,
-              finalAmount: amount,
+              originalAmount: pricing.subtotal,
+              discountAmount: pricing.discountAmount,
+              finalAmount: pricing.total,
+              baseOriginalAmount: pricing.baseSubtotal,
+              baseDiscountAmount: pricing.baseDiscountAmount,
+              reportingDiscountAmount: pricing.reportingDiscountAmount,
               trackedAt: new Date()
             }
           }
@@ -552,9 +904,12 @@ router.post(
               code: promoCodeQuote.code,
               discountType: promoCodeQuote.discountType,
               discountValue: promoCodeQuote.discountValue,
-              originalAmount: subtotal,
-              discountAmount,
-              finalAmount: amount,
+              originalAmount: pricing.subtotal,
+              discountAmount: pricing.discountAmount,
+              finalAmount: pricing.total,
+              baseOriginalAmount: pricing.baseSubtotal,
+              baseDiscountAmount: pricing.baseDiscountAmount,
+              reportingDiscountAmount: pricing.reportingDiscountAmount,
               reservedAt: new Date()
             }
           }
@@ -574,7 +929,7 @@ router.post(
           promoCodeId: promoCodeQuote.promoCodeId,
           code: promoCodeQuote.code,
           tierId: tier.tierId,
-          discountAmount,
+          discountAmount: discountBaseAmount,
           redeemedByUserId: req.user.sub,
           bookingId: booking._id.toString()
         });
@@ -595,7 +950,7 @@ router.post(
       userId: req.user.sub,
       eventId: event._id,
       amount,
-      currency: tier.currency || 'INR',
+      currency: pricing.settlementCurrency,
       provider: config.paymentProvider === 'stripe' && amount > 0 ? 'stripe' : 'manual',
       status: amount === 0 ? PaymentStatus.SUCCEEDED : PaymentStatus.CREATED
     });
@@ -657,15 +1012,106 @@ router.post(
       res,
       {
         booking: serializeBooking(booking),
-        payment: {
-          id: payment._id,
-          status: payment.status,
-          provider: payment.provider,
-          clientSecret: payment.clientSecret
-        },
+        payment: buildPaymentResponse(payment, paymentIntentMeta?.paymentIntentId ? 'requires_action' : null),
         paymentIntent: paymentIntentMeta
       },
       201
+    );
+  })
+);
+
+router.post(
+  '/:bookingId/confirm-payment',
+  authenticate(),
+  validateSchema(confirmPaymentSchema),
+  asyncHandler(async (req, res) => {
+    const booking = await Booking.findById(req.params.bookingId);
+    if (!booking) {
+      throw new AppError('Booking not found', 404, 'booking_not_found');
+    }
+
+    if (!canAccessBooking(booking, req.user)) {
+      throw new AppError('Forbidden', 403, 'forbidden');
+    }
+
+    const payment = await Payment.findById(booking.paymentId);
+    if (!payment) {
+      throw new AppError('Payment not found', 404, 'payment_not_found');
+    }
+
+    if (payment.provider !== 'stripe') {
+      throw new AppError('This booking does not use Stripe payment', 409, 'payment_provider_invalid');
+    }
+
+    if (!payment.providerPaymentId) {
+      throw new AppError('Stripe payment intent not found', 409, 'payment_intent_missing');
+    }
+
+    if (req.body.paymentIntentId && req.body.paymentIntentId !== payment.providerPaymentId) {
+      throw new AppError('Stripe payment intent mismatch', 409, 'payment_intent_mismatch');
+    }
+
+    if (
+      booking.status === BookingStatus.CONFIRMED &&
+      payment.status === PaymentStatus.SUCCEEDED
+    ) {
+      return sendSuccess(res, {
+        booking: serializeBooking(booking),
+        payment: buildPaymentResponse(payment, 'succeeded'),
+        paymentIntent: {
+          id: payment.providerPaymentId,
+          status: 'succeeded'
+        },
+        bookingConfirmed: true
+      });
+    }
+
+    const intent = await retrievePaymentIntent(payment.providerPaymentId);
+    syncPaymentStatusFromIntent(payment, intent);
+    payment.providerPaymentId = intent.id;
+    await payment.save();
+
+    if (intent.status === 'succeeded') {
+      await finalizeSuccessfulPayment({
+        booking,
+        payment,
+        req,
+        providerPaymentId: intent.id
+      });
+
+      return sendSuccess(res, {
+        booking: serializeBooking(booking),
+        payment: buildPaymentResponse(payment, intent.status),
+        paymentIntent: {
+          id: intent.id,
+          status: intent.status
+        },
+        bookingConfirmed: true
+      });
+    }
+
+    if (intent.status === 'processing') {
+      return sendSuccess(
+        res,
+        {
+          booking: serializeBooking(booking),
+          payment: buildPaymentResponse(payment, intent.status),
+          paymentIntent: {
+            id: intent.id,
+            status: intent.status
+          },
+          bookingConfirmed: false,
+          message:
+            'Stripe is still processing this payment. Your ticket will appear once the webhook confirms it.'
+        },
+        202
+      );
+    }
+
+    throw new AppError(
+      intent.last_payment_error?.message || 'Stripe payment has not completed yet',
+      409,
+      payment.status === PaymentStatus.FAILED ? 'payment_failed' : 'payment_incomplete'
     );
   })
 );
@@ -676,6 +1122,33 @@ router.get(
   asyncHandler(async (req, res) => {
     const bookings = await Booking.find({ userId: req.user.sub }).sort({ createdAt: -1 });
     sendSuccess(res, bookings.map(serializeBooking));
+  })
+);
+
+router.get(
+  '/:bookingId/invoice.pdf',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const booking = await Booking.findById(req.params.bookingId);
+    if (!booking) {
+      throw new AppError('Booking not found', 404, 'booking_not_found');
+    }
+
+    if (!canAccessBooking(booking, req.user)) {
+      throw new AppError('Forbidden', 403, 'forbidden');
+    }
+
+    if (!booking.invoice?.invoiceNumber) {
+      throw new AppError('Invoice not available yet', 404, 'invoice_not_found');
+    }
+
+    const pdfBuffer = await buildInvoicePdf(booking);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${booking.invoice.invoiceNumber}.pdf"`
+    );
+    res.status(200).send(pdfBuffer);
   })
 );
 
@@ -694,6 +1167,44 @@ router.get(
 
     const bookings = await Booking.find(filter).sort({ createdAt: -1 });
     sendSuccess(res, bookings.map(serializeBooking));
+  })
+);
+
+router.get(
+  '/event/:eventId/export.csv',
+  authenticate(),
+  authorize(Roles.ORGANIZER, Roles.ADMIN),
+  asyncHandler(async (req, res) => {
+    const events = await getOrganizerEvents(req);
+    const event = events.find((item) => String(item._id) === String(req.params.eventId));
+
+    if (!event) {
+      throw new AppError('Event not found', 404, 'event_not_found');
+    }
+
+    const bookings = await Booking.find({
+      eventId: req.params.eventId
+    })
+      .sort({ createdAt: -1 })
+      .select(
+        'bookingNumber userId eventId tierId tierName quantity amount currency status attendee promoCode referral invoice createdAt confirmedAt checkedInAt cancelledAt refundedAt eventSnapshot pricing'
+      )
+      .lean();
+
+    const userLocations = await loadUserLocations(
+      req,
+      bookings.map((booking) => booking.userId)
+    );
+    const csv = buildEventBookingsCsv({
+      event,
+      bookings,
+      userLocations,
+      reportingCurrency: req.config.reportingCurrency
+    });
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${buildCsvFileName(event.title)}"`);
+    res.status(200).send(`\uFEFF${csv}`);
   })
 );
 
@@ -726,6 +1237,14 @@ router.post(
       booking.checkedInAt = new Date();
       booking.checkedInBy = req.user.sub;
       await booking.save();
+
+      await req.eventBus.publish(DomainEvents.BOOKING_CHECKED_IN, {
+        bookingId: booking._id.toString(),
+        eventId: booking.eventId,
+        userId: booking.userId,
+        eventTitle: booking.eventSnapshot?.title || '',
+        checkedInAt: booking.checkedInAt
+      });
     }
 
     sendSuccess(res, {
@@ -781,7 +1300,8 @@ router.post(
       bookingId: booking._id.toString(),
       eventId: booking.eventId,
       quantity: booking.quantity,
-      amount: booking.amount
+      amount: booking.amount,
+      reportingAmount: getReportingAmount(booking)
     });
 
     await req.eventBus.publish(DomainEvents.BOOKING_CANCELLED, {

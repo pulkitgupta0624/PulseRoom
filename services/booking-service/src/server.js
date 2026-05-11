@@ -1,10 +1,19 @@
-const { connectMongo, RedisEventBus, DomainEvents, createServiceClient } = require('@pulseroom/common');
+const {
+  connectMongo,
+  RedisEventBus,
+  DomainEvents,
+  createCacheClient,
+  createServiceClient
+} = require('@pulseroom/common');
 const { createApp, logger } = require('./app');
 const config = require('./config');
 const { createBookingAutomationService } = require('./services/bookingAutomationService');
+const { createExchangeRateService } = require('./services/exchangeRateService');
+const { createTaxRuleService } = require('./services/taxRuleService');
 
 const start = async () => {
   await connectMongo(config.mongoUri, logger);
+  const cache = createCacheClient(config.redisUrl);
   const eventBus = new RedisEventBus({
     redisUrl: config.redisUrl,
     serviceName: 'booking-service',
@@ -42,7 +51,59 @@ const start = async () => {
     }
   );
 
-  const app = createApp({ eventBus, automationService });
+  const exchangeRateService = createExchangeRateService({
+    cache,
+    logger,
+    baseUrl: config.exchangeRateApiBaseUrl
+  });
+  const taxRuleService = createTaxRuleService({
+    defaultRules: [
+      {
+        country: 'IN',
+        label: 'GST',
+        rate: 18,
+        registrationNumber: config.defaultInTaxRegistrationNumber
+      },
+      {
+        country: 'UK',
+        label: 'VAT',
+        rate: 20,
+        registrationNumber: config.defaultUkTaxRegistrationNumber
+      }
+    ]
+  });
+  await taxRuleService.ensureDefaultTaxRules();
+
+  const refreshExchangeRateCache = async () => {
+    try {
+      await exchangeRateService.refreshCurrencies([
+        config.reportingCurrency,
+        'USD',
+        'INR',
+        'GBP',
+        'EUR'
+      ]);
+    } catch (error) {
+      logger.warn({
+        message: 'Exchange-rate refresh skipped',
+        error: error.message
+      });
+    }
+  };
+
+  void refreshExchangeRateCache();
+  const refreshInterval = setInterval(refreshExchangeRateCache, 60 * 60 * 1000);
+  refreshInterval.unref?.();
+
+  const app = createApp({
+    eventBus,
+    automationService,
+    cache,
+    services: {
+      exchangeRateService,
+      taxRuleService
+    }
+  });
   app.listen(config.port, () => {
     logger.info({
       message: 'Booking service started',

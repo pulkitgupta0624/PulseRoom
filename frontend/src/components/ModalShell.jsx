@@ -87,7 +87,7 @@ const ModalShell = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 sm:items-center sm:p-6"
       style={{ background: 'rgba(18,18,18,0.55)', backdropFilter: 'blur(8px)' }}
       onMouseDown={(event) => {
         if (closeOnBackdrop && event.target === event.currentTarget) {

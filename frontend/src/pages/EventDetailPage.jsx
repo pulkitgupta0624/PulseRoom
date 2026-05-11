@@ -6,10 +6,14 @@ import EventCapacityBar from '../components/EventCapacityBar';
 import EventReportModal from '../components/EventReportModal';
 import AddToCalendarButton from '../components/AddToCalendarButton';
 import EventSponsorSection from '../components/EventSponsorSection';
+import StripeCheckoutModal from '../components/StripeCheckoutModal';
 import StarRatingInput from '../components/StarRatingInput';
 import { fetchEventById } from '../features/events/eventsSlice';
+import { deriveOrganizerFollowState } from '../features/user/organizerFollowState';
+import { syncFollowState } from '../features/user/userSlice';
 import { api } from '../lib/api';
 import { formatCurrency, formatDate } from '../lib/formatters';
+import { getViewerLocale, inferPreferredCurrency } from '../lib/currency';
 import { parseCssVariablesBlob } from '../lib/eventTheme';
 
 const ShareButton = ({ event, shareUrl }) => {
@@ -132,9 +136,25 @@ const StaticStarRating = ({ rating }) => (
   </div>
 );
 
+const buildBookingSuccessMessage = (booking, locale) => {
+  const promoSavedAmount = booking?.promoCode?.discountAmount || 0;
+  const referralSavedAmount = booking?.referral?.discountAmount || 0;
+  const savingsMessage = promoSavedAmount
+    ? ` You saved ${formatCurrency(promoSavedAmount, booking.currency, locale)} with promo code ${booking.promoCode.code}.`
+    : referralSavedAmount
+      ? ` You saved ${formatCurrency(referralSavedAmount, booking.currency, locale)} with the referral invite.`
+      : '';
+
+  if (booking?.invoice?.invoiceNumber) {
+    return `Booking confirmed. Invoice ${booking.invoice.invoiceNumber} is ready and your QR ticket is now in My Tickets.${savingsMessage}`;
+  }
+
+  return `Booking confirmed successfully.${savingsMessage}`;
+};
+
 const EventDetailPage = () => {
   const { eventId } = useParams();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const dispatch = useDispatch();
   const { user } = useSelector((state) => state.auth);
   const { currentEvent: event } = useSelector((state) => state.events);
@@ -150,6 +170,11 @@ const EventDetailPage = () => {
   const [showReport, setShowReport] = useState(false);
   const [activeReferralCode, setActiveReferralCode] = useState('');
   const [promoCode, setPromoCode] = useState('');
+  const [selectedCurrency, setSelectedCurrency] = useState('');
+  const [pricingQuote, setPricingQuote] = useState(null);
+  const [pricingLoading, setPricingLoading] = useState(false);
+  const [stripeCheckoutSession, setStripeCheckoutSession] = useState(null);
+  const [stripeCheckoutOpen, setStripeCheckoutOpen] = useState(false);
   const [organizerProfile, setOrganizerProfile] = useState(null);
   const [followLoading, setFollowLoading] = useState(false);
   const [organizerStatus, setOrganizerStatus] = useState(null);
@@ -172,10 +197,21 @@ const EventDetailPage = () => {
   const [replyDrafts, setReplyDrafts] = useState({});
   const [replySavingId, setReplySavingId] = useState(null);
   const referralVisitTrackedRef = useRef(false);
+  const stripeRedirectHandledRef = useRef('');
 
   const waitlistOfferToken = searchParams.get('waitlistOfferToken');
   const requestedTierFromLink = searchParams.get('tierId');
   const referralCodeFromLink = searchParams.get('ref');
+  const redirectPaymentBookingId = searchParams.get('paymentBookingId');
+  const redirectPaymentIntentId = searchParams.get('payment_intent');
+  const redirectStatus = searchParams.get('redirect_status');
+  const organizerFollowState = deriveOrganizerFollowState({
+    organizerProfile,
+    organizerId: event?.organizerId,
+    viewerUser: user
+  });
+  const canFollowOrganizer = organizerFollowState.canFollowOrganizer;
+  const shouldPromptFollowSignIn = organizerFollowState.shouldPromptSignIn;
 
   useEffect(() => {
     referralVisitTrackedRef.current = false;
@@ -349,15 +385,38 @@ const EventDetailPage = () => {
   const canonicalEventUrl = typeof window !== 'undefined' ? `${window.location.origin}/events/${eventId}` : '';
   const organizerShareUrl =
     user?.id === event?.organizerId && event?.referralLink ? event.referralLink : canonicalEventUrl;
+  const viewerLocale = getViewerLocale();
   const normalizedPromoCode = promoCode.trim().toUpperCase();
   const promoCodeActive = Boolean(normalizedPromoCode);
   const activeReferralOffer = event?.referralOffer?.status === 'active' ? event.referralOffer : null;
-  const referralPreviewDiscount = selectedTier && activeReferralOffer && !promoCodeActive
-    ? activeReferralOffer?.discountType === 'fixed'
-      ? Math.min(selectedTier.price * quantity, activeReferralOffer.discountValue || 0)
-      : Number(((selectedTier.price * quantity) * ((activeReferralOffer?.discountValue || 0) / 100)).toFixed(2))
-    : 0;
-  const discountedTotal = Math.max(0, (selectedTier?.price || 0) * quantity - referralPreviewDiscount);
+  const acceptedCurrencies = useMemo(() => {
+    const currencies = [
+      ...(event?.acceptedCurrencies || []),
+      selectedTier?.currency || event?.ticketTiers?.[0]?.currency || 'INR'
+    ]
+      .map((currency) => String(currency || '').trim().toUpperCase())
+      .filter(Boolean);
+
+    return [...new Set(currencies)];
+  }, [event, selectedTier]);
+  const displayedPricing = pricingQuote?.pricing || null;
+
+  useEffect(() => {
+    if (!acceptedCurrencies.length) {
+      setSelectedCurrency('');
+      return;
+    }
+
+    setSelectedCurrency((current) =>
+      acceptedCurrencies.includes(current)
+        ? current
+        : inferPreferredCurrency({
+            acceptedCurrencies,
+            fallbackCurrency: selectedTier?.currency || acceptedCurrencies[0],
+            locale: viewerLocale
+          })
+    );
+  }, [acceptedCurrencies, selectedTier?.currency, viewerLocale]);
 
   const refreshCapacity = async () => {
     try {
@@ -368,11 +427,173 @@ const EventDetailPage = () => {
     }
   };
 
+  const clearStripeReturnParams = () => {
+    if (!redirectPaymentBookingId && !redirectPaymentIntentId && !redirectStatus) {
+      return;
+    }
+
+    const nextSearchParams = new URLSearchParams(searchParams);
+    nextSearchParams.delete('paymentBookingId');
+    nextSearchParams.delete('payment_intent');
+    nextSearchParams.delete('payment_intent_client_secret');
+    nextSearchParams.delete('redirect_status');
+    setSearchParams(nextSearchParams, { replace: true });
+  };
+
+  const applyConfirmedBookingResult = async (confirmedBooking) => {
+    setStripeCheckoutSession(null);
+    setStripeCheckoutOpen(false);
+    setPromoCode('');
+    setWaitlistOffer(null);
+    setStatus({
+      tone: 'success',
+      message: buildBookingSuccessMessage(confirmedBooking, viewerLocale)
+    });
+    await Promise.all([dispatch(fetchEventById(eventId)), refreshCapacity()]);
+  };
+
+  const finalizeStripePayment = async ({ bookingId, paymentIntentId }) => {
+    const response = await api.post(`/api/bookings/${bookingId}/confirm-payment`, {
+      paymentIntentId
+    });
+    const result = response.data.data;
+
+    if (result.bookingConfirmed) {
+      await applyConfirmedBookingResult(result.booking);
+      return result;
+    }
+
+    setStripeCheckoutSession(null);
+    setStripeCheckoutOpen(false);
+    setPromoCode('');
+    setWaitlistOffer(null);
+    setStatus({
+      tone: 'info',
+      message:
+        result.message ||
+        'Stripe is still processing this payment. Your ticket will appear once confirmation arrives.'
+    });
+    await Promise.all([dispatch(fetchEventById(eventId)), refreshCapacity()]);
+    return result;
+  };
+
   useEffect(() => {
     refreshCapacity();
     const intervalId = setInterval(refreshCapacity, 30_000);
     return () => clearInterval(intervalId);
   }, [eventId]);
+
+  useEffect(() => {
+    if (!redirectPaymentBookingId || !redirectStatus) {
+      return;
+    }
+
+    const redirectKey = [
+      redirectPaymentBookingId,
+      redirectPaymentIntentId || '',
+      redirectStatus
+    ].join(':');
+
+    if (stripeRedirectHandledRef.current === redirectKey) {
+      return;
+    }
+
+    stripeRedirectHandledRef.current = redirectKey;
+
+    if (redirectStatus !== 'succeeded') {
+      setStatus({
+        tone: 'error',
+        message: 'Stripe could not verify the payment. Please retry the test checkout.'
+      });
+      clearStripeReturnParams();
+      return;
+    }
+
+    let cancelled = false;
+
+    const finalizeRedirectPayment = async () => {
+      setStatus({
+        tone: 'info',
+        message: 'Stripe returned successfully. Finalizing your booking...'
+      });
+
+      try {
+        await finalizeStripePayment({
+          bookingId: redirectPaymentBookingId,
+          paymentIntentId: redirectPaymentIntentId || undefined
+        });
+      } catch (error) {
+        if (!cancelled) {
+          setStatus({
+            tone: 'error',
+            message:
+              error.response?.data?.message ||
+              'Stripe accepted the payment, but the booking could not be finalized yet.'
+          });
+        }
+      } finally {
+        if (!cancelled) {
+          clearStripeReturnParams();
+        }
+      }
+    };
+
+    finalizeRedirectPayment();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [redirectPaymentBookingId, redirectPaymentIntentId, redirectStatus]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadPricingQuote = async () => {
+      if (!selectedTier?.tierId || quantity < 1) {
+        setPricingQuote(null);
+        return;
+      }
+
+      setPricingLoading(true);
+      try {
+        const response = await api.post('/api/bookings/quote', {
+          eventId,
+          tierId: selectedTier.tierId,
+          quantity,
+          currency: selectedCurrency || selectedTier.currency,
+          referralCode: promoCodeActive ? undefined : activeReferralCode || undefined,
+          promoCode: promoCodeActive ? normalizedPromoCode : undefined
+        });
+
+        if (!cancelled) {
+          setPricingQuote(response.data.data);
+        }
+      } catch (_error) {
+        if (!cancelled) {
+          setPricingQuote(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setPricingLoading(false);
+        }
+      }
+    };
+
+    loadPricingQuote();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeReferralCode,
+    eventId,
+    normalizedPromoCode,
+    promoCodeActive,
+    quantity,
+    selectedCurrency,
+    selectedTier?.currency,
+    selectedTier?.tierId
+  ]);
 
   useEffect(() => {
     const loadWaitlistStatus = async () => {
@@ -439,6 +660,7 @@ const EventDetailPage = () => {
         eventId,
         tierId: selectedTier?.tierId,
         quantity,
+        currency: selectedCurrency || selectedTier?.currency,
         attendee,
         referralCode: normalizedPromoCode ? undefined : activeReferralCode || undefined,
         promoCode: normalizedPromoCode || undefined,
@@ -446,22 +668,28 @@ const EventDetailPage = () => {
       });
 
       const createdBooking = response.data.data.booking;
-      const promoSavedAmount = createdBooking.promoCode?.discountAmount || 0;
-      const referralSavedAmount = createdBooking.referral?.discountAmount || 0;
-      const savingsMessage = promoSavedAmount
-        ? ` You saved ${formatCurrency(promoSavedAmount, createdBooking.currency)} with promo code ${createdBooking.promoCode.code}.`
-        : referralSavedAmount
-          ? ` You saved ${formatCurrency(referralSavedAmount, createdBooking.currency)} with the referral invite.`
-          : '';
-      setStatus({
-        tone: 'success',
-        message: createdBooking.invoice?.invoiceNumber
-          ? `Booking confirmed. Invoice ${createdBooking.invoice.invoiceNumber} is ready and your QR ticket is now in My Tickets.${savingsMessage}`
-          : 'Booking submitted successfully.'
-      });
-      setPromoCode('');
-      setWaitlistOffer(null);
-      await Promise.all([dispatch(fetchEventById(eventId)), refreshCapacity()]);
+      const payment = response.data.data.payment;
+      const paymentIntent = response.data.data.paymentIntent;
+
+      if (payment?.provider === 'stripe' && paymentIntent?.clientSecret) {
+        setStripeCheckoutSession({
+          bookingId: createdBooking._id,
+          clientSecret: paymentIntent.clientSecret,
+          amount: createdBooking.amount,
+          currency: createdBooking.currency,
+          eventTitle: createdBooking.eventSnapshot?.title || event?.title || 'PulseRoom event',
+          tierName: createdBooking.tierName
+        });
+        setStripeCheckoutOpen(true);
+        setStatus({
+          tone: 'info',
+          message:
+            'Ticket reserved for 15 minutes. Complete the Stripe test payment below to confirm it.'
+        });
+        return;
+      }
+
+      await applyConfirmedBookingResult(createdBooking);
     } catch (error) {
       setStatus({
         tone: 'error',
@@ -470,6 +698,15 @@ const EventDetailPage = () => {
     } finally {
       setBooking(false);
     }
+  };
+
+  const handleStripeCheckoutClose = () => {
+    setStripeCheckoutOpen(false);
+    setStatus({
+      tone: 'info',
+      message:
+        'Stripe payment is still pending for this reservation. Reopen checkout below before the 15-minute hold expires.'
+    });
   };
 
   const handleJoinWaitlist = async () => {
@@ -505,7 +742,7 @@ const EventDetailPage = () => {
   };
 
   const handleFollowToggle = async () => {
-    if (!user || !organizerProfile?.canFollowOrganizer || !event?.organizerId) {
+    if (!user || !canFollowOrganizer || !event?.organizerId || !organizerProfile) {
       return;
     }
 
@@ -517,15 +754,19 @@ const EventDetailPage = () => {
         ? await api.delete(`/api/users/organizers/${event.organizerId}/follow`)
         : await api.post(`/api/users/organizers/${event.organizerId}/follow`);
       const followState = response.data.data;
+      const nextOrganizerProfile = {
+        ...organizerProfile,
+        isFollowingOrganizer: followState.isFollowing,
+        followersCount: followState.followersCount
+      };
 
-      setOrganizerProfile((current) =>
-        current
-          ? {
-            ...current,
-            isFollowingOrganizer: followState.isFollowing,
-            followersCount: followState.followersCount
-          }
-          : current
+      setOrganizerProfile(nextOrganizerProfile);
+      dispatch(
+        syncFollowState({
+          organizerId: event.organizerId,
+          isFollowing: followState.isFollowing,
+          organizerProfile: nextOrganizerProfile
+        })
       );
       setOrganizerStatus({
         tone: 'success',
@@ -617,6 +858,7 @@ const EventDetailPage = () => {
     user &&
     (user.role === 'admin' || user.id === event.organizerId)
   );
+  const hasPendingStripeCheckout = Boolean(stripeCheckoutSession);
   const reviewSummary = reviewsState.summary;
   const reviewWindow = reviewEligibility?.reviewWindow || reviewsState.reviewWindow;
 
@@ -734,7 +976,7 @@ const EventDetailPage = () => {
               )}
 
               <AddToCalendarButton event={event} />
-              {organizerProfile?.canFollowOrganizer ? (
+              {canFollowOrganizer ? (
                 <button
                   type="button"
                   onClick={handleFollowToggle}
@@ -750,7 +992,7 @@ const EventDetailPage = () => {
                       ? 'Following organizer'
                       : 'Follow organizer'}
                 </button>
-              ) : !user && organizerProfile ? (
+              ) : shouldPromptFollowSignIn ? (
                 <Link
                   to="/auth"
                   className="event-page-outline-button rounded-full border bg-white px-4 py-2.5 text-sm font-semibold transition hover:bg-sand"
@@ -778,6 +1020,11 @@ const EventDetailPage = () => {
                 <p className="font-display text-xl text-ink">
                   {isFree ? 'Free' : formatCurrency(minPrice, event.ticketTiers?.[0]?.currency)}
                 </p>
+                {acceptedCurrencies.length > 0 && (
+                  <p className="mt-1 text-right text-[11px] uppercase tracking-[0.18em] text-ink/40">
+                    Accepts {acceptedCurrencies.join(', ')}
+                  </p>
+                )}
               </div>
             </div>
 
@@ -916,6 +1163,24 @@ const EventDetailPage = () => {
                 />
               </div>
 
+              {acceptedCurrencies.length > 0 && (
+                <div>
+                  <label className="mb-1 block text-xs text-ink/50">Pay in currency</label>
+                  <select
+                    value={selectedCurrency}
+                    onChange={(inputEvent) => setSelectedCurrency(inputEvent.target.value)}
+                    className="w-full rounded-2xl border border-ink/10 bg-white px-4 py-3 disabled:opacity-50"
+                    disabled={!isPublished}
+                  >
+                    {acceptedCurrencies.map((currency) => (
+                      <option key={currency} value={currency}>
+                        {currency}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               <div>
                 <label className="mb-1 block text-xs text-ink/50">Promo code (optional)</label>
                 <input
@@ -935,13 +1200,44 @@ const EventDetailPage = () => {
                   <div className="flex items-center justify-between">
                     <p className="text-sm text-ink/60">Subtotal</p>
                     <p className="font-semibold text-ink">
-                      {formatCurrency(selectedTier.price * quantity, selectedTier.currency)}
+                      {formatCurrency(
+                        displayedPricing?.subtotal ?? selectedTier.price * quantity,
+                        displayedPricing?.settlementCurrency || selectedCurrency || selectedTier.currency,
+                        viewerLocale
+                      )}
                     </p>
                   </div>
-                  {activeReferralOffer && referralPreviewDiscount > 0 && (
+                  {pricingLoading && (
+                    <p className="text-xs text-ink/45">Updating live currency and tax quote...</p>
+                  )}
+                  {pricingQuote?.referral?.discountAmount > 0 && !promoCodeActive && (
                     <div className="flex items-center justify-between text-sm text-reef">
                       <p>Referral discount</p>
-                      <p>-{formatCurrency(referralPreviewDiscount, selectedTier.currency)}</p>
+                      <p>
+                        -
+                        {formatCurrency(
+                          pricingQuote.referral.discountAmount,
+                          displayedPricing?.settlementCurrency || selectedCurrency || selectedTier.currency,
+                          viewerLocale
+                        )}
+                      </p>
+                    </div>
+                  )}
+                  {displayedPricing?.taxAmount > 0 && (
+                    <div className="flex items-center justify-between text-sm text-ink/65">
+                      <p>
+                        {displayedPricing.taxLabel} ({displayedPricing.taxRate}%)
+                        {displayedPricing.registrationNumber
+                          ? ` · Reg ${displayedPricing.registrationNumber}`
+                          : ''}
+                      </p>
+                      <p>
+                        {formatCurrency(
+                          displayedPricing.taxAmount,
+                          displayedPricing.settlementCurrency || selectedCurrency || selectedTier.currency,
+                          viewerLocale
+                        )}
+                      </p>
                     </div>
                   )}
                   {promoCodeActive && (
@@ -950,12 +1246,21 @@ const EventDetailPage = () => {
                       be confirmed during checkout.
                     </div>
                   )}
+                  {displayedPricing?.baseCurrency &&
+                    displayedPricing?.settlementCurrency &&
+                    displayedPricing.baseCurrency !== displayedPricing.settlementCurrency && (
+                    <p className="text-xs text-ink/45">
+                      Live FX rate: 1 {displayedPricing.baseCurrency} = {displayedPricing.exchangeRate}{' '}
+                      {displayedPricing.settlementCurrency}
+                    </p>
+                  )}
                   <div className="flex items-center justify-between border-t border-ink/10 pt-2">
                     <p className="text-sm text-ink/60">{promoCodeActive ? 'Estimated total' : 'Total'}</p>
                     <p className="font-semibold text-ink">
                       {formatCurrency(
-                        activeReferralOffer && !promoCodeActive ? discountedTotal : selectedTier.price * quantity,
-                        selectedTier.currency
+                        displayedPricing?.total ?? selectedTier.price * quantity,
+                        displayedPricing?.settlementCurrency || selectedCurrency || selectedTier.currency,
+                        viewerLocale
                       )}
                     </p>
                   </div>
@@ -964,20 +1269,37 @@ const EventDetailPage = () => {
 
               {status && (
                 <p
-                  className={`rounded-2xl px-4 py-3 text-sm ${status.tone === 'success' ? 'bg-reef/10 text-reef' : 'bg-ember/10 text-ember'
-                    }`}
+                  className={`rounded-2xl px-4 py-3 text-sm ${
+                    status.tone === 'success'
+                      ? 'bg-reef/10 text-reef'
+                      : status.tone === 'info'
+                        ? 'bg-dusk/10 text-dusk'
+                        : 'bg-ember/10 text-ember'
+                  }`}
                 >
                   {status.message}
                 </p>
               )}
 
+              {stripeCheckoutSession && !stripeCheckoutOpen && (
+                <button
+                  type="button"
+                  onClick={() => setStripeCheckoutOpen(true)}
+                  className="w-full rounded-2xl border border-dusk/25 bg-white px-5 py-3 text-sm font-semibold text-dusk transition hover:bg-dusk/5"
+                >
+                  Resume Stripe payment
+                </button>
+              )}
+
               <button
                 type="submit"
-                disabled={!canBook || booking}
+                disabled={!canBook || booking || hasPendingStripeCheckout}
                 className="w-full rounded-2xl bg-ink px-5 py-3 font-semibold text-sand disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {booking
-                  ? 'Processing...'
+                  ? 'Preparing payment...'
+                  : hasPendingStripeCheckout
+                    ? 'Payment pending'
                   : waitlistOfferActive
                     ? 'Claim reserved spot'
                     : canBook
@@ -1032,7 +1354,7 @@ const EventDetailPage = () => {
                 >
                   View profile
                 </Link>
-                {organizerProfile.canFollowOrganizer ? (
+                {canFollowOrganizer ? (
                   <button
                     type="button"
                     onClick={handleFollowToggle}
@@ -1048,7 +1370,7 @@ const EventDetailPage = () => {
                         ? 'Following'
                         : 'Follow organizer'}
                   </button>
-                ) : !user && ['organizer', 'admin'].includes(organizerProfile.role) ? (
+                ) : shouldPromptFollowSignIn ? (
                   <Link
                     to="/auth"
                     className="rounded-full border border-ink/10 bg-white px-5 py-3 text-sm font-semibold text-ink transition hover:bg-sand"
@@ -1211,6 +1533,19 @@ const EventDetailPage = () => {
           Report this event
         </button>
       </div>
+
+      {stripeCheckoutSession && stripeCheckoutOpen && (
+        <StripeCheckoutModal
+          session={stripeCheckoutSession}
+          onClose={handleStripeCheckoutClose}
+          onComplete={(paymentIntentId) =>
+            finalizeStripePayment({
+              bookingId: stripeCheckoutSession.bookingId,
+              paymentIntentId
+            })
+          }
+        />
+      )}
 
       {showReport && <EventReportModal eventId={eventId} onClose={() => setShowReport(false)} />}
     </div>

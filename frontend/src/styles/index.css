@@ -4,23 +4,71 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  :root {
+    --color-sand: #f5efe4;
+    --color-ink: #121212;
+    --color-reef: #0da7a2;
+    --color-ember: #ef6a4a;
+    --color-dusk: #2f4f7f;
+    --page-background:
+      radial-gradient(circle at top left, rgba(13, 167, 162, 0.18), transparent 32%),
+      radial-gradient(circle at bottom right, rgba(239, 106, 74, 0.18), transparent 26%),
+      #f5efe4;
+    --hero-radial:
+      radial-gradient(circle at top left, rgba(13, 167, 162, 0.22), transparent 32%),
+      radial-gradient(circle at bottom right, rgba(239, 106, 74, 0.25), transparent 28%);
+    --surface-solid: #ffffff;
+    --surface-hover: rgba(255, 255, 255, 0.96);
+    --shadow-bloom: 0 24px 60px -24px rgba(18, 18, 18, 0.28);
+    --focus-ring-shadow: rgba(245, 239, 228, 0.95);
+  }
+
+  .dark {
+    --color-sand: #0d1622;
+    --color-ink: #eef3fb;
+    --color-reef: #54d4cb;
+    --color-ember: #ff8a68;
+    --color-dusk: #9ab2ff;
+    --page-background:
+      radial-gradient(circle at top left, rgba(84, 212, 203, 0.12), transparent 34%),
+      radial-gradient(circle at bottom right, rgba(255, 138, 104, 0.11), transparent 30%),
+      linear-gradient(180deg, #07111b 0%, #0a1420 100%);
+    --hero-radial:
+      radial-gradient(circle at top left, rgba(84, 212, 203, 0.16), transparent 34%),
+      radial-gradient(circle at bottom right, rgba(255, 138, 104, 0.14), transparent 28%);
+    --surface-solid: #111c2b;
+    --surface-hover: rgba(25, 39, 58, 0.96);
+    --shadow-bloom: 0 30px 70px -34px rgba(0, 0, 0, 0.72);
+    --focus-ring-shadow: rgba(7, 17, 27, 0.95);
+  }
+
+  html {
+    color-scheme: light;
+    background: var(--page-background);
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-sand text-ink transition-colors duration-300;
+    background: var(--page-background);
+  }
+}
+
 :root {
-  color: #121212;
-  background:
-    radial-gradient(circle at top left, rgba(13, 167, 162, 0.18), transparent 32%),
-    radial-gradient(circle at bottom right, rgba(239, 106, 74, 0.18), transparent 26%),
-    #f5efe4;
+  color: var(--color-ink);
+  background: var(--page-background);
 }
 
 body {
   margin: 0;
   min-height: 100vh;
-  color: #121212;
+  color: var(--color-ink);
   font-family: 'IBM Plex Sans', sans-serif;
-  background:
-    radial-gradient(circle at top left, rgba(13, 167, 162, 0.18), transparent 32%),
-    radial-gradient(circle at bottom right, rgba(239, 106, 74, 0.18), transparent 26%),
-    #f5efe4;
+  background: var(--page-background);
 }
 
 .skip-nav {
@@ -29,10 +77,11 @@ body {
   top: -4rem;
   z-index: 100;
   border-radius: 9999px;
-  background: #121212;
-  color: #f5efe4;
+  background: var(--surface-solid);
+  color: var(--color-ink);
   padding: 0.8rem 1rem;
   transition: top 0.2s ease;
+  box-shadow: var(--shadow-bloom);
 }
 
 .skip-nav:focus {
@@ -92,8 +141,21 @@ select {
   font: inherit;
 }
 
+.milestone-confetti {
+  position: absolute;
+  left: 50%;
+  top: 5.5rem;
+  z-index: 0;
+  height: 0.9rem;
+  width: 0.5rem;
+  border-radius: 999px;
+  opacity: 0;
+  transform: translate(-50%, 0);
+  animation: milestone-confetti-burst 1.6s ease-out forwards;
+}
+
 :focus-visible {
-  outline: 3px solid #0f766e;
+  outline: 3px solid var(--color-reef);
   outline-offset: 3px;
 }
 
@@ -102,5 +164,59 @@ a:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {
-  box-shadow: 0 0 0 4px rgba(245, 239, 228, 0.95);
+  box-shadow: 0 0 0 4px var(--focus-ring-shadow);
+}
+
+@layer utilities {
+  .dark .bg-white {
+    background-color: var(--surface-solid) !important;
+  }
+
+  .dark .bg-white\/60 {
+    background-color: rgba(17, 28, 43, 0.68) !important;
+  }
+
+  .dark .bg-white\/70 {
+    background-color: rgba(17, 28, 43, 0.76) !important;
+  }
+
+  .dark .bg-white\/80 {
+    background-color: rgba(17, 28, 43, 0.84) !important;
+  }
+
+  .dark .bg-white\/85 {
+    background-color: rgba(17, 28, 43, 0.88) !important;
+  }
+
+  .dark .bg-white\/90 {
+    background-color: rgba(17, 28, 43, 0.92) !important;
+  }
+
+  .dark .hover\:bg-white:hover {
+    background-color: var(--surface-hover) !important;
+  }
+
+  .dark .hover\:bg-white\/60:hover {
+    background-color: rgba(25, 39, 58, 0.78) !important;
+  }
+
+  .dark .shadow-bloom {
+    box-shadow: var(--shadow-bloom) !important;
+  }
+}
+
+@keyframes milestone-confetti-burst {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 0) scale(0.7) rotate(0deg);
+  }
+
+  12% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate(var(--confetti-x), var(--confetti-y)) scale(1.1) rotate(var(--confetti-rotate));
+  }
 }

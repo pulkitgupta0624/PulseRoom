@@ -23,7 +23,7 @@ const MetricTile = ({ label, value, accent = 'text-ink' }) => (
   </div>
 );
 
-const ChartTooltip = ({ active, label, payload }) => {
+const ChartTooltip = ({ active, label, payload, currency = 'USD' }) => {
   if (!active || !payload?.length) {
     return null;
   }
@@ -37,7 +37,7 @@ const ChartTooltip = ({ active, label, payload }) => {
             <span className="text-ink/55">{entry.name}</span>
             <span className="font-semibold text-ink">
               {entry.name.toLowerCase().includes('revenue')
-                ? formatCurrency(entry.value || 0)
+                ? formatCurrency(entry.value || 0, currency)
                 : entry.value}
             </span>
           </div>
@@ -64,6 +64,7 @@ const AnalyticsCharts = ({ title, description, analytics }) => {
     );
   }
 
+  const analyticsCurrency = analytics.currency || 'USD';
   const series = analytics.series.map((point) => ({
     ...point,
     label: dayjs(point.date).format('DD MMM')
@@ -87,7 +88,7 @@ const AnalyticsCharts = ({ title, description, analytics }) => {
         <MetricTile label="Checked In" value={analytics.totals?.checkedIns || 0} accent="text-reef" />
         <MetricTile
           label="Revenue"
-          value={formatCurrency(analytics.totals?.revenue || 0)}
+          value={formatCurrency(analytics.totals?.revenue || 0, analyticsCurrency)}
           accent="text-ember"
         />
       </div>
@@ -110,7 +111,7 @@ const AnalyticsCharts = ({ title, description, analytics }) => {
                 <CartesianGrid strokeDasharray="3 3" stroke="#e7ddd2" />
                 <XAxis dataKey="label" tick={{ fill: '#6f665d', fontSize: 12 }} />
                 <YAxis tick={{ fill: '#6f665d', fontSize: 12 }} />
-                <Tooltip content={<ChartTooltip />} />
+                <Tooltip content={<ChartTooltip currency={analyticsCurrency} />} />
                 <Area
                   type="monotone"
                   dataKey="revenue"
@@ -135,7 +136,7 @@ const AnalyticsCharts = ({ title, description, analytics }) => {
                 <CartesianGrid strokeDasharray="3 3" stroke="#e7ddd2" />
                 <XAxis dataKey="label" tick={{ fill: '#6f665d', fontSize: 12 }} />
                 <YAxis tick={{ fill: '#6f665d', fontSize: 12 }} />
-                <Tooltip content={<ChartTooltip />} />
+                <Tooltip content={<ChartTooltip currency={analyticsCurrency} />} />
                 <Line
                   type="monotone"
                   dataKey="bookings"
@@ -174,7 +175,7 @@ const AnalyticsCharts = ({ title, description, analytics }) => {
                 <CartesianGrid strokeDasharray="3 3" stroke="#e7ddd2" />
                 <XAxis dataKey="label" tick={{ fill: '#6f665d', fontSize: 12 }} />
                 <YAxis tick={{ fill: '#6f665d', fontSize: 12 }} />
-                <Tooltip content={<ChartTooltip />} />
+                <Tooltip content={<ChartTooltip currency={analyticsCurrency} />} />
                 <Area
                   type="monotone"
                   dataKey="cumulativeAttendees"
@@ -205,7 +206,7 @@ const AnalyticsCharts = ({ title, description, analytics }) => {
                   <CartesianGrid strokeDasharray="3 3" stroke="#e7ddd2" />
                   <XAxis dataKey="shortTitle" tick={{ fill: '#6f665d', fontSize: 12 }} />
                   <YAxis tick={{ fill: '#6f665d', fontSize: 12 }} />
-                  <Tooltip content={<ChartTooltip />} />
+                  <Tooltip content={<ChartTooltip currency={analyticsCurrency} />} />
                   <Bar dataKey="revenue" name="Revenue" fill="#2f4f7f" radius={[8, 8, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>

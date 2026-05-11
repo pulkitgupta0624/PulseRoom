@@ -11,6 +11,7 @@ import WebhookManagerModal from '../components/WebhookManagerModal';
 import NetworkingManagerModal from '../components/NetworkingManagerModal';
 import EngagementHeatmapModal from '../components/EngagementHeatmapModal';
 import AnalyticsCharts from '../components/AnalyticsCharts';
+import OrganizerGrowthDashboard from '../components/OrganizerGrowthDashboard';
 import ModalShell from '../components/ModalShell';
 import EventThemeFields from '../components/EventThemeFields';
 import {
@@ -20,8 +21,11 @@ import {
   publishEvent
 } from '../features/events/eventsSlice';
 import { api } from '../lib/api';
+import { parseCurrencyCodesInput } from '../lib/currency';
+import { downloadEventBookingsCsv } from '../lib/downloads';
 import { normalizeEventTheme } from '../lib/eventTheme';
 import { formatCurrency, formatDate } from '../lib/formatters';
+import { createSocket } from '../lib/socket';
 
 const STATUS_STYLES = {
   draft: 'bg-amber-100 text-amber-700',
@@ -60,6 +64,8 @@ const createInitialForm = () => ({
   venueName: '',
   city: '',
   country: '',
+  acceptedCurrencies: 'INR',
+  taxRegistrationNumber: '',
   streamUrl: '',
   organizerSignatureName: '',
   coverImageUrl: '',
@@ -198,6 +204,7 @@ const formatPercent = (value) => `${Number(value || 0).toFixed(1)}%`;
 const DashboardPage = () => {
   const dispatch = useDispatch();
   const { dashboard, saving, error: sliceError } = useSelector((state) => state.events);
+  const authUser = useSelector((state) => state.auth.user);
   const [form, setForm] = useState(() => createInitialForm());
   const [editingEvent, setEditingEvent] = useState(null);
   const [bookingsEvent, setBookingsEvent] = useState(null);
@@ -215,10 +222,17 @@ const DashboardPage = () => {
   const [aiError, setAiError] = useState(null);
   const [organizerAnalytics, setOrganizerAnalytics] = useState(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(true);
+  const [growthAnalytics, setGrowthAnalytics] = useState(null);
+  const [growthLoading, setGrowthLoading] = useState(true);
+  const [growthError, setGrowthError] = useState(null);
+  const [growthSocketConnected, setGrowthSocketConnected] = useState(false);
+  const [lastRealtimeBooking, setLastRealtimeBooking] = useState(null);
+  const [spikeAlert, setSpikeAlert] = useState(null);
   const [referralAnalytics, setReferralAnalytics] = useState(null);
   const [referralLoading, setReferralLoading] = useState(true);
   const [copiedReferralEventId, setCopiedReferralEventId] = useState(null);
   const [regeneratingReferralEventId, setRegeneratingReferralEventId] = useState(null);
+  const [exportingEventId, setExportingEventId] = useState(null);
   const coverInputRef = useRef(null);
 
   const refreshOrganizerAnalytics = async () => {
@@ -230,6 +244,20 @@ const DashboardPage = () => {
       setOrganizerAnalytics(null);
     } finally {
       setAnalyticsLoading(false);
+    }
+  };
+
+  const refreshGrowthAnalytics = async () => {
+    setGrowthLoading(true);
+    try {
+      const response = await api.get('/api/bookings/analytics/organizer/growth');
+      setGrowthAnalytics(response.data.data);
+      setGrowthError(null);
+    } catch (error) {
+      setGrowthAnalytics(null);
+      setGrowthError(error.response?.data?.message || 'Unable to load organizer growth analytics.');
+    } finally {
+      setGrowthLoading(false);
     }
   };
 
@@ -249,6 +277,7 @@ const DashboardPage = () => {
     await Promise.all([
       dispatch(fetchOrganizerDashboard()),
       refreshOrganizerAnalytics(),
+      refreshGrowthAnalytics(),
       refreshReferralAnalytics()
     ]);
   };
@@ -256,6 +285,78 @@ const DashboardPage = () => {
   useEffect(() => {
     refreshDashboard();
   }, [dispatch]);
+
+  useEffect(() => {
+    if (!authUser?.id || !['organizer', 'admin'].includes(authUser.role)) {
+      setGrowthSocketConnected(false);
+      return undefined;
+    }
+
+    const socket = createSocket('/socket/live');
+    let refreshTimeoutId = null;
+
+    const scheduleRefresh = () => {
+      if (refreshTimeoutId) {
+        window.clearTimeout(refreshTimeoutId);
+      }
+
+      refreshTimeoutId = window.setTimeout(() => {
+        void refreshDashboard();
+      }, 300);
+    };
+
+    socket.on('connect', () => {
+      setGrowthSocketConnected(true);
+      socket.emit('organizer:join-dashboard', { organizerId: authUser.id });
+    });
+
+    socket.on('disconnect', () => {
+      setGrowthSocketConnected(false);
+    });
+
+    socket.on('organizer:booking-confirmed', (payload) => {
+      setLastRealtimeBooking(payload);
+      scheduleRefresh();
+    });
+
+    socket.on('organizer:booking-spike', (payload) => {
+      setSpikeAlert(payload);
+      scheduleRefresh();
+    });
+
+    return () => {
+      if (refreshTimeoutId) {
+        window.clearTimeout(refreshTimeoutId);
+      }
+      socket.emit('organizer:leave-dashboard', { organizerId: authUser.id });
+      socket.disconnect();
+      setGrowthSocketConnected(false);
+    };
+  }, [authUser?.id, authUser?.role]);
+
+  useEffect(() => {
+    if (!spikeAlert) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setSpikeAlert(null);
+    }, 12000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [spikeAlert]);
+
+  const handleExportBookings = async (event) => {
+    setExportingEventId(event._id);
+    try {
+      await downloadEventBookingsCsv(event._id, `${event.title || 'event'}-bookings.csv`);
+      setGrowthError(null);
+    } catch (error) {
+      setGrowthError(error.response?.data?.message || 'Unable to export booking CSV right now.');
+    } finally {
+      setExportingEventId(null);
+    }
+  };
 
   const updateField = (key, value) => setForm((current) => ({ ...current, [key]: value }));
 
@@ -320,6 +421,8 @@ const DashboardPage = () => {
       venueName: draft.venueName || '',
       city: draft.city || '',
       country: draft.country || '',
+      acceptedCurrencies: (draft.acceptedCurrencies || ['INR']).join(', '),
+      taxRegistrationNumber: draft.taxRegistrationNumber || '',
       organizerSignatureName: draft.organizerSignatureName || '',
       coverImagePrompt: draft.coverImagePrompt || '',
       category: draft.categories?.[0] || current.category,
@@ -368,13 +471,15 @@ const DashboardPage = () => {
 
   const handleCreateEvent = async (e) => {
     e.preventDefault();
+    const acceptedCurrencies = parseCurrencyCodesInput(form.acceptedCurrencies);
+    const primaryCurrency = acceptedCurrencies[0] || 'INR';
 
     const ticketTiers = form.tiers.map((tier) => ({
       tierId: tier.tierId,
       name: tier.name,
       quantity: Number(tier.quantity),
       price: Number(tier.price),
-      currency: 'INR',
+      currency: primaryCurrency,
       isFree: Number(tier.price) === 0,
       perks: tier.perks.split(',').map((p) => p.trim()).filter(Boolean)
     }));
@@ -407,6 +512,8 @@ const DashboardPage = () => {
       venueName: form.venueName,
       city: form.city,
       country: form.country,
+      acceptedCurrencies,
+      taxRegistrationNumber: form.taxRegistrationNumber.trim(),
       organizerSignatureName: form.organizerSignatureName,
       categories: [form.category],
       tags: form.tags.split(',').map((t) => t.trim()).filter(Boolean),
@@ -461,6 +568,8 @@ const DashboardPage = () => {
   };
 
   const totals = dashboard?.totals || {};
+  const reportingCurrency = dashboard?.reportingCurrency || organizerAnalytics?.currency || 'USD';
+  const referralCurrency = referralAnalytics?.currency || reportingCurrency;
   const formTabs = [
     { key: 'details', label: 'Event Details' },
     { key: 'tiers', label: `Tickets (${form.tiers.length})` },
@@ -481,9 +590,18 @@ const DashboardPage = () => {
         <MetricCard label="Events" value={totals.events || 0} />
         <MetricCard label="Published" value={totals.published || 0} accent="text-ember" />
         <MetricCard label="Upcoming" value={totals.upcoming || 0} accent="text-dusk" />
-        <MetricCard label="Ticket Revenue" value={formatCurrency(totals.revenue || 0)} />
+        <MetricCard label="Ticket Revenue" value={formatCurrency(totals.revenue || 0, reportingCurrency)} />
         <MetricCard label="Sponsor Revenue" value={formatCurrency(totals.sponsorRevenue || 0)} accent="text-reef" />
       </section>
+
+      <OrganizerGrowthDashboard
+        data={growthAnalytics}
+        loading={growthLoading}
+        error={growthError}
+        socketConnected={growthSocketConnected}
+        lastRealtimeBooking={lastRealtimeBooking}
+        spikeAlert={spikeAlert}
+      />
 
       <AnalyticsCharts
         title="Revenue and demand"
@@ -509,8 +627,8 @@ const DashboardPage = () => {
               <ReferralMetric label="Active Links" value={referralAnalytics.totals?.activeReferralLinks || 0} />
               <ReferralMetric label="Link Opens" value={referralAnalytics.totals?.linkOpens || 0} accent="text-dusk" />
               <ReferralMetric label="Referred Bookings" value={referralAnalytics.totals?.referredBookings || 0} accent="text-reef" />
-              <ReferralMetric label="Referral Revenue" value={formatCurrency(referralAnalytics.totals?.revenue || 0)} accent="text-ember" />
-              <ReferralMetric label="Discounts Given" value={formatCurrency(referralAnalytics.totals?.discountsGiven || 0)} accent="text-dusk" />
+              <ReferralMetric label="Referral Revenue" value={formatCurrency(referralAnalytics.totals?.revenue || 0, referralCurrency)} accent="text-ember" />
+              <ReferralMetric label="Discounts Given" value={formatCurrency(referralAnalytics.totals?.discountsGiven || 0, referralCurrency)} accent="text-dusk" />
               <ReferralMetric label="Conversion" value={formatPercent(referralAnalytics.totals?.conversionRate || 0)} />
             </div>
 
@@ -598,11 +716,11 @@ const DashboardPage = () => {
                       </div>
                       <div className="rounded-2xl bg-white px-4 py-3">
                         <p className="text-xs uppercase tracking-[0.18em] text-ink/45">Revenue</p>
-                        <p className="mt-2 font-semibold text-ink">{formatCurrency(item.revenue || 0)}</p>
+                        <p className="mt-2 font-semibold text-ink">{formatCurrency(item.revenue || 0, referralCurrency)}</p>
                       </div>
                       <div className="rounded-2xl bg-white px-4 py-3">
                         <p className="text-xs uppercase tracking-[0.18em] text-ink/45">Discounts</p>
-                        <p className="mt-2 font-semibold text-ink">{formatCurrency(item.discountsGiven || 0)}</p>
+                        <p className="mt-2 font-semibold text-ink">{formatCurrency(item.discountsGiven || 0, referralCurrency)}</p>
                       </div>
                       <div className="rounded-2xl bg-white px-4 py-3">
                         <p className="text-xs uppercase tracking-[0.18em] text-ink/45">Conversion</p>
@@ -835,6 +953,30 @@ const DashboardPage = () => {
                     />
                   </div>
 
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="text-xs text-ink/50 mb-1 block">Accepted currencies</label>
+                      <input
+                        value={form.acceptedCurrencies}
+                        onChange={(e) => updateField('acceptedCurrencies', e.target.value.toUpperCase())}
+                        placeholder="INR, USD, GBP"
+                        className="w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
+                      />
+                      <p className="mt-2 text-xs text-ink/45">
+                        The first code becomes the default ticket currency for this event.
+                      </p>
+                    </div>
+                    <div>
+                      <label className="text-xs text-ink/50 mb-1 block">Tax registration number</label>
+                      <input
+                        value={form.taxRegistrationNumber}
+                        onChange={(e) => updateField('taxRegistrationNumber', e.target.value)}
+                        placeholder="GSTIN / VAT registration"
+                        className="w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
+                      />
+                    </div>
+                  </div>
+
                   {form.type !== 'offline' && (
                     <div>
                       <label className="text-xs text-ink/50 mb-1 block">Backup external stream URL (optional)</label>
@@ -996,7 +1138,7 @@ const DashboardPage = () => {
                       </div>
                       <p className="mt-1 text-sm text-ink/65">{formatDate(event.startsAt)}</p>
                       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-sm text-ink/55">
-                        <span>Revenue {formatCurrency(event.analytics?.revenue || 0)}</span>
+                        <span>Revenue {formatCurrency(event.analytics?.revenue || 0, reportingCurrency)}</span>
                         <span aria-hidden="true">·</span>
                         <span>{event.analytics?.bookings || 0} bookings</span>
                         <span aria-hidden="true">·</span>
@@ -1031,6 +1173,14 @@ const DashboardPage = () => {
                         className="rounded-full border border-reef/20 bg-reef/5 px-3 py-2 text-xs font-medium text-reef hover:bg-reef/10"
                       >
                         Bookings
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleExportBookings(event)}
+                        disabled={exportingEventId === event._id}
+                        className="rounded-full border border-ink/15 bg-white px-3 py-2 text-xs font-medium text-ink hover:bg-sand disabled:opacity-60"
+                      >
+                        {exportingEventId === event._id ? 'Exporting...' : 'Export CSV'}
                       </button>
                       <button
                         type="button"
@@ -1077,7 +1227,7 @@ const DashboardPage = () => {
                         to={`/events/${event._id}/live`}
                         className="rounded-full border border-ink/15 bg-white px-3 py-2 text-xs font-medium text-ink hover:bg-sand"
                       >
-                        Live room
+                        {event.status === 'completed' ? 'Replay studio' : 'Live room'}
                       </Link>
                       <button
                         type="button"
@@ -1117,7 +1267,14 @@ const DashboardPage = () => {
       </section>
 
       {editingEvent && <EventEditModal event={editingEvent} onClose={() => setEditingEvent(null)} />}
-      {bookingsEvent && <EventBookingsModal event={bookingsEvent} onClose={() => setBookingsEvent(null)} />}
+      {bookingsEvent && (
+        <EventBookingsModal
+          event={bookingsEvent}
+          onClose={() => setBookingsEvent(null)}
+          onExport={() => handleExportBookings(bookingsEvent)}
+          exportLoading={exportingEventId === bookingsEvent._id}
+        />
+      )}
       {sponsorsEvent && (
         <SponsorManagerModal event={sponsorsEvent} onClose={() => setSponsorsEvent(null)} onUpdated={refreshDashboard} />
       )}

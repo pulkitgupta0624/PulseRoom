@@ -30,6 +30,7 @@ module.exports = {
     chat: process.env.CHAT_SERVICE_URL,
     notifications: process.env.NOTIFICATION_SERVICE_URL,
     live: process.env.LIVE_SERVICE_URL,
-    admin: process.env.ADMIN_SERVICE_URL
+    admin: process.env.ADMIN_SERVICE_URL,
+    gamification: process.env.GAMIFICATION_SERVICE_URL
   }
 };

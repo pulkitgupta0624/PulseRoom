@@ -1,23 +1,12 @@
-/**
- * OrganizerProfilePage  — /organizers/:organizerId
- *
- * A public-facing page for any organizer/admin account.  Shows:
- *   • Hero with avatar, name, company, role badge, follower count
- *   • Follow / Unfollow button (signed-in users only)
- *   • Bio, location, social links
- *   • Their published events grid (fetched from /api/events?organizerId=…)
- *
- * Accessible without a login so anyone can discover an organizer.
- */
-import { useEffect, useState, useCallback } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import EventCard from '../components/EventCard';
 import SectionHeader from '../components/SectionHeader';
+import { deriveOrganizerFollowState } from '../features/user/organizerFollowState';
 import { syncFollowState } from '../features/user/userSlice';
 import { api } from '../lib/api';
 
-// ── Small reusable stat tile ──────────────────────────────────────────────────
 const StatTile = ({ label, value, accent = 'text-ink' }) => (
   <div className="rounded-[24px] border border-ink/10 bg-white/80 px-5 py-4 shadow-bloom">
     <p className="text-xs uppercase tracking-[0.22em] text-ink/45">{label}</p>
@@ -25,101 +14,156 @@ const StatTile = ({ label, value, accent = 'text-ink' }) => (
   </div>
 );
 
-// ── Follow / Unfollow button ──────────────────────────────────────────────────
-const FollowButton = ({ profile, onToggle, loading }) => {
-  if (!profile) return null;
+const FollowButton = ({
+  canFollowOrganizer,
+  shouldPromptSignIn,
+  isFollowingOrganizer,
+  onToggle,
+  loading
+}) => {
+  if (canFollowOrganizer) {
+    return (
+      <button
+        type="button"
+        onClick={onToggle}
+        disabled={loading}
+        className={`rounded-full px-6 py-2.5 text-sm font-semibold transition disabled:opacity-60 ${
+          isFollowingOrganizer
+            ? 'border border-ink/15 bg-white text-ink hover:border-ember/20 hover:bg-ember/5 hover:text-ember'
+            : 'bg-ink text-sand hover:bg-dusk'
+        }`}
+      >
+        {loading ? 'Updating...' : isFollowingOrganizer ? 'Following' : 'Follow organizer'}
+      </button>
+    );
+  }
 
-  if (!profile.canFollowOrganizer) {
+  if (shouldPromptSignIn) {
     return (
       <Link
         to="/auth"
-        className="rounded-full border border-ink/10 bg-white px-5 py-2.5 text-sm font-semibold text-ink hover:bg-sand transition"
+        className="rounded-full border border-ink/10 bg-white px-5 py-2.5 text-sm font-semibold text-ink transition hover:bg-sand"
       >
         Sign in to follow
       </Link>
     );
   }
 
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      disabled={loading}
-      className={`rounded-full px-6 py-2.5 text-sm font-semibold transition disabled:opacity-60 ${
-        profile.isFollowingOrganizer
-          ? 'border border-ink/15 bg-white text-ink hover:bg-ember/5 hover:border-ember/20 hover:text-ember'
-          : 'bg-ink text-sand hover:bg-dusk'
-      }`}
-    >
-      {loading
-        ? 'Updating…'
-        : profile.isFollowingOrganizer
-        ? 'Following'
-        : 'Follow organizer'}
-    </button>
-  );
+  return null;
 };
 
-// ── Main component ────────────────────────────────────────────────────────────
 const OrganizerProfilePage = () => {
   const { organizerId } = useParams();
   const navigate = useNavigate();
   const dispatch = useDispatch();
   const { user } = useSelector((state) => state.auth);
 
-  const [profile, setProfile]       = useState(null);
-  const [events, setEvents]         = useState([]);
+  const [profile, setProfile] = useState(null);
+  const [rewards, setRewards] = useState(null);
+  const [events, setEvents] = useState([]);
   const [loadingProfile, setLoadingProfile] = useState(true);
-  const [loadingEvents, setLoadingEvents]   = useState(true);
-  const [followLoading, setFollowLoading]   = useState(false);
-  const [toast, setToast]           = useState(null);   // { tone, message }
+  const [loadingEvents, setLoadingEvents] = useState(true);
+  const [followLoading, setFollowLoading] = useState(false);
+  const [toast, setToast] = useState(null);
 
-  // ── Load organizer profile ────────────────────────────────────────────────
   useEffect(() => {
     let active = true;
     setLoadingProfile(true);
 
     api.get(`/api/users/profile/${organizerId}`)
       .then((res) => {
-        if (!active) return;
-        const data = res.data.data;
-        // Guard: only organizers & admins have followable profiles
-        if (!['organizer', 'admin'].includes(data.role)) {
-          navigate('/');   // redirect non-organizer profiles
+        if (!active) {
           return;
         }
+
+        const data = res.data.data;
+        if (!['organizer', 'admin'].includes(data.role)) {
+          navigate('/');
+          return;
+        }
+
         setProfile(data);
       })
       .catch(() => {
-        if (active) navigate('/');
+        if (active) {
+          navigate('/');
+        }
       })
-      .finally(() => { if (active) setLoadingProfile(false); });
+      .finally(() => {
+        if (active) {
+          setLoadingProfile(false);
+        }
+      });
 
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, [organizerId, navigate]);
 
-  // ── Load organizer's published events ────────────────────────────────────
   useEffect(() => {
     let active = true;
     setLoadingEvents(true);
 
     api.get('/api/events', {
-      params: { organizerId, status: 'published', limit: 20 }
+      params: {
+        organizerId,
+        limit: 24
+      }
     })
       .then((res) => {
-        if (!active) return;
-        const payload = res.data.data;
-        setEvents(Array.isArray(payload) ? payload : (payload.items || []));
-      })
-      .catch(() => { if (active) setEvents([]); })
-      .finally(() => { if (active) setLoadingEvents(false); });
+        if (!active) {
+          return;
+        }
 
-    return () => { active = false; };
+        const payload = res.data.data;
+        setEvents(Array.isArray(payload) ? payload : payload.items || []);
+      })
+      .catch(() => {
+        if (active) {
+          setEvents([]);
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setLoadingEvents(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
   }, [organizerId]);
 
-  // ── Follow / Unfollow ─────────────────────────────────────────────────────
+  useEffect(() => {
+    let active = true;
+
+    api.get(`/api/gamification/users/${organizerId}/public`)
+      .then((res) => {
+        if (active) {
+          setRewards(res.data.data);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setRewards(null);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [organizerId]);
+
+  const followState = deriveOrganizerFollowState({
+    organizerProfile: profile,
+    organizerId,
+    viewerUser: user
+  });
+
   const handleFollowToggle = useCallback(async () => {
-    if (!user || !profile?.canFollowOrganizer) return;
+    if (!user || !followState.canFollowOrganizer || !profile) {
+      return;
+    }
 
     setFollowLoading(true);
     setToast(null);
@@ -129,94 +173,93 @@ const OrganizerProfilePage = () => {
         ? await api.delete(`/api/users/organizers/${organizerId}/follow`)
         : await api.post(`/api/users/organizers/${organizerId}/follow`);
 
-      const { isFollowing, followersCount } = response.data.data;
+      const { followersCount, isFollowing } = response.data.data;
+      const nextProfile = {
+        ...profile,
+        followersCount,
+        isFollowingOrganizer: isFollowing
+      };
 
-      // Update local state
-      setProfile((prev) =>
-        prev
-          ? { ...prev, isFollowingOrganizer: isFollowing, followersCount }
-          : prev
-      );
-
-      // Sync Redux so ProfilePage "Following" tab stays in sync
-      dispatch(syncFollowState({ organizerId, isFollowing, organizerProfile: profile }));
-
+      setProfile(nextProfile);
+      dispatch(syncFollowState({ organizerId, isFollowing, organizerProfile: nextProfile }));
       setToast({
         tone: 'success',
         message: isFollowing
           ? 'You will be notified when this organizer drops new events.'
           : 'You will no longer receive updates from this organizer.'
       });
-    } catch (err) {
+    } catch (error) {
       setToast({
         tone: 'error',
-        message: err.response?.data?.message || 'Unable to update follow status.'
+        message: error.response?.data?.message || 'Unable to update follow status.'
       });
     } finally {
       setFollowLoading(false);
     }
-  }, [profile, organizerId, user, dispatch]);
+  }, [dispatch, followState.canFollowOrganizer, organizerId, profile, user]);
 
-  // ── Loading skeleton ──────────────────────────────────────────────────────
   if (loadingProfile) {
     return (
       <div className="space-y-6">
         <div className="h-64 animate-pulse rounded-[36px] bg-white/60" />
         <div className="grid gap-4 md:grid-cols-3">
-          {[...Array(3)].map((_, i) => (
-            <div key={i} className="h-24 animate-pulse rounded-[24px] bg-white/60" />
+          {[...Array(3)].map((_, index) => (
+            <div key={index} className="h-24 animate-pulse rounded-[24px] bg-white/60" />
           ))}
         </div>
         <div className="grid gap-5 lg:grid-cols-3">
-          {[...Array(3)].map((_, i) => (
-            <div key={i} className="h-64 animate-pulse rounded-[28px] bg-white/60" />
+          {[...Array(3)].map((_, index) => (
+            <div key={index} className="h-64 animate-pulse rounded-[28px] bg-white/60" />
           ))}
         </div>
       </div>
     );
   }
 
-  if (!profile) return null;
+  if (!profile) {
+    return null;
+  }
 
   const initials = profile.displayName?.[0]?.toUpperCase() || '?';
   const companyName = profile.organizerProfile?.companyName || profile.displayName;
-  const publishedCount = events.length;
+  const totalAttendees = events.reduce((sum, event) => sum + Number(event.attendeesCount || 0), 0);
+  const rewardBadges = rewards?.badges || [];
+  const shouldShowRewards = rewardBadges.length > 0 || Number(rewards?.totalPoints || 0) > 0;
 
   return (
     <div className="space-y-10">
-      {/* ── Hero ─────────────────────────────────────────────────────────── */}
       <section className="overflow-hidden rounded-[36px] border border-ink/10 bg-white/80 shadow-bloom">
-        {/* Gradient banner */}
         <div className="h-36 bg-gradient-to-br from-dusk via-reef to-ink" />
 
         <div className="px-6 pb-8 md:px-10">
-          {/* Avatar — positioned to overlap the banner */}
           <div className="-mt-14 mb-5 flex items-end justify-between gap-4">
-            <div className="h-24 w-24 overflow-hidden rounded-full border-4 border-white bg-gradient-to-br from-reef/40 to-dusk/40 shadow-bloom flex-shrink-0 flex items-center justify-center">
+            <div className="flex h-24 w-24 flex-shrink-0 items-center justify-center overflow-hidden rounded-full border-4 border-white bg-gradient-to-br from-reef/40 to-dusk/40 shadow-bloom">
               {profile.avatarUrl ? (
                 <img
                   src={profile.avatarUrl}
                   alt={profile.displayName}
                   className="h-full w-full object-cover"
-                  onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                  onError={(event) => {
+                    event.currentTarget.style.display = 'none';
+                  }}
                 />
               ) : (
                 <span className="font-display text-3xl text-ink">{initials}</span>
               )}
             </div>
 
-            {/* Follow button — top-right of avatar row */}
-            <div className="mb-2 flex items-center gap-3 flex-wrap">
+            <div className="mb-2 flex flex-wrap items-center gap-3">
               <FollowButton
-                profile={profile}
+                canFollowOrganizer={followState.canFollowOrganizer}
+                shouldPromptSignIn={followState.shouldPromptSignIn}
+                isFollowingOrganizer={Boolean(profile.isFollowingOrganizer)}
                 onToggle={handleFollowToggle}
                 loading={followLoading}
               />
             </div>
           </div>
 
-          {/* Name + badges */}
-          <div className="flex flex-wrap items-center gap-3 mb-3">
+          <div className="mb-3 flex flex-wrap items-center gap-3">
             <h1 className="font-display text-3xl text-ink md:text-4xl">{companyName}</h1>
             <span className="rounded-full bg-reef/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-reef">
               {profile.role}
@@ -228,20 +271,26 @@ const OrganizerProfilePage = () => {
             )}
           </div>
 
-          {/* Bio */}
           {profile.bio && (
-            <p className="max-w-2xl text-base text-ink/70 mb-4">{profile.bio}</p>
+            <p className="mb-4 max-w-2xl text-base text-ink/70">{profile.bio}</p>
           )}
 
-          {/* Location + social links */}
           <div className="flex flex-wrap items-center gap-3 text-sm text-ink/55">
             {profile.location && (
               <span className="flex items-center gap-1.5">
                 <svg className="h-4 w-4 text-ink/40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                    d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                    d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={1.5}
+                    d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"
+                  />
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={1.5}
+                    d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"
+                  />
                 </svg>
                 {profile.location}
               </span>
@@ -249,7 +298,7 @@ const OrganizerProfilePage = () => {
             {profile.organizerProfile?.supportEmail && (
               <a
                 href={`mailto:${profile.organizerProfile.supportEmail}`}
-                className="rounded-full border border-ink/10 bg-sand/60 px-3 py-1 text-xs hover:bg-white transition"
+                className="rounded-full border border-ink/10 bg-sand/60 px-3 py-1 text-xs transition hover:bg-white"
               >
                 {profile.organizerProfile.supportEmail}
               </a>
@@ -259,67 +308,96 @@ const OrganizerProfilePage = () => {
                 href={profile.organizerProfile?.website || profile.socialLinks.website}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="rounded-full border border-ink/10 bg-sand/60 px-3 py-1 text-xs hover:bg-white transition"
+                className="rounded-full border border-ink/10 bg-sand/60 px-3 py-1 text-xs transition hover:bg-white"
               >
                 Visit website
               </a>
             )}
             {profile.socialLinks?.linkedin && (
-              <a href={profile.socialLinks.linkedin} target="_blank" rel="noopener noreferrer"
-                className="rounded-full border border-ink/10 bg-sand/60 px-3 py-1 text-xs hover:bg-white transition">
+              <a
+                href={profile.socialLinks.linkedin}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="rounded-full border border-ink/10 bg-sand/60 px-3 py-1 text-xs transition hover:bg-white"
+              >
                 LinkedIn
               </a>
             )}
             {profile.socialLinks?.twitter && (
-              <a href={profile.socialLinks.twitter} target="_blank" rel="noopener noreferrer"
-                className="rounded-full border border-ink/10 bg-sand/60 px-3 py-1 text-xs hover:bg-white transition">
+              <a
+                href={profile.socialLinks.twitter}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="rounded-full border border-ink/10 bg-sand/60 px-3 py-1 text-xs transition hover:bg-white"
+              >
                 X / Twitter
               </a>
             )}
           </div>
 
-          {/* Toast feedback */}
           {toast && (
-            <p className={`mt-4 max-w-lg rounded-2xl px-4 py-3 text-sm ${
-              toast.tone === 'success' ? 'bg-reef/10 text-reef' : 'bg-ember/10 text-ember'
-            }`}>
+            <p
+              className={`mt-4 max-w-lg rounded-2xl px-4 py-3 text-sm ${
+                toast.tone === 'success' ? 'bg-reef/10 text-reef' : 'bg-ember/10 text-ember'
+              }`}
+            >
               {toast.message}
             </p>
           )}
         </div>
       </section>
 
-      {/* ── Stats row ────────────────────────────────────────────────────── */}
       <section className="grid gap-4 md:grid-cols-3">
-        <StatTile
-          label="Followers"
-          value={profile.followersCount || 0}
-          accent="text-reef"
-        />
-        <StatTile
-          label="Published Events"
-          value={loadingEvents ? '…' : publishedCount}
-          accent="text-dusk"
-        />
-        <StatTile
-          label="Total Attendees"
-          value={loadingEvents ? '…' : events.reduce((s, e) => s + (e.attendeesCount || 0), 0)}
-          accent="text-ember"
-        />
+        <StatTile label="Followers" value={profile.followersCount || 0} accent="text-reef" />
+        <StatTile label="Published Events" value={loadingEvents ? '...' : events.length} accent="text-dusk" />
+        <StatTile label="Total Attendees" value={loadingEvents ? '...' : totalAttendees} accent="text-ember" />
       </section>
 
-      {/* ── Events grid ──────────────────────────────────────────────────── */}
+      {shouldShowRewards && (
+        <section className="rounded-[32px] border border-dusk/12 bg-white/80 p-6 shadow-bloom">
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+            <div className="max-w-2xl">
+              <p className="text-xs uppercase tracking-[0.22em] text-dusk">Community Profile</p>
+              <h2 className="mt-2 font-display text-3xl text-ink">Badges and points</h2>
+              <p className="mt-2 text-sm text-ink/60">
+                PulseRoom rewards attendees for turning up early, contributing to Q&amp;A, leaving
+                reviews, and staying active in the community.
+              </p>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-3 lg:min-w-[380px]">
+              <StatTile label="Points" value={rewards.totalPoints || 0} accent="text-dusk" />
+              <StatTile label="Level" value={rewards.level?.label || 'Starter'} accent="text-reef" />
+              <StatTile label="Badges" value={rewardBadges.length} accent="text-ember" />
+            </div>
+          </div>
+
+          {rewardBadges.length > 0 && (
+            <div className="mt-6 flex flex-wrap gap-3">
+              {rewardBadges.map((badge) => (
+                <div
+                  key={badge.key}
+                  className="rounded-full border border-dusk/15 bg-dusk/5 px-4 py-2 text-sm font-medium text-ink"
+                >
+                  {badge.name}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
       <section className="space-y-6">
         <SectionHeader
           eyebrow="Events"
           title={`By ${companyName}`}
-          description="Browse all published events from this organizer."
+          description="Browse the published events from this organizer."
         />
 
         {loadingEvents && (
           <div className="grid gap-5 lg:grid-cols-3">
-            {[...Array(3)].map((_, i) => (
-              <div key={i} className="h-64 animate-pulse rounded-[28px] bg-white/60" />
+            {[...Array(3)].map((_, index) => (
+              <div key={index} className="h-64 animate-pulse rounded-[28px] bg-white/60" />
             ))}
           </div>
         )}

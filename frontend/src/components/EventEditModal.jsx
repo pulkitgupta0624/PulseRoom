@@ -2,6 +2,7 @@ import { useState, useRef } from 'react';
 import { useDispatch } from 'react-redux';
 import { updateEvent, fetchOrganizerDashboard } from '../features/events/eventsSlice';
 import { api } from '../lib/api';
+import { parseCurrencyCodesInput } from '../lib/currency';
 import { normalizeEventTheme } from '../lib/eventTheme';
 import ModalShell from './ModalShell';
 import EventThemeFields from './EventThemeFields';
@@ -31,6 +32,8 @@ const EventEditModal = ({ event, onClose }) => {
     venueName: event.venueName || '',
     city: event.city || '',
     country: event.country || '',
+    acceptedCurrencies: (event.acceptedCurrencies || ['INR']).join(', '),
+    taxRegistrationNumber: event.taxRegistrationNumber || '',
     coverImageUrl: event.coverImageUrl || '',
     organizerSignatureName: event.organizerSignatureName || '',
     category: (event.categories || [])[0] || '',
@@ -77,6 +80,8 @@ const EventEditModal = ({ event, onClose }) => {
         venueName: form.venueName,
         city: form.city,
         country: form.country,
+        acceptedCurrencies: parseCurrencyCodesInput(form.acceptedCurrencies),
+        taxRegistrationNumber: form.taxRegistrationNumber.trim(),
         streamUrl: form.streamUrl,
         organizerSignatureName: form.organizerSignatureName,
         categories: form.category ? [form.category] : event.categories,
@@ -256,6 +261,27 @@ const EventEditModal = ({ event, onClose }) => {
                 <input
                   value={form.country}
                   onChange={(e) => update('country', e.target.value)}
+                  className="mt-2 w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <label className="text-xs uppercase tracking-[0.22em] text-ink/45">Accepted currencies</label>
+                <input
+                  value={form.acceptedCurrencies}
+                  onChange={(e) => update('acceptedCurrencies', e.target.value.toUpperCase())}
+                  placeholder="INR, USD, GBP"
+                  className="mt-2 w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
+                />
+              </div>
+              <div>
+                <label className="text-xs uppercase tracking-[0.22em] text-ink/45">Tax registration number</label>
+                <input
+                  value={form.taxRegistrationNumber}
+                  onChange={(e) => update('taxRegistrationNumber', e.target.value)}
+                  placeholder="GSTIN / VAT registration"
                   className="mt-2 w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
                 />
               </div>

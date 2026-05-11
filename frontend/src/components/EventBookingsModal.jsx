@@ -11,7 +11,7 @@ const STATUS_STYLES = {
   refunded: 'bg-ember/10 text-ember'
 };
 
-const EventBookingsModal = ({ event, onClose }) => {
+const EventBookingsModal = ({ event, onClose, onExport, exportLoading = false }) => {
   const [bookings, setBookings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -45,10 +45,10 @@ const EventBookingsModal = ({ event, onClose }) => {
 
   const totalRevenue = bookings
     .filter((booking) => booking.status === 'confirmed')
-    .reduce((sum, booking) => sum + booking.amount, 0);
+    .reduce((sum, booking) => sum + Number(booking.pricing?.reportingAmount ?? booking.amount ?? 0), 0);
   const confirmedCount = bookings.filter((booking) => booking.status === 'confirmed').length;
   const checkedInCount = bookings.filter((booking) => booking.ticket?.checkedIn).length;
-  const currency = bookings[0]?.currency || 'INR';
+  const currency = bookings[0]?.pricing?.reportingCurrency || bookings[0]?.currency || 'USD';
 
   return (
     <ModalShell
@@ -62,6 +62,16 @@ const EventBookingsModal = ({ event, onClose }) => {
             <h2 id="event-bookings-title" className="mt-1 font-display text-2xl text-ink">{event.title}</h2>
           </div>
           <div className="flex items-center gap-2">
+            {onExport && (
+              <button
+                type="button"
+                onClick={onExport}
+                disabled={exportLoading}
+                className="rounded-full border border-ink/15 bg-white px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-ink disabled:opacity-60"
+              >
+                {exportLoading ? 'Exporting...' : 'Export CSV'}
+              </button>
+            )}
             <Link
               to={`/events/${event._id}/check-in`}
               className="rounded-full border border-dusk/20 bg-dusk/5 px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-dusk"

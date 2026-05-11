@@ -10,5 +10,9 @@ module.exports = {
   redisUrl: process.env.REDIS_URL,
   corsOrigin: process.env.APP_ORIGIN || 'http://localhost:5173',
   jwtAccessSecret: process.env.JWT_ACCESS_SECRET,
-  eventServiceUrl: process.env.EVENT_SERVICE_URL
+  eventServiceUrl: process.env.EVENT_SERVICE_URL,
+  bookingServiceUrl: process.env.BOOKING_SERVICE_URL,
+  cloudinaryCloudName: process.env.CLOUDINARY_CLOUD_NAME,
+  cloudinaryApiKey: process.env.CLOUDINARY_API_KEY,
+  cloudinaryApiSecret: process.env.CLOUDINARY_API_SECRET
 };

@@ -13,9 +13,20 @@ const ReactionCounter = require('./models/ReactionCounter');
 const StreamSession = require('./models/StreamSession');
 const { incrementEngagementMetric } = require('./services/engagementAnalyticsService');
 const { buildAuthorProfile, serializeQuestionThread } = require('./services/questionThreadService');
+const { createRecordingUploadService } = require('./services/recordingUploadService');
+const { markRecordingFailed } = require('./services/recordingSessionService');
 
 const ALLOWED_EMOJIS = new Set(['🔥', '👏', '❤️', '🚀', '😂', '🤯']);
+const BOOKING_RATE_TTL_SECONDS = 6 * 60 * 60;
 const streamRooms = new Map();
+
+const buildOrganizerRoom = (organizerId) => `organizer:${organizerId}`;
+
+const buildHourlyRateBucket = (value = new Date()) => {
+  const date = new Date(value);
+  date.setMinutes(0, 0, 0);
+  return date.toISOString();
+};
 
 const getStreamPayload = (eventId, room) => ({
   eventId,
@@ -37,13 +48,35 @@ const start = async () => {
       }
     }
   );
+  await StreamSession.updateMany(
+    { 'recording.status': 'uploading' },
+    {
+      $set: {
+        'recording.status': 'failed',
+        'recording.failedAt': new Date(),
+        'recording.error': 'Live service restarted before the replay upload could finish.'
+      }
+    }
+  );
 
   const eventBus = new RedisEventBus({
     redisUrl: config.redisUrl,
     serviceName: 'live-service',
     logger
   });
+  const recordingUploadService = createRecordingUploadService({
+    config,
+    logger,
+    onUploadFailure: ({ eventId, recordingSessionId, mimeType, reason, error }) =>
+      markRecordingFailed({
+        eventId,
+        recordingSessionId,
+        mimeType,
+        errorMessage: error?.message || reason || 'Replay upload failed'
+      })
+  });
   const eventServiceClient = createServiceClient(config.eventServiceUrl, 'live-service');
+  const bookingRateClient = new Redis(config.redisUrl);
 
   const loadEventMeta = async (eventId) => {
     const response = await eventServiceClient.get(`/api/events/${eventId}/internal-meta`);
@@ -69,14 +102,85 @@ const start = async () => {
     );
   };
 
+  const detectBookingRateSpike = async (payload) => {
+    const organizerId = String(payload?.organizerId || '').trim();
+    const eventId = String(payload?.eventId || '').trim();
+    if (!organizerId || !eventId) {
+      return null;
+    }
+
+    const confirmedAt = payload?.confirmedAt || new Date().toISOString();
+    const currentBucket = buildHourlyRateBucket(confirmedAt);
+    const previousBucket = buildHourlyRateBucket(new Date(new Date(currentBucket).getTime() - 60 * 60 * 1000));
+    const counterKey = `organizer:booking-rate:${organizerId}:${eventId}`;
+    const currentWindowCount = await bookingRateClient.hincrby(counterKey, currentBucket, 1);
+    await bookingRateClient.expire(counterKey, BOOKING_RATE_TTL_SECONDS);
+
+    const previousWindowCount = Number((await bookingRateClient.hget(counterKey, previousBucket)) || 0);
+    if (previousWindowCount <= 0 || currentWindowCount < previousWindowCount * 2 || currentWindowCount < 2) {
+      return null;
+    }
+
+    const alertKey = `organizer:booking-rate-alert:${organizerId}:${eventId}:${currentBucket}`;
+    const shouldEmit = await bookingRateClient.set(alertKey, '1', 'EX', BOOKING_RATE_TTL_SECONDS, 'NX');
+    if (!shouldEmit) {
+      return null;
+    }
+
+    return {
+      organizerId,
+      eventId,
+      eventTitle: payload?.eventTitle || 'Event',
+      currentWindowCount,
+      previousWindowCount,
+      growthFactor: Number((currentWindowCount / previousWindowCount).toFixed(2)),
+      confirmedAt
+    };
+  };
+
+  const emitOrganizerBookingActivity = async (io, payload) => {
+    const organizerId = String(payload?.organizerId || '').trim();
+    if (!organizerId) {
+      return;
+    }
+
+    const room = buildOrganizerRoom(organizerId);
+    io.to(room).emit('organizer:booking-confirmed', {
+      organizerId,
+      eventId: payload.eventId,
+      eventTitle: payload.eventTitle || 'Event',
+      bookingId: payload.bookingId,
+      attendeeName: payload.attendeeName || payload.attendeeEmail || 'New attendee',
+      attendeeEmail: payload.attendeeEmail || '',
+      quantity: Number(payload.quantity || 0),
+      reportingAmount: Number(payload.reportingAmount ?? payload.amount ?? 0),
+      confirmedAt: payload.confirmedAt || new Date().toISOString()
+    });
+
+    const spike = await detectBookingRateSpike(payload);
+    if (spike) {
+      io.to(room).emit('organizer:booking-spike', spike);
+    }
+  };
+
+  let io;
+
   await eventBus.subscribe(
     [
       DomainEvents.CHAT_MESSAGE_SENT,
       DomainEvents.POLL_RESPONSE,
-      DomainEvents.QUESTION_POSTED
+      DomainEvents.QUESTION_POSTED,
+      DomainEvents.BOOKING_CONFIRMED
     ],
     async ({ event, payload }) => {
       if (!payload?.eventId) {
+        return;
+      }
+
+      if (event === DomainEvents.BOOKING_CONFIRMED) {
+        if (io) {
+          await emitOrganizerBookingActivity(io, payload);
+        }
         return;
       }
 
@@ -106,7 +210,7 @@ const start = async () => {
   const pubClient = new Redis(config.redisUrl);
   const subClient = pubClient.duplicate();
 
-  const io = new Server({
+  io = new Server({
     path: '/socket/live',
     cors: {
       origin: config.corsOrigin,
@@ -201,6 +305,29 @@ const start = async () => {
   });
 
   io.on('connection', (socket) => {
+    socket.on('organizer:join-dashboard', ({ organizerId } = {}) => {
+      const requestedOrganizerId = String(organizerId || socket.user.sub || '').trim();
+      const canJoinOwnRoom =
+        socket.user.role === 'admin' ||
+        (socket.user.role === 'organizer' && requestedOrganizerId === String(socket.user.sub || ''));
+
+      if (!requestedOrganizerId || !canJoinOwnRoom) {
+        socket.emit('organizer:error', { message: 'Not authorized for organizer dashboard updates.' });
+        return;
+      }
+
+      socket.join(buildOrganizerRoom(requestedOrganizerId));
+    });
+
+    socket.on('organizer:leave-dashboard', ({ organizerId } = {}) => {
+      const requestedOrganizerId = String(organizerId || socket.user.sub || '').trim();
+      if (!requestedOrganizerId) {
+        return;
+      }
+
+      socket.leave(buildOrganizerRoom(requestedOrganizerId));
+    });
+
     socket.on('live:join', ({ eventId }) => {
       if (!eventId) {
         return;
@@ -433,7 +560,13 @@ const start = async () => {
     });
   });
 
-  const app = createApp({ eventBus, io });
+  const app = createApp({
+    eventBus,
+    io,
+    services: {
+      recordingUploadService
+    }
+  });
   const server = http.createServer(app);
   io.attach(server);
 

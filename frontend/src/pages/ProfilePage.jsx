@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { Link } from 'react-router-dom';
+import GamificationShowcase from '../components/GamificationShowcase';
 import SectionHeader from '../components/SectionHeader';
 import TwoFactorSettings from '../components/TwoFactorSettings';
 import {
   fetchProfile,
+  fetchGamificationSummary,
   updateProfile,
   clearSaved,
   fetchFollowing,
@@ -308,7 +310,16 @@ const FollowingTab = () => {
 // ─── Main ProfilePage ──────────────────────────────────────────────────────────
 const ProfilePage = () => {
   const dispatch = useDispatch();
-  const { profile, loading, saving, saved, error } = useSelector((state) => state.user);
+  const {
+    profile,
+    gamification,
+    loading,
+    saving,
+    saved,
+    error,
+    gamificationLoading,
+    gamificationError
+  } = useSelector((state) => state.user);
   const { user } = useSelector((state) => state.auth);
   const [activeTab, setActiveTab] = useState('profile'); // 'profile' | 'following'
   const [form, setForm] = useState(null);
@@ -318,6 +329,7 @@ const ProfilePage = () => {
 
   useEffect(() => {
     dispatch(fetchProfile());
+    dispatch(fetchGamificationSummary());
   }, [dispatch]);
 
   useEffect(() => {
@@ -446,6 +458,12 @@ const ProfilePage = () => {
           {showVerificationRequest && (
             <OrganizerVerificationSection userId={user?.id} />
           )}
+
+          <GamificationShowcase
+            summary={gamification}
+            loading={gamificationLoading}
+            error={gamificationError}
+          />
 
           <form onSubmit={handleSubmit} className="grid gap-8 lg:grid-cols-[0.85fr,1.15fr]">
             {/* Left: Identity */}

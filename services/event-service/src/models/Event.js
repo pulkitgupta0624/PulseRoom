@@ -386,6 +386,7 @@ const eventSchema = new mongoose.Schema(
     venueAddress: String,
     city: String,
     country: String,
+    taxRegistrationNumber: String,
     streamUrl: String,
     organizerSignatureName: String,
     categories: {
@@ -409,6 +410,10 @@ const eventSchema = new mongoose.Schema(
     ticketTiers: {
       type: [ticketTierSchema],
       default: []
+    },
+    acceptedCurrencies: {
+      type: [String],
+      default: ['INR']
     },
     sponsorPackages: {
       type: [sponsorPackageSchema],

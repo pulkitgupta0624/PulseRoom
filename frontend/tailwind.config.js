@@ -1,25 +1,25 @@
 module.exports = {
+  darkMode: 'class',
   content: ['./index.html', './src/**/*.{js,jsx}'],
   theme: {
     extend: {
       colors: {
-        ink: '#121212',
-        sand: '#f5efe4',
-        ember: '#b4472d',
-        reef: '#0f766e',
-        dusk: '#1f2a44',
+        sand: 'var(--color-sand)',
+        ink: 'var(--color-ink)',
+        reef: 'var(--color-reef)',
+        ember: 'var(--color-ember)',
+        dusk: 'var(--color-dusk)',
         haze: '#fff8ef'
       },
       boxShadow: {
-        bloom: '0 24px 60px -24px rgba(18, 18, 18, 0.28)'
+        bloom: 'var(--shadow-bloom)'
       },
       fontFamily: {
         display: ['"Space Grotesk"', 'sans-serif'],
         body: ['"IBM Plex Sans"', 'sans-serif']
       },
       backgroundImage: {
-        'hero-radial':
-          'radial-gradient(circle at top left, rgba(13, 167, 162, 0.22), transparent 32%), radial-gradient(circle at bottom right, rgba(239, 106, 74, 0.25), transparent 28%)'
+        'hero-radial': 'var(--hero-radial)'
       },
       animation: {
         'slide-in': 'slideIn 0.22s ease-out'

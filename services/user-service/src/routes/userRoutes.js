@@ -17,7 +17,8 @@ const {
   updateProfileSchema,
   updateRoleSchema,
   organizerVerificationSchema,
-  reviewVerificationSchema
+  reviewVerificationSchema,
+  internalLocationLookupSchema
 } = require('../validators/userSchemas');
 
 const router = express.Router();
@@ -65,6 +66,12 @@ const getOrganizerProfileOrThrow = async (organizerId) => {
   return organizerProfile;
 };
 
+const assertInternalLocationLookupAccess = (req) => {
+  if (req.headers['x-service-name'] !== 'booking-service') {
+    throw new AppError('Forbidden', 403, 'forbidden');
+  }
+};
+
 // ── GET /me ───────────────────────────────────────────────────────────────────
 router.get(
   '/me',
@@ -109,6 +116,7 @@ router.get(
       organizers.map((org) => ({
         ...org,
         followersCount: org.followersCount || 0,
+        isFollowableOrganizer: true,
         isFollowingOrganizer: true,
         canFollowOrganizer: true
       }))
@@ -143,6 +151,35 @@ router.get(
 );
 
 // ── PATCH /me ─────────────────────────────────────────────────────────────────
+router.post(
+  '/internal/profiles/locations',
+  validateSchema(internalLocationLookupSchema),
+  asyncHandler(async (req, res) => {
+    assertInternalLocationLookupAccess(req);
+
+    const userIds = [...new Set((req.body.userIds || []).map((userId) => userId.trim()))];
+    if (!userIds.length) {
+      return sendSuccess(res, []);
+    }
+
+    const profiles = await UserProfile.find({
+      userId: { $in: userIds },
+      isActive: true
+    })
+      .select('userId displayName location')
+      .lean();
+
+    sendSuccess(
+      res,
+      profiles.map((profile) => ({
+        userId: profile.userId,
+        displayName: profile.displayName,
+        location: profile.location || ''
+      }))
+    );
+  })
+);
+
 router.patch(
   '/me',
   authenticate(),
@@ -339,7 +376,8 @@ router.get(
     }
 
     const viewer = decodeOptionalToken(req);
-    const canFollowOrganizer = isFollowableOrganizer(profile) && viewer?.sub !== profile.userId;
+    const followableOrganizer = isFollowableOrganizer(profile);
+    const canFollowOrganizer = followableOrganizer && Boolean(viewer?.sub) && viewer.sub !== profile.userId;
     const isFollowingOrganizer = canFollowOrganizer
       ? await getFollowState({
           viewerId: viewer?.sub,
@@ -350,6 +388,7 @@ router.get(
     sendSuccess(res, {
       ...profile,
       followersCount: profile.followersCount || 0,
+      isFollowableOrganizer: followableOrganizer,
       canFollowOrganizer,
       isFollowingOrganizer
     });

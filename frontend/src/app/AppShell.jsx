@@ -5,8 +5,10 @@ import NotificationPanel from '../components/NotificationPanel';
 import { bootstrapSession, logout } from '../features/auth/authSlice';
 import { fetchUnreadCount, toggleNotifications } from '../features/notifications/notificationsSlice';
 import ToastContainer from '../components/ToastContainer';
+import { toggleTheme } from '../features/ui/uiSlice';
 
 const AppShell = () => {
+  const theme = useSelector((state) => state.ui.theme);
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const { user } = useSelector((state) => state.auth);
@@ -17,6 +19,15 @@ const AppShell = () => {
   useEffect(() => {
     if (user) dispatch(fetchUnreadCount());
   }, [dispatch, user]);
+
+  useEffect(() => {
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+    document.documentElement.style.colorScheme = theme;
+  }, [theme]);
 
   const navLinkClass = ({ isActive }) =>
     `rounded-full px-4 py-2 text-sm font-medium transition ${isActive ? 'bg-ink text-sand' : 'text-ink/70 hover:bg-white/60'}`;
@@ -50,6 +61,25 @@ const AppShell = () => {
             )}
             {user && <NavLink to="/my-bookings" className={navLinkClass}>My Tickets</NavLink>}
           </nav>
+
+          {/* Theme toggle */}
+          <button
+            type="button"
+            onClick={() => dispatch(toggleTheme())}
+            aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            className="rounded-full border border-ink/10 bg-white/80 p-2 text-ink hover:bg-white/60"
+          >
+            {theme === 'light' ? (
+              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+              </svg>
+            ) : (
+              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+              </svg>
+            )}
+          </button>
 
           {/* Right side */}
           <div className="flex items-center gap-3">

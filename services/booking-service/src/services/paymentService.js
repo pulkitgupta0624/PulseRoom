@@ -32,6 +32,14 @@ const createRefund = async (paymentIntentId) => {
   });
 };
 
+const retrievePaymentIntent = async (paymentIntentId) => {
+  if (!stripe) {
+    throw new Error('Stripe is not configured');
+  }
+
+  return stripe.paymentIntents.retrieve(paymentIntentId);
+};
+
 const constructWebhookEvent = (rawBody, signature) => {
   if (!stripe) {
     throw new Error('Stripe is not configured');
@@ -44,6 +52,6 @@ module.exports = {
   stripe,
   createPaymentIntent,
   createRefund,
+  retrievePaymentIntent,
   constructWebhookEvent
 };
-

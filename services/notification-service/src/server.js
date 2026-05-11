@@ -39,6 +39,9 @@ const createNotification = async ({
     sentAt: channel === NotificationChannel.IN_APP ? new Date() : undefined
   });
 
+const buildReplayCtaUrl = (eventId) =>
+  `${config.appOrigin.replace(/\/$/, '')}/events/${eventId}/live?replay=1`;
+
 const queueEmailHtml = (body) => `<p style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6;">${body}</p>`;
 const escapeHtml = (value = '') =>
   String(value)
@@ -104,11 +107,86 @@ const buildSponsorApprovalEmail = (payload) => {
   )}${amountLine}${paymentLinkBlock}${instructionsBlock}${fallbackBlock}`;
 };
 
+const loadReplayMeta = async ({ liveServiceClient, eventId }) => {
+  if (!eventId) {
+    return {
+      available: false
+    };
+  }
+
+  try {
+    const response = await liveServiceClient.get(`/api/live/internal/${eventId}/replay-meta`);
+    return response.data.data;
+  } catch (error) {
+    logger.warn({
+      message: 'Failed to load replay metadata',
+      eventId,
+      error: error.message
+    });
+    return {
+      available: false
+    };
+  }
+};
+
+const deliverReplayAvailableNotifications = async ({
+  audience,
+  queue,
+  replayMeta,
+  payload
+}) => {
+  if (!replayMeta?.available) {
+    return;
+  }
+
+  const title = `Replay ready for ${payload.title || payload.eventTitle || 'your event'}`;
+  const body = 'The replay is ready to watch. Confirmed attendees can jump back in any time.';
+  const ctaUrl = buildReplayCtaUrl(payload.eventId);
+
+  for (const attendee of audience) {
+    const existingNotification = await Notification.findOne({
+      userId: attendee.userId,
+      eventId: attendee.eventId,
+      type: 'replay_available'
+    })
+      .select('_id')
+      .lean();
+
+    if (existingNotification) {
+      continue;
+    }
+
+    await createNotification({
+      userId: attendee.userId,
+      eventId: attendee.eventId,
+      email: attendee.email,
+      type: 'replay_available',
+      title,
+      body,
+      metadata: {
+        ctaUrl,
+        ctaLabel: 'Watch replay',
+        durationSeconds: Number(replayMeta.durationSeconds || 0),
+        clipsCount: Number(replayMeta.clipsCount || 0)
+      }
+    });
+
+    if (attendee.email) {
+      await queue.add('send-email', {
+        to: attendee.email,
+        subject: title,
+        html: `${queueEmailHtml(body)}<p><a href="${ctaUrl}">Watch the replay</a></p>`
+      });
+    }
+  }
+};
+
 const start = async () => {
   await connectMongo(config.mongoUri, logger);
 
   const userServiceClient = createServiceClient(config.userServiceUrl, 'notification-service');
   const eventServiceClient = createServiceClient(config.eventServiceUrl, 'notification-service');
+  const liveServiceClient = createServiceClient(config.liveServiceUrl, 'notification-service');
   const connection = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
   const queue = new Queue('notification-jobs', {
     connection
@@ -226,6 +304,7 @@ const start = async () => {
       DomainEvents.EVENT_PUBLISHED,
       DomainEvents.EVENT_UPDATED,
       DomainEvents.ANNOUNCEMENT_POSTED,
+      DomainEvents.REPLAY_AVAILABLE,
       DomainEvents.WAITLIST_JOINED,
       DomainEvents.WAITLIST_SPOT_OFFERED,
       DomainEvents.WAITLIST_SPOT_EXPIRED,
@@ -488,11 +567,32 @@ const start = async () => {
         }
       }
 
+      if (event === DomainEvents.REPLAY_AVAILABLE) {
+        const audience = await EventAudience.find({
+          eventId: payload.eventId
+        }).lean();
+
+        await deliverReplayAvailableNotifications({
+          audience,
+          queue,
+          replayMeta: {
+            available: true,
+            durationSeconds: payload.durationSeconds || 0,
+            clipsCount: payload.clipsCount || 0
+          },
+          payload
+        });
+      }
+
       if (event === DomainEvents.EVENT_COMPLETED) {
         const audience = await EventAudience.find({
           eventId: payload.eventId
         }).lean();
         const organizerSignatureName = await resolveOrganizerSignature(payload);
+        const replayMeta = await loadReplayMeta({
+          liveServiceClient,
+          eventId: payload.eventId
+        });
 
         for (const attendee of audience) {
           await createNotification({
@@ -516,9 +616,16 @@ const start = async () => {
               startsAt: payload.startsAt,
               endsAt: payload.endsAt,
               organizerSignatureName
-            });
+              });
           }
         }
+
+        await deliverReplayAvailableNotifications({
+          audience,
+          queue,
+          replayMeta,
+          payload
+        });
       }
     }
   );
