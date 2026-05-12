@@ -5,6 +5,7 @@ import SectionHeader from '../components/SectionHeader';
 import EventCapacityBar from '../components/EventCapacityBar';
 import EventReportModal from '../components/EventReportModal';
 import AddToCalendarButton from '../components/AddToCalendarButton';
+import EventConcierge from '../components/EventConcierge';
 import EventSponsorSection from '../components/EventSponsorSection';
 import StripeCheckoutModal from '../components/StripeCheckoutModal';
 import StarRatingInput from '../components/StarRatingInput';
@@ -1339,6 +1340,8 @@ const EventDetailPage = () => {
           </div>
         </div>
       </section>
+
+      <EventConcierge eventId={eventId} user={user} />
 
       {organizerProfile && (
         <section className="rounded-[32px] border border-ink/10 bg-white/75 p-6 shadow-bloom">

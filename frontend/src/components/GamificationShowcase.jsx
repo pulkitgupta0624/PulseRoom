@@ -1,3 +1,6 @@
+import { useEffect, useRef } from 'react';
+import gsap from 'gsap';
+
 const StatCard = ({ label, value, accent = 'text-ink' }) => (
   <div className="rounded-[24px] border border-ink/10 bg-white/85 px-4 py-4 shadow-bloom">
     <p className="text-xs uppercase tracking-[0.22em] text-ink/45">{label}</p>
@@ -32,6 +35,62 @@ const BadgeCard = ({ badge }) => {
 };
 
 const GamificationShowcase = ({ summary, loading, error }) => {
+  const rootRef = useRef(null);
+  const badgeGridRef = useRef(null);
+  const progressRef = useRef(null);
+
+  const badges = summary?.badges || [];
+  const perks = summary?.perks || [];
+  const recentActivity = summary?.recentActivity || [];
+  const nextGoals = summary?.nextGoals || [];
+  const stats = summary?.stats || {};
+  const level = summary?.level || {};
+  const pointsToNextLevel = Number(level.pointsToNextLevel || 0);
+
+  useEffect(() => {
+    if (!rootRef.current) {
+      return undefined;
+    }
+
+    const ctx = gsap.context(() => {
+      gsap.fromTo(
+        '[data-gamification-stat]',
+        { autoAlpha: 0, y: 14 },
+        { autoAlpha: 1, y: 0, duration: 0.55, ease: 'power3.out', stagger: 0.06 }
+      );
+    }, rootRef);
+
+    return () => ctx.revert();
+  }, [loading, summary?.totalPoints, level.label]);
+
+  useEffect(() => {
+    if (!progressRef.current) {
+      return;
+    }
+
+    gsap.fromTo(
+      progressRef.current,
+      { scaleX: 0, transformOrigin: 'left center' },
+      { scaleX: 1, duration: 0.9, ease: 'power3.out' }
+    );
+  }, [level.progressPercent]);
+
+  useEffect(() => {
+    if (!badgeGridRef.current || !badges.length) {
+      return undefined;
+    }
+
+    const ctx = gsap.context(() => {
+      gsap.fromTo(
+        '[data-badge-card]',
+        { autoAlpha: 0, y: 18, rotateX: -8 },
+        { autoAlpha: 1, y: 0, rotateX: 0, duration: 0.65, ease: 'back.out(1.5)', stagger: 0.08 }
+      );
+    }, badgeGridRef);
+
+    return () => ctx.revert();
+  }, [badges.length]);
+
   if (loading) {
     return <div className="h-72 animate-pulse rounded-[32px] bg-white/60" />;
   }
@@ -40,16 +99,8 @@ const GamificationShowcase = ({ summary, loading, error }) => {
     return null;
   }
 
-  const badges = summary.badges || [];
-  const perks = summary.perks || [];
-  const recentActivity = summary.recentActivity || [];
-  const nextGoals = summary.nextGoals || [];
-  const stats = summary.stats || {};
-  const level = summary.level || {};
-  const pointsToNextLevel = Number(level.pointsToNextLevel || 0);
-
   return (
-    <section className="overflow-hidden rounded-[32px] border border-dusk/15 bg-gradient-to-br from-dusk/5 via-white to-reef/10 p-6 shadow-bloom">
+    <section ref={rootRef} className="overflow-hidden rounded-[32px] border border-dusk/15 bg-gradient-to-br from-dusk/5 via-white to-reef/10 p-6 shadow-bloom">
       <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
         <div className="max-w-2xl">
           <p className="text-xs uppercase tracking-[0.26em] text-dusk">Community Rewards</p>
@@ -64,9 +115,9 @@ const GamificationShowcase = ({ summary, loading, error }) => {
         </div>
 
         <div className="grid gap-3 sm:grid-cols-3 lg:min-w-[420px]">
-          <StatCard label="Total Points" value={summary.totalPoints || 0} accent="text-dusk" />
-          <StatCard label="Current Level" value={level.label || 'Starter'} accent="text-reef" />
-          <StatCard label="Badges" value={badges.length} accent="text-ember" />
+          <div data-gamification-stat><StatCard label="Total Points" value={summary.totalPoints || 0} accent="text-dusk" /></div>
+          <div data-gamification-stat><StatCard label="Current Level" value={level.label || 'Starter'} accent="text-reef" /></div>
+          <div data-gamification-stat><StatCard label="Badges" value={badges.length} accent="text-ember" /></div>
         </div>
       </div>
 
@@ -88,6 +139,7 @@ const GamificationShowcase = ({ summary, loading, error }) => {
             </div>
             <div className="mt-4 h-3 overflow-hidden rounded-full bg-sand">
               <div
+                ref={progressRef}
                 className="h-full rounded-full bg-gradient-to-r from-dusk to-reef transition-all"
                 style={{ width: `${level.progressPercent || 0}%` }}
               />
@@ -108,9 +160,11 @@ const GamificationShowcase = ({ summary, loading, error }) => {
             </div>
 
             {badges.length > 0 ? (
-              <div className="grid gap-4 md:grid-cols-2">
+              <div ref={badgeGridRef} className="grid gap-4 md:grid-cols-2">
                 {badges.map((badge) => (
-                  <BadgeCard key={badge.key} badge={badge} />
+                  <div key={badge.key} data-badge-card>
+                    <BadgeCard badge={badge} />
+                  </div>
                 ))}
               </div>
             ) : (

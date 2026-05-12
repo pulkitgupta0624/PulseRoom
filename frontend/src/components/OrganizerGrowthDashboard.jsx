@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import gsap from 'gsap';
 import {
   Cell,
   Funnel,
@@ -114,6 +115,7 @@ const OrganizerGrowthDashboard = ({
   const revenue = Number(data?.summary?.revenue || 0);
   const animatedRevenue = useAnimatedNumber(revenue);
   const previousRevenueRef = useRef(null);
+  const confettiLayerRef = useRef(null);
   const [celebratedMilestone, setCelebratedMilestone] = useState(null);
   const [confettiPieces, setConfettiPieces] = useState([]);
 
@@ -157,6 +159,31 @@ const OrganizerGrowthDashboard = ({
     return () => window.clearTimeout(timeoutId);
   }, [data?.milestones?.reached, data?.summary?.revenue]);
 
+  useEffect(() => {
+    if (!confettiLayerRef.current || !confettiPieces.length) {
+      return undefined;
+    }
+
+    const ctx = gsap.context(() => {
+      gsap.fromTo(
+        '[data-confetti-piece]',
+        { autoAlpha: 1, y: -24, x: 0, rotate: 0, scale: 0.8 },
+        {
+          autoAlpha: 0,
+          y: (index) => Number.parseInt(confettiPieces[index]?.y || '180', 10),
+          x: (index) => Number.parseInt(confettiPieces[index]?.x || '0', 10),
+          rotate: (index) => Number.parseInt(confettiPieces[index]?.rotate || '180', 10),
+          scale: 1,
+          duration: 1.35,
+          ease: 'power2.out',
+          stagger: 0.025
+        }
+      );
+    }, confettiLayerRef);
+
+    return () => ctx.revert();
+  }, [confettiPieces]);
+
   const funnelData = useMemo(
     () => [
       { name: 'Page Views', value: Number(data?.funnel?.pageViews || 0), fill: '#2f4f7f' },
@@ -185,19 +212,16 @@ const OrganizerGrowthDashboard = ({
       <div className="grid gap-6 xl:grid-cols-[1.2fr,0.8fr]">
         <div className={`${panelClass} relative overflow-hidden`}>
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(13,167,162,0.16),transparent_42%),radial-gradient(circle_at_bottom_right,rgba(239,106,74,0.18),transparent_35%)]" />
-          {confettiPieces.map((piece) => (
-            <span
-              key={piece.id}
-              className="milestone-confetti"
-              style={{
-                backgroundColor: piece.color,
-                '--confetti-x': piece.x,
-                '--confetti-y': piece.y,
-                '--confetti-rotate': piece.rotate,
-                animationDelay: piece.delay
-              }}
-            />
-          ))}
+          <div ref={confettiLayerRef} className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center">
+            {confettiPieces.map((piece) => (
+              <span
+                key={piece.id}
+                data-confetti-piece
+                className="mt-5 h-3 w-2 rounded-sm opacity-0"
+                style={{ backgroundColor: piece.color }}
+              />
+            ))}
+          </div>
 
           <div className="relative">
             <div className="flex flex-wrap items-center justify-between gap-3">

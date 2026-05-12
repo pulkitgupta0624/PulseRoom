@@ -483,6 +483,48 @@ router.get(
   })
 );
 
+router.get(
+  '/internal/:eventId/summary-context',
+  asyncHandler(async (req, res) => {
+    assertInternalService(req, ['event-service']);
+
+    const [polls, questions, announcements, reactions, engagementSeries] = await Promise.all([
+      Poll.find({ eventId: req.params.eventId }).sort({ createdAt: 1 }).lean(),
+      Question.find({ eventId: req.params.eventId, hidden: false }).sort({ createdAt: 1 }).lean(),
+      Announcement.find({ eventId: req.params.eventId }).sort({ createdAt: 1 }).lean(),
+      ReactionCounter.find({ eventId: req.params.eventId }).lean(),
+      EngagementMinute.find({ eventId: req.params.eventId }).sort({ minuteBucket: 1 }).limit(240).lean()
+    ]);
+
+    sendSuccess(res, {
+      eventId: req.params.eventId,
+      polls: polls.map((poll) => ({
+        question: poll.question,
+        status: poll.status,
+        options: (poll.options || []).map((option) => ({
+          label: option.label,
+          votes: Number(option.votes || 0)
+        })),
+        responseCount: (poll.responses || []).length
+      })),
+      questions: serializeQuestionFeed(questions).slice(0, 80),
+      announcements: announcements.slice(0, 30).map((announcement) => ({
+        body: announcement.body,
+        createdAt: announcement.createdAt
+      })),
+      reactions: reactions.map((reaction) => ({
+        emoji: reaction.emoji,
+        count: Number(reaction.count || 0)
+      })),
+      engagement: buildEngagementHeatmap({
+        eventId: req.params.eventId,
+        documents: engagementSeries,
+        windowMinutes: Math.max(30, engagementSeries.length)
+      })
+    });
+  })
+);
+
 router.patch(
   '/:eventId/replay/editor',
   authenticate(),

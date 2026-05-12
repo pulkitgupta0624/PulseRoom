@@ -7,6 +7,10 @@ const { buildReviewWindowOpensAt } = require('./reviewService');
 const COMPLETION_QUEUE = 'event-completion-jobs';
 
 const buildJobId = (eventId) => `event-complete__${eventId}`;
+const buildScheduledJobId = (eventId, endsAt) =>
+  `${buildJobId(eventId)}__${new Date(endsAt).getTime()}`;
+const isLockedJobError = (error) =>
+  /locked by another worker/i.test(error?.message || '');
 
 const createEventCompletionService = ({ redisUrl, logger, eventBus, onEventChanged }) => {
   const connection = new Redis(redisUrl, { maxRetriesPerRequest: null });
@@ -73,9 +77,29 @@ const createEventCompletionService = ({ redisUrl, logger, eventBus, onEventChang
   });
 
   const removeScheduledCompletion = async (eventId) => {
-    const existingJob = await queue.getJob(buildJobId(eventId));
-    if (existingJob) {
-      await existingJob.remove();
+    const baseJobId = buildJobId(eventId);
+    const jobTypes = ['delayed', 'waiting', 'paused', 'prioritized', 'waiting-children'];
+    const jobs = await queue.getJobs(jobTypes, 0, -1);
+    const matchingJobs = jobs.filter((job) =>
+      String(job.id || '') === baseJobId ||
+      String(job.id || '').startsWith(`${baseJobId}__`)
+    );
+
+    for (const job of matchingJobs) {
+      try {
+        await job.remove();
+      } catch (error) {
+        if (isLockedJobError(error)) {
+          logger.warn({
+            message: 'Skipped locked event completion job during reschedule',
+            eventId,
+            jobId: job.id
+          });
+          continue;
+        }
+
+        throw error;
+      }
     }
   };
 
@@ -92,16 +116,29 @@ const createEventCompletionService = ({ redisUrl, logger, eventBus, onEventChang
     }
 
     const delay = Math.max(0, new Date(event.endsAt).getTime() - Date.now());
-    await queue.add(
-      'complete-event',
-      { eventId },
-      {
-        jobId: buildJobId(eventId),
-        delay,
-        removeOnComplete: true,
-        removeOnFail: 50
+    try {
+      await queue.add(
+        'complete-event',
+        { eventId },
+        {
+          jobId: buildScheduledJobId(eventId, event.endsAt),
+          delay,
+          removeOnComplete: true,
+          removeOnFail: 50
+        }
+      );
+    } catch (error) {
+      if (/already exists/i.test(error?.message || '')) {
+        logger.info({
+          message: 'Event completion job already scheduled',
+          eventId,
+          endsAt: event.endsAt
+        });
+        return;
       }
-    );
+
+      throw error;
+    }
   };
 
   const bootstrapExistingSchedules = async () => {

@@ -1,7 +1,10 @@
 import { Link } from 'react-router-dom';
 import clsx from 'clsx';
+import { motion } from 'framer-motion';
 import { formatCurrency, formatDate } from '../lib/formatters';
 import OrganizerBadge from './OrganizerBadge';
+
+const MotionLink = motion.create(Link);
 
 const EventCard = ({ event, compact = false }) => {
   const lowestTier = [...(event.ticketTiers || [])].sort((left, right) => left.price - right.price)[0];
@@ -13,14 +16,21 @@ const EventCard = ({ event, compact = false }) => {
     : Boolean(lowestTier?.isFree || lowestPrice === 0);
 
   return (
-    <Link
+    <MotionLink
       to={`/events/${event._id}`}
+      layoutId={`event-card-${event._id}`}
+      whileHover={{ y: -6, scale: 1.01 }}
+      whileTap={{ scale: 0.99 }}
+      transition={{ type: 'spring', stiffness: 420, damping: 32 }}
       className={clsx(
-        'group rounded-[28px] border border-ink/10 bg-haze/90 p-5 shadow-bloom transition duration-300 hover:-translate-y-1 hover:border-ink/20',
+        'group rounded-[28px] border border-ink/10 bg-haze/90 p-5 shadow-bloom transition duration-300 hover:border-ink/20',
         compact ? 'space-y-3' : 'space-y-4'
       )}
     >
-      <div className="overflow-hidden rounded-[24px] bg-gradient-to-br from-dusk to-reef p-6 text-sand">
+      <motion.div
+        layoutId={`event-card-hero-${event._id}`}
+        className="overflow-hidden rounded-[24px] bg-gradient-to-br from-dusk to-reef p-6 text-sand"
+      >
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-xs uppercase tracking-[0.25em] text-sand/70">{event.type}</p>
@@ -31,7 +41,7 @@ const EventCard = ({ event, compact = false }) => {
           </span>
         </div>
         <p className="mt-4 max-w-md text-sm text-sand/80">{event.summary}</p>
-      </div>
+      </motion.div>
 
       <div className="space-y-2">
         {event.organizerId && (
@@ -64,7 +74,7 @@ const EventCard = ({ event, compact = false }) => {
           <p className="font-semibold text-ink">{event.attendeesCount || 0}</p>
         </div>
       </div>
-    </Link>
+    </MotionLink>
   );
 };
 

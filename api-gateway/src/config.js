@@ -22,6 +22,14 @@ module.exports = {
       maxRequests: Number(process.env.GATEWAY_USER_RATE_LIMIT_LIVE_MAX || 90)
     }
   },
+  ipRiskAnalysis: {
+    enabled: process.env.GATEWAY_IP_RISK_ENABLED !== 'false',
+    windowMs: Number(process.env.GATEWAY_IP_RISK_WINDOW_MS || 60_000),
+    challengeThreshold: Number(process.env.GATEWAY_IP_RISK_CHALLENGE_THRESHOLD || 120),
+    blockThreshold: Number(process.env.GATEWAY_IP_RISK_BLOCK_THRESHOLD || 220),
+    loginAttemptThreshold: Number(process.env.GATEWAY_IP_RISK_LOGIN_ATTEMPT_THRESHOLD || 12),
+    salt: process.env.GATEWAY_IP_RISK_SALT || process.env.JWT_ACCESS_SECRET || 'pulseroom-dev-risk-salt'
+  },
   services: {
     auth: process.env.AUTH_SERVICE_URL,
     users: process.env.USER_SERVICE_URL,

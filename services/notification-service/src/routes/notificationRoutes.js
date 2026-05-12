@@ -9,6 +9,7 @@ const Notification = require('../models/Notification');
 const EventAudience = require('../models/EventAudience');
 const NetworkingMatch = require('../models/NetworkingMatch');
 const {
+  enrichMatchesWithAiIntros,
   generateNetworkingMatches
 } = require('../services/networkingService');
 
@@ -28,6 +29,7 @@ const buildNetworkingEmailHtml = ({
   counterpart,
   eventTitle,
   summary,
+  introMessage,
   sharedInterests,
   appOrigin
 }) => `
@@ -35,7 +37,7 @@ const buildNetworkingEmailHtml = ({
     <p>Hi ${attendeeName || 'there'},</p>
     <p>We found a strong pre-event networking match for <strong>${eventTitle}</strong>.</p>
     <p><strong>${counterpart.displayName}</strong>${counterpart.location ? ` is based in ${counterpart.location}.` : '.'}</p>
-    <p>${summary}</p>
+    <p>${introMessage || summary}</p>
     ${sharedInterests?.length ? `<p>Shared interests: <strong>${sharedInterests.slice(0, 4).join(', ')}</strong></p>` : ''}
     <p>
       <a href="${buildMessageUrl(appOrigin, counterpart.userId)}" style="display:inline-block;padding:12px 18px;border-radius:9999px;background:#111827;color:#f9fafb;text-decoration:none;font-weight:700;">
@@ -303,8 +305,14 @@ router.post(
       existingMatches: reusableMatches,
       maxMatchesPerAttendee: Number(req.body.matchesPerAttendee || 2)
     });
+    const enrichedMatches = await enrichMatchesWithAiIntros({
+      matches: generatedMatches,
+      config: req.config,
+      eventTitle: req.body.eventTitle,
+      logger: req.logger
+    });
 
-    if (!generatedMatches.length) {
+    if (!enrichedMatches.length) {
       return sendSuccess(res, {
         createdMatches: 0,
         matchedAttendees: new Set(reusableMatches.flatMap((match) => match.participantUserIds || [])).size,
@@ -315,7 +323,7 @@ router.post(
 
     const now = new Date();
     const createdMatches = await NetworkingMatch.insertMany(
-      generatedMatches.map((match) => ({
+      enrichedMatches.map((match) => ({
         eventId: req.params.eventId,
         organizerId: req.body.organizerId,
         pairKey: match.pairKey,
@@ -324,6 +332,7 @@ router.post(
         sharedInterests: match.sharedInterests,
         score: match.score,
         summary: match.summary,
+        introMessages: match.introMessages || {},
         introEmailSentAt: now,
         generatedAt: now
       }))
@@ -358,7 +367,7 @@ router.post(
           email: participant.email,
           type: 'networking.match.created',
           title: `New networking intro for ${req.body.eventTitle}`,
-          body: `Meet ${counterpart.displayName} before the event. ${match.summary}`,
+          body: `Meet ${counterpart.displayName} before the event. ${match.introMessages?.get?.(participant.userId) || match.summary}`,
           metadata: {
             counterpartUserId: counterpart.userId,
             sharedInterests: match.sharedInterests,
@@ -376,6 +385,7 @@ router.post(
               counterpart,
               eventTitle: req.body.eventTitle,
               summary: match.summary,
+              introMessage: match.introMessages?.get?.(participant.userId),
               sharedInterests: match.sharedInterests,
               appOrigin: req.config.appOrigin
             })

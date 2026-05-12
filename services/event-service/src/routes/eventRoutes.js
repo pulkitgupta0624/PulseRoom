@@ -35,7 +35,7 @@ const {
   organizerReplySchema
 } = require('../validators/eventSchemas');
 const { slugify } = require('../services/slugify');
-const { generateEventDraft, answerEventQuestion } = require('../services/aiAssistant');
+const { generateEventDraft, answerEventQuestion, generatePostEventSummary } = require('../services/aiAssistant');
 const { buildCalendarFile, buildCalendarFileName } = require('../services/calendarService');
 const { buildEventPageTheme } = require('../services/eventThemeService');
 const { buildPublicEventFilters } = require('../services/publicEventFilters');
@@ -1099,6 +1099,31 @@ router.post(
     });
 
     sendSuccess(res, answer);
+  })
+);
+
+router.post(
+  '/:eventId/assistant/post-event-summary',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const event = await Event.findById(req.params.eventId).lean();
+    if (!event) {
+      throw new AppError('Event not found', 404, 'event_not_found');
+    }
+
+    if (!canManageEvent(event, req.user)) {
+      throw new AppError('Forbidden', 403, 'forbidden');
+    }
+
+    const liveContextResponse = await req.clients.liveService.get(
+      `/api/live/internal/${req.params.eventId}/summary-context`
+    );
+    const summary = await generatePostEventSummary({
+      event,
+      liveContext: liveContextResponse.data.data
+    });
+
+    sendSuccess(res, summary);
   })
 );
 

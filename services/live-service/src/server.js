@@ -21,6 +21,8 @@ const BOOKING_RATE_TTL_SECONDS = 6 * 60 * 60;
 const streamRooms = new Map();
 
 const buildOrganizerRoom = (organizerId) => `organizer:${organizerId}`;
+const buildStreamRoomKey = (eventId) => `live:stream-room:${eventId}`;
+const buildStreamViewerKey = (eventId) => `live:stream-viewers:${eventId}`;
 
 const buildHourlyRateBucket = (value = new Date()) => {
   const date = new Date(value);
@@ -31,7 +33,7 @@ const buildHourlyRateBucket = (value = new Date()) => {
 const getStreamPayload = (eventId, room) => ({
   eventId,
   status: room?.broadcasterSocketId ? 'live' : 'idle',
-  viewerCount: room?.viewers?.size || 0,
+  viewerCount: room?.viewerCount ?? room?.viewers?.size ?? 0,
   broadcasterId: room?.broadcasterId || null,
   startedAt: room?.startedAt || null
 });
@@ -219,8 +221,43 @@ const start = async () => {
   });
   io.adapter(createAdapter(pubClient, subClient));
 
+  const loadStreamRoom = async (eventId) => {
+    const [room, viewerCount] = await Promise.all([
+      pubClient.hgetall(buildStreamRoomKey(eventId)),
+      pubClient.scard(buildStreamViewerKey(eventId))
+    ]);
+
+    if (!room?.broadcasterSocketId) {
+      return null;
+    }
+
+    return {
+      broadcasterSocketId: room.broadcasterSocketId,
+      broadcasterId: room.broadcasterId,
+      startedAt: room.startedAt ? new Date(room.startedAt) : null,
+      viewerCount
+    };
+  };
+
+  const saveStreamRoom = async (eventId, room) => {
+    await pubClient
+      .multi()
+      .hmset(buildStreamRoomKey(eventId), {
+        broadcasterSocketId: room.broadcasterSocketId,
+        broadcasterId: room.broadcasterId,
+        startedAt: room.startedAt.toISOString()
+      })
+      .expire(buildStreamRoomKey(eventId), 24 * 60 * 60)
+      .expire(buildStreamViewerKey(eventId), 24 * 60 * 60)
+      .exec();
+  };
+
+  const clearStreamRoom = async (eventId) => {
+    await pubClient.del(buildStreamRoomKey(eventId), buildStreamViewerKey(eventId));
+  };
+
   const syncStreamSession = async (eventId) => {
-    const room = streamRooms.get(eventId);
+    const room = await loadStreamRoom(eventId);
     if (!room?.broadcasterSocketId) {
       await StreamSession.findOneAndUpdate(
         { eventId },
@@ -243,7 +280,7 @@ const start = async () => {
           status: 'live',
           startedAt: room.startedAt,
           endedAt: null,
-          viewerCount: room.viewers.size
+          viewerCount: room.viewerCount || 0
         }
       },
       {
@@ -254,18 +291,18 @@ const start = async () => {
   };
 
   const emitStreamStatus = async (eventId) => {
-    const room = streamRooms.get(eventId);
+    const room = await loadStreamRoom(eventId);
     await syncStreamSession(eventId);
     io.to(`live:${eventId}`).emit('stream:status', getStreamPayload(eventId, room));
   };
 
   const removeViewerFromRoom = async (eventId, viewerSocketId) => {
-    const room = streamRooms.get(eventId);
-    if (!room?.viewers?.has(viewerSocketId)) {
+    const removed = await pubClient.srem(buildStreamViewerKey(eventId), viewerSocketId);
+    const room = await loadStreamRoom(eventId);
+    if (!removed || !room?.broadcasterSocketId) {
       return;
     }
 
-    room.viewers.delete(viewerSocketId);
     io.to(room.broadcasterSocketId).emit('stream:viewer-left', {
       eventId,
       viewerSocketId
@@ -274,12 +311,13 @@ const start = async () => {
   };
 
   const stopBroadcast = async (socket, eventId, reason = 'ended') => {
-    const room = streamRooms.get(eventId);
+    const room = await loadStreamRoom(eventId);
     if (!room || room.broadcasterSocketId !== socket.id) {
       return;
     }
 
     streamRooms.delete(eventId);
+    await clearStreamRoom(eventId);
     io.to(`live:${eventId}`).emit('stream:ended', {
       eventId,
       reason
@@ -334,7 +372,9 @@ const start = async () => {
       }
 
       socket.join(`live:${eventId}`);
-      socket.emit('stream:status', getStreamPayload(eventId, streamRooms.get(eventId)));
+      loadStreamRoom(eventId)
+        .then((room) => socket.emit('stream:status', getStreamPayload(eventId, room)))
+        .catch((error) => logger.warn({ message: 'stream status lookup failed', error: error.message }));
     });
 
     socket.on('stream:start-broadcast', async ({ eventId }) => {
@@ -348,18 +388,21 @@ const start = async () => {
           return;
         }
 
-        const existing = streamRooms.get(eventId);
+        const existing = await loadStreamRoom(eventId);
         if (existing?.broadcasterSocketId && existing.broadcasterSocketId !== socket.id) {
           socket.emit('stream:error', { message: 'A broadcast is already active for this event.' });
           return;
         }
 
-        streamRooms.set(eventId, {
+        const nextRoom = {
           broadcasterSocketId: socket.id,
           broadcasterId: socket.user.sub,
-          viewers: existing?.viewers || new Set(),
+          viewers: streamRooms.get(eventId)?.viewers || new Set(),
           startedAt: existing?.startedAt || new Date()
-        });
+        };
+        streamRooms.set(eventId, nextRoom);
+        socket.data.broadcastEventIds = new Set([...(socket.data.broadcastEventIds || []), eventId]);
+        await saveStreamRoom(eventId, nextRoom);
 
         await emitStreamStatus(eventId);
       } catch (error) {
@@ -378,14 +421,15 @@ const start = async () => {
           return;
         }
 
-        const room = streamRooms.get(eventId);
+        const room = await loadStreamRoom(eventId);
         if (!room?.broadcasterSocketId || room.broadcasterSocketId === socket.id) {
           socket.emit('stream:status', getStreamPayload(eventId, room));
           return;
         }
 
-        const wasPresent = room.viewers.has(socket.id);
-        room.viewers.add(socket.id);
+        const wasPresent = !(await pubClient.sadd(buildStreamViewerKey(eventId), socket.id));
+        socket.data.viewingEventIds = new Set([...(socket.data.viewingEventIds || []), eventId]);
+        await pubClient.expire(buildStreamViewerKey(eventId), 24 * 60 * 60);
 
         if (!wasPresent) {
           io.to(room.broadcasterSocketId).emit('stream:new-viewer', {
@@ -545,15 +589,12 @@ const start = async () => {
     });
 
     socket.on('disconnect', async () => {
-      for (const [eventId, room] of streamRooms.entries()) {
-        if (room.broadcasterSocketId === socket.id) {
-          await stopBroadcast(socket, eventId, 'broadcaster_disconnected');
-          break;
-        }
+      for (const eventId of socket.data.broadcastEventIds || []) {
+        await stopBroadcast(socket, eventId, 'broadcaster_disconnected');
+      }
 
-        if (room.viewers.has(socket.id)) {
-          await removeViewerFromRoom(eventId, socket.id);
-        }
+      for (const eventId of socket.data.viewingEventIds || []) {
+        await removeViewerFromRoom(eventId, socket.id);
       }
 
       logger.info({ message: 'Live socket disconnected', userId: socket.user.sub });

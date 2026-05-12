@@ -56,6 +56,11 @@ const networkingMatchSchema = new mongoose.Schema(
       type: String,
       default: ''
     },
+    introMessages: {
+      type: Map,
+      of: String,
+      default: {}
+    },
     introEmailSentAt: Date,
     generatedAt: {
       type: Date,

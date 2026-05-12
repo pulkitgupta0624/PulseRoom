@@ -130,8 +130,8 @@ const LiveStreamStage = ({
     });
   };
 
-  const loadReplay = async ({ showError = false } = {}) => {
-    if (!eventHasEnded && !(session?.recording?.replayReady && canManage)) {
+  const loadReplay = async ({ showError = false, force = false } = {}) => {
+    if (!force && !session?.recording?.replayReady) {
       return;
     }
 
@@ -185,12 +185,12 @@ const LiveStreamStage = ({
   }, [eventId]);
 
   useEffect(() => {
-    if (!eventHasEnded && !session?.recording?.replayReady) {
+    if (!session?.recording?.replayReady) {
       return;
     }
 
     void loadReplay();
-  }, [eventHasEnded, eventId, session?.recording?.replayReady]);
+  }, [eventId, session?.recording?.replayReady]);
 
   useEffect(() => {
     if (!socket) {
@@ -344,7 +344,7 @@ const LiveStreamStage = ({
           clipCount: clipsCount ?? current?.recording?.clipCount ?? 0
         }
       }));
-      void loadReplay();
+      void loadReplay({ force: true });
     };
 
     const handleStreamError = ({ message }) => {

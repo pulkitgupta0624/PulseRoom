@@ -17,5 +17,7 @@ module.exports = {
   smtpHost: process.env.SMTP_HOST || 'localhost',
   smtpPort: Number(process.env.SMTP_PORT || 1025),
   smtpUser: process.env.SMTP_USER,
-  smtpPass: process.env.SMTP_PASS
+  smtpPass: process.env.SMTP_PASS,
+  geminiApiKey: process.env.GEMINI_API_KEY,
+  geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite'
 };

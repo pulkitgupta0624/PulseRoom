@@ -271,6 +271,49 @@ const answerResponseSchema = {
   }
 };
 
+const postEventSummaryResponseSchema = {
+  type: 'object',
+  required: ['executiveSummary', 'keyTakeaways', 'flashcards', 'followUpActions', 'audienceSignals'],
+  properties: {
+    executiveSummary: { type: 'string' },
+    keyTakeaways: { type: 'array', items: { type: 'string' } },
+    flashcards: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['front', 'back'],
+        properties: {
+          front: { type: 'string' },
+          back: { type: 'string' }
+        }
+      }
+    },
+    followUpActions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['owner', 'action', 'priority'],
+        properties: {
+          owner: { type: 'string', enum: ['organizer', 'attendee', 'speaker'] },
+          action: { type: 'string' },
+          priority: { type: 'string', enum: ['high', 'medium', 'low'] }
+        }
+      }
+    },
+    audienceSignals: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['signal', 'evidence'],
+        properties: {
+          signal: { type: 'string' },
+          evidence: { type: 'string' }
+        }
+      }
+    }
+  }
+};
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
@@ -376,7 +419,70 @@ const answerEventQuestion = async ({ event, question, userId: _userId }) => {
   };
 };
 
+const generatePostEventSummary = async ({ event, liveContext }) => {
+  const systemPrompt = [
+    'You are PulseRoom\'s post-event intelligence assistant.',
+    'Turn live engagement data into concise, actionable attendee and organizer artifacts.',
+    'Use only the supplied event, poll, Q&A, announcement, reaction, and engagement context.',
+    'Flashcards should teach the most important concepts or decisions from the event.',
+    'Return ONLY valid JSON matching the requested schema.'
+  ].join(' ');
+
+  const userPrompt = `Event and live context:\n${JSON.stringify(
+    {
+      event: {
+        title: event.title,
+        summary: event.summary,
+        description: event.description,
+        startsAt: event.startsAt,
+        endsAt: event.endsAt,
+        speakers: event.speakers,
+        sessions: event.sessions,
+        tags: event.tags
+      },
+      liveContext
+    },
+    null,
+    2
+  )}`;
+
+  const summary = await callGemini({
+    systemPrompt,
+    userPrompt,
+    responseSchema: postEventSummaryResponseSchema,
+    temperature: 0.35
+  });
+
+  return {
+    executiveSummary: String(summary.executiveSummary || '').trim(),
+    keyTakeaways: normalizeStringArray(summary.keyTakeaways).slice(0, 8),
+    flashcards: (Array.isArray(summary.flashcards) ? summary.flashcards : [])
+      .slice(0, 12)
+      .map((flashcard) => ({
+        front: String(flashcard.front || '').trim(),
+        back: String(flashcard.back || '').trim()
+      }))
+      .filter((flashcard) => flashcard.front && flashcard.back),
+    followUpActions: (Array.isArray(summary.followUpActions) ? summary.followUpActions : [])
+      .slice(0, 8)
+      .map((item) => ({
+        owner: ['organizer', 'attendee', 'speaker'].includes(item.owner) ? item.owner : 'organizer',
+        action: String(item.action || '').trim(),
+        priority: ['high', 'medium', 'low'].includes(item.priority) ? item.priority : 'medium'
+      }))
+      .filter((item) => item.action),
+    audienceSignals: (Array.isArray(summary.audienceSignals) ? summary.audienceSignals : [])
+      .slice(0, 8)
+      .map((item) => ({
+        signal: String(item.signal || '').trim(),
+        evidence: String(item.evidence || '').trim()
+      }))
+      .filter((item) => item.signal && item.evidence)
+  };
+};
+
 module.exports = {
   generateEventDraft,
-  answerEventQuestion
+  answerEventQuestion,
+  generatePostEventSummary
 };

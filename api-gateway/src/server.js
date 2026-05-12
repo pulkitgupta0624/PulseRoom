@@ -10,6 +10,7 @@ const {
   createCacheClient
 } = require('@pulseroom/common');
 const config = require('./config');
+const { createIpRiskAnalyzer } = require('./ipRiskAnalysis');
 const { createUserSlidingWindowRateLimiter } = require('./userRateLimit');
 
 const logger = buildLogger('api-gateway');
@@ -25,6 +26,12 @@ app.use((req, _res, next) => {
   next();
 });
 
+app.use(createIpRiskAnalyzer({
+  cache,
+  logger,
+  ...config.ipRiskAnalysis
+}));
+
 const serviceClients = Object.fromEntries(
   Object.entries(config.services).map(([name, url]) => [name, createServiceClient(url, 'api-gateway')])
 );
@@ -35,6 +42,10 @@ const withProxyHeaders = (proxyReq, req) => {
   }
   if (req.headers?.authorization) {
     proxyReq.setHeader('authorization', req.headers.authorization);
+  }
+  if (req.ipRisk?.riskScore !== undefined) {
+    proxyReq.setHeader('x-ip-risk-score', String(req.ipRisk.riskScore));
+    proxyReq.setHeader('x-ip-risk-hash', req.ipRisk.ipHash);
   }
 };
 

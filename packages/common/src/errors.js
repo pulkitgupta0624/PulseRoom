@@ -23,13 +23,19 @@ const errorHandler = (logger) => (error, req, res, _next) => {
     payload.details = error.details;
   }
 
-  logger.error({
+  const logPayload = {
     message: error.message,
-    stack: error.stack,
     method: req.method,
     path: req.originalUrl,
     statusCode
-  });
+  };
+
+  if (statusCode >= 500) {
+    logPayload.stack = error.stack;
+    logger.error(logPayload);
+  } else {
+    logger.warn(logPayload);
+  }
 
   res.status(statusCode).json(payload);
 };
@@ -39,4 +45,3 @@ module.exports = {
   notFoundHandler,
   errorHandler
 };
-

@@ -13,6 +13,7 @@ module.exports = {
   userServiceUrl: process.env.USER_SERVICE_URL,
   bookingServiceUrl: process.env.BOOKING_SERVICE_URL,
   notificationServiceUrl: process.env.NOTIFICATION_SERVICE_URL,
+  liveServiceUrl: process.env.LIVE_SERVICE_URL,
   typesenseProtocol: process.env.TYPESENSE_PROTOCOL || 'http',
   typesenseHost: process.env.TYPESENSE_HOST || 'localhost',
   typesensePort: Number(process.env.TYPESENSE_PORT || 8108),

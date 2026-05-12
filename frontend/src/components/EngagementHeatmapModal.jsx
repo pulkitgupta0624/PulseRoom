@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import {
   ResponsiveContainer,
   AreaChart,
@@ -43,10 +44,16 @@ const HeatmapTooltip = ({ active, payload, label }) => {
 };
 
 const MetricCard = ({ label, value, accent = 'text-ink' }) => (
-  <div className="rounded-[24px] border border-ink/8 bg-white px-4 py-4">
+  <motion.div
+    layout
+    initial={{ opacity: 0, y: 12 }}
+    animate={{ opacity: 1, y: 0 }}
+    transition={{ type: 'spring', stiffness: 360, damping: 30 }}
+    className="rounded-[24px] border border-ink/8 bg-white px-4 py-4"
+  >
     <p className="text-xs uppercase tracking-[0.18em] text-ink/45">{label}</p>
     <p className={`mt-2 font-display text-3xl ${accent}`}>{value}</p>
-  </div>
+  </motion.div>
 );
 
 const HeatCell = ({ bucket, maxInteractions }) => {
@@ -159,7 +166,12 @@ const EngagementHeatmapModal = ({ event, onClose }) => {
           ) : error ? (
             <p className="rounded-2xl bg-ember/10 px-4 py-3 text-sm text-ember">{error}</p>
           ) : (
-            <div className="space-y-6">
+            <motion.div
+              className="space-y-6"
+              initial={{ opacity: 0, y: 18 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ type: 'spring', stiffness: 280, damping: 28 }}
+            >
               <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
                 <MetricCard label="Total" value={analytics?.totals?.totalInteractions || 0} />
                 <MetricCard label="Chat" value={analytics?.totals?.chatMessages || 0} accent="text-reef" />
@@ -196,13 +208,23 @@ const EngagementHeatmapModal = ({ event, onClose }) => {
                     className="mt-5 grid gap-2"
                     style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(36px, 1fr))' }}
                   >
-                    {heatmapSeries.map((bucket) => (
-                      <HeatCell
-                        key={bucket.minuteBucket}
-                        bucket={bucket}
-                        maxInteractions={maxInteractions}
-                      />
-                    ))}
+                    <AnimatePresence initial={false}>
+                      {heatmapSeries.map((bucket) => (
+                        <motion.div
+                          key={bucket.minuteBucket}
+                          layout
+                          initial={{ opacity: 0, scale: 0.9 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0, scale: 0.96 }}
+                          transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+                        >
+                          <HeatCell
+                            bucket={bucket}
+                            maxInteractions={maxInteractions}
+                          />
+                        </motion.div>
+                      ))}
+                    </AnimatePresence>
                   </div>
                 )}
               </section>
@@ -279,7 +301,13 @@ const EngagementHeatmapModal = ({ event, onClose }) => {
                 ) : (
                   <div className="mt-5 space-y-3">
                     {analytics.spikes.map((spike) => (
-                      <div key={spike.minuteBucket} className="rounded-[24px] border border-ink/10 bg-sand/55 px-4 py-4">
+                      <motion.div
+                        key={spike.minuteBucket}
+                        layout
+                        initial={{ opacity: 0, x: -12 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        className="rounded-[24px] border border-ink/10 bg-sand/55 px-4 py-4"
+                      >
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <div>
                             <p className="font-semibold text-ink">{formatDate(spike.minuteBucket)}</p>
@@ -291,12 +319,12 @@ const EngagementHeatmapModal = ({ event, onClose }) => {
                             {spike.totalInteractions} total
                           </span>
                         </div>
-                      </div>
+                      </motion.div>
                     ))}
                   </div>
                 )}
               </section>
-            </div>
+            </motion.div>
           )}
         </div>
     </ModalShell>

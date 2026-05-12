@@ -15,9 +15,9 @@ const ReplayAccessButton = ({ booking }) => {
       }
 
       try {
-        await api.get(`/api/live/${booking.eventId}/replay`);
+        const response = await api.get(`/api/live/${booking.eventId}/stream-session`);
         if (active) {
-          setAvailable(true);
+          setAvailable(Boolean(response.data.data?.recording?.replayReady));
         }
       } catch {
         if (active) {

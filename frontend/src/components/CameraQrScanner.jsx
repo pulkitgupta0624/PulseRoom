@@ -26,6 +26,7 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { motion } from 'framer-motion';
 import { Html5Qrcode } from 'html5-qrcode';
 
 // Module-level so StrictMode's 2nd mount always awaits the 1st mount's cleanup
@@ -174,7 +175,12 @@ const CameraQrScanner = ({ onScanSuccess }) => {
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
-    <div className="space-y-4">
+    <motion.div
+      className="space-y-4"
+      initial={{ opacity: 0, y: 16, scale: 0.98 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ type: 'spring', stiffness: 320, damping: 30 }}
+    >
 
       {/* Live camera feed */}
       <div className="rounded-[28px] border border-ink/10 bg-white p-4 shadow-bloom">
@@ -309,7 +315,7 @@ const CameraQrScanner = ({ onScanSuccess }) => {
           disabled={uploadState === 'scanning'}
         />
       </div>
-    </div>
+    </motion.div>
   );
 };
 

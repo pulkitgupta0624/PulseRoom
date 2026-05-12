@@ -101,6 +101,10 @@ const clearTwoFactorLoginFailures = (user) => {
   user.twoFactor.loginLockedUntil = undefined;
 };
 
+const throwInvalidCredentials = () => {
+  throw new AppError('Invalid credentials', 401, 'invalid_credentials');
+};
+
 router.post(
   '/register',
   validateSchema(registerSchema),
@@ -148,13 +152,13 @@ router.post(
       email: req.body.email.toLowerCase()
     });
 
-    if (!user || !user.isActive) {
-      throw new AppError('Invalid credentials', 401, 'invalid_credentials');
+    if (!user || !user.isActive || !user.passwordHash) {
+      throwInvalidCredentials();
     }
 
     const passwordMatches = await bcrypt.compare(req.body.password, user.passwordHash);
     if (!passwordMatches) {
-      throw new AppError('Invalid credentials', 401, 'invalid_credentials');
+      throwInvalidCredentials();
     }
 
     if (user.twoFactor?.enabled) {

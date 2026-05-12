@@ -19,6 +19,7 @@ const createApp = ({ services = {} } = {}) => {
 
   app.use((req, _res, next) => {
     req.config = config;
+    req.logger = logger;
     req.services = services;
     req.clients = {
       userService: createServiceClient(config.userServiceUrl, 'notification-service'),

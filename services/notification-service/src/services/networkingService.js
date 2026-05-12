@@ -44,6 +44,131 @@ const buildMatchSummary = ({ firstAttendee, secondAttendee, sharedInterests }) =
   return `${names[0] || 'This attendee'} and ${names[1] || 'their match'} both care about ${sharedList}.`;
 };
 
+const introResponseSchema = {
+  type: 'object',
+  required: ['summary', 'messages'],
+  properties: {
+    summary: { type: 'string' },
+    messages: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['userId', 'message'],
+        properties: {
+          userId: { type: 'string' },
+          message: { type: 'string' }
+        }
+      }
+    }
+  }
+};
+
+const callGeminiForIntro = async ({ config, match, eventTitle }) => {
+  if (!config?.geminiApiKey) {
+    return null;
+  }
+
+  const url =
+    `https://generativelanguage.googleapis.com/v1beta/models/` +
+    `${config.geminiModel}:generateContent?key=${config.geminiApiKey}`;
+
+  const body = {
+    system_instruction: {
+      parts: [{
+        text: [
+          'You write concise, warm networking introductions for event attendees.',
+          'Explain why the two people were matched using their interests, roles, and locations.',
+          'Write one personalized message per participant, addressed to that participant.',
+          'Do not invent private facts.'
+        ].join(' ')
+      }]
+    },
+    contents: [{
+      role: 'user',
+      parts: [{
+        text: JSON.stringify({
+          eventTitle,
+          sharedInterests: match.sharedInterests,
+          firstAttendee: match.firstAttendee,
+          secondAttendee: match.secondAttendee
+        })
+      }]
+    }],
+    generationConfig: {
+      temperature: 0.45,
+      responseMimeType: 'application/json',
+      responseSchema: introResponseSchema
+    }
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20_000)
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const payload = await response.json();
+  const text = payload?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim());
+  } catch {
+    return null;
+  }
+};
+
+const enrichMatchWithAiIntro = async ({ match, config, eventTitle, logger }) => {
+  try {
+    const aiIntro = await callGeminiForIntro({ config, match, eventTitle });
+    if (!aiIntro) {
+      return match;
+    }
+
+    const introMessages = {};
+    for (const item of Array.isArray(aiIntro.messages) ? aiIntro.messages : []) {
+      const userId = String(item.userId || '').trim();
+      const message = String(item.message || '').trim();
+      if (userId && message) {
+        introMessages[userId] = message.slice(0, 900);
+      }
+    }
+
+    return {
+      ...match,
+      summary: String(aiIntro.summary || match.summary).trim().slice(0, 500) || match.summary,
+      introMessages
+    };
+  } catch (error) {
+    logger?.warn?.({
+      message: 'AI networking intro generation failed',
+      pairKey: match.pairKey,
+      error: error.message
+    });
+    return match;
+  }
+};
+
+const enrichMatchesWithAiIntros = async ({ matches, config, eventTitle, logger }) => {
+  if (!config?.geminiApiKey || !matches.length) {
+    return matches;
+  }
+
+  const enriched = [];
+  for (const match of matches) {
+    enriched.push(await enrichMatchWithAiIntro({ match, config, eventTitle, logger }));
+  }
+
+  return enriched;
+};
+
 const generateNetworkingMatches = ({
   attendees,
   existingMatches = [],
@@ -124,6 +249,7 @@ module.exports = {
   buildPairKey,
   buildSharedInterests,
   buildMatchSummary,
+  enrichMatchesWithAiIntros,
   generateNetworkingMatches,
   normalizeInterestList,
   scoreMatch
