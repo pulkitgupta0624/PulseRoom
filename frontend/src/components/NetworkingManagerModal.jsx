@@ -10,6 +10,24 @@ const MetricCard = ({ label, value, accent = 'text-ink' }) => (
   </div>
 );
 
+const decisionTone = {
+  pending: 'bg-sand text-ink/60',
+  accepted: 'bg-reef/10 text-reef',
+  skipped: 'bg-ember/10 text-ember'
+};
+
+const formatDecision = (decision) => {
+  if (decision === 'accepted') return 'Interested';
+  if (decision === 'skipped') return 'Not now';
+  return 'Pending';
+};
+
+const DecisionBadge = ({ label, decision }) => (
+  <span className={`rounded-full px-3 py-1 text-[11px] font-semibold ${decisionTone[decision] || decisionTone.pending}`}>
+    {label}: {formatDecision(decision)}
+  </span>
+);
+
 const NetworkingManagerModal = ({ event, onClose }) => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -120,11 +138,15 @@ const NetworkingManagerModal = ({ event, onClose }) => {
             </div>
           ) : (
             <div className="space-y-6">
-              <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+              <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                 <MetricCard label="Audience" value={stats?.audienceCount || 0} />
                 <MetricCard label="Opted In" value={stats?.optedInCount || 0} accent="text-reef" />
+                <MetricCard label="Profiles Ready" value={stats?.profiledOptIns || 0} accent="text-dusk" />
                 <MetricCard label="Pairs" value={stats?.createdMatches || 0} accent="text-dusk" />
                 <MetricCard label="Matched People" value={stats?.matchedAttendees || 0} accent="text-ember" />
+                <MetricCard label="Accepted" value={stats?.acceptedResponses || 0} accent="text-reef" />
+                <MetricCard label="Mutual Yes" value={stats?.mutualMatches || 0} accent="text-dusk" />
+                <MetricCard label="Skipped" value={stats?.skippedResponses || 0} accent="text-ember" />
                 <MetricCard label="Emails Sent" value={stats?.introEmailsSent || 0} />
               </section>
 
@@ -253,19 +275,119 @@ const NetworkingManagerModal = ({ event, onClose }) => {
                             </span>
                           ))}
                         </div>
-                        {match.sharedInterests?.length > 0 && (
+                        {(match.sharedInterests?.length > 0 || match.sharedIntentTags?.length > 0) && (
                           <div className="mt-3 flex flex-wrap gap-2">
-                            {match.sharedInterests.map((interest) => (
+                            {match.sharedInterests?.map((interest) => (
                               <span
-                                key={interest}
+                                key={`${match.matchId}-${interest}`}
                                 className="rounded-full border border-reef/15 bg-reef/5 px-3 py-1 text-xs font-medium capitalize text-reef"
                               >
                                 {interest}
                               </span>
                             ))}
+                            {match.sharedIntentTags?.map((tag) => (
+                              <span
+                                key={`${match.matchId}-${tag}`}
+                                className="rounded-full border border-dusk/15 bg-dusk/5 px-3 py-1 text-xs font-medium capitalize text-dusk"
+                              >
+                                {tag}
+                              </span>
+                            ))}
                           </div>
                         )}
                         <p className="mt-3 text-sm text-ink/60">{match.summary}</p>
+                        {(match.participantStatuses || []).length > 0 && (
+                          <div className="mt-4 flex flex-wrap gap-2">
+                            {match.participantStatuses.map((status) => {
+                              const participant = (match.participants || []).find(
+                                (candidate) => candidate.userId === status.userId
+                              );
+                              return (
+                                <DecisionBadge
+                                  key={`${match.matchId}-${status.userId}`}
+                                  label={participant?.displayName || 'Attendee'}
+                                  decision={status.decision}
+                                />
+                              );
+                            })}
+                          </div>
+                        )}
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              <section className="rounded-[28px] border border-ink/10 bg-white/80 p-5">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.2em] text-ink/45">Attendee intent</p>
+                    <h3 className="mt-1 font-display text-2xl text-ink">What people want from networking</h3>
+                    <p className="mt-2 text-sm text-ink/55">
+                      These notes come directly from attendee networking profiles and help you see whether the event is
+                      driving the right introductions.
+                    </p>
+                  </div>
+
+                  {stats?.topGoals?.length > 0 && (
+                    <div className="flex flex-wrap gap-2 lg:max-w-sm lg:justify-end">
+                      {stats.topGoals.map((goal) => (
+                        <span
+                          key={goal.goal}
+                          className="rounded-full border border-dusk/15 bg-dusk/5 px-3 py-1 text-xs font-semibold text-dusk"
+                        >
+                          {goal.goal} ({goal.count})
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {!stats?.audienceProfiles?.length ? (
+                  <div className="mt-5 rounded-[24px] bg-sand/50 px-5 py-10 text-center">
+                    <p className="text-sm text-ink/50">No attendee profiles yet.</p>
+                  </div>
+                ) : (
+                  <div className="mt-5 grid gap-4 xl:grid-cols-2">
+                    {stats.audienceProfiles.map((profile) => (
+                      <article key={profile.userId} className="rounded-[24px] border border-ink/10 bg-sand/55 p-5">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-semibold text-ink">{profile.attendeeName || profile.email}</p>
+                          {profile.profile?.meetingGoal && (
+                            <span className="rounded-full bg-reef/10 px-3 py-1 text-xs font-semibold text-reef">
+                              {profile.profile.meetingGoal}
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-1 text-xs text-ink/45">
+                          Opted in {profile.optedInAt ? formatDate(profile.optedInAt) : 'recently'}
+                        </p>
+
+                        <div className="mt-4 grid gap-3 md:grid-cols-2">
+                          <div className="rounded-2xl bg-white px-3 py-3">
+                            <p className="text-[11px] uppercase tracking-[0.16em] text-ink/45">Can help with</p>
+                            <p className="mt-2 text-sm text-ink/60">
+                              {profile.profile?.canHelpWith?.length
+                                ? profile.profile.canHelpWith.join(', ')
+                                : 'No topics shared yet.'}
+                            </p>
+                          </div>
+                          <div className="rounded-2xl bg-white px-3 py-3">
+                            <p className="text-[11px] uppercase tracking-[0.16em] text-ink/45">Looking for</p>
+                            <p className="mt-2 text-sm text-ink/60">
+                              {profile.profile?.lookingFor?.length
+                                ? profile.profile.lookingFor.join(', ')
+                                : 'No asks shared yet.'}
+                            </p>
+                          </div>
+                        </div>
+
+                        {profile.profile?.availabilityNote && (
+                          <div className="mt-3 rounded-2xl bg-white px-3 py-3">
+                            <p className="text-[11px] uppercase tracking-[0.16em] text-ink/45">Availability</p>
+                            <p className="mt-2 text-sm text-ink/60">{profile.profile.availabilityNote}</p>
+                          </div>
+                        )}
                       </article>
                     ))}
                   </div>

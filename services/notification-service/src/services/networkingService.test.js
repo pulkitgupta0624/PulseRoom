@@ -1,4 +1,5 @@
 const {
+  buildComplementaryTags,
   buildPairKey,
   buildSharedInterests,
   generateNetworkingMatches
@@ -12,6 +13,25 @@ describe('networkingService', () => {
         { interests: ['ai', 'community', 'DATA'] }
       )
     ).toEqual(['ai', 'data']);
+  });
+
+  test('buildComplementaryTags finds cross-over between offers and asks', () => {
+    expect(
+      buildComplementaryTags(
+        {
+          networkingProfile: {
+            canHelpWith: ['Hiring', 'Product Strategy'],
+            lookingFor: ['fundraising']
+          }
+        },
+        {
+          networkingProfile: {
+            canHelpWith: ['Fundraising', 'community'],
+            lookingFor: ['hiring', 'Partnerships']
+          }
+        }
+      )
+    ).toEqual(['hiring', 'fundraising']);
   });
 
   test('generateNetworkingMatches honors existing matches and attendee caps', () => {
@@ -52,5 +72,36 @@ describe('networkingService', () => {
     expect(participantCounts.u2).toBeLessThanOrEqual(2);
     expect(participantCounts.u3).toBeLessThanOrEqual(2);
     expect(participantCounts.u4).toBeLessThanOrEqual(2);
+  });
+
+  test('generateNetworkingMatches can create matches from complementary networking goals', () => {
+    const matches = generateNetworkingMatches({
+      attendees: [
+        {
+          userId: 'u1',
+          displayName: 'Priya',
+          interests: [],
+          networkingProfile: {
+            canHelpWith: ['fundraising'],
+            lookingFor: ['hiring']
+          }
+        },
+        {
+          userId: 'u2',
+          displayName: 'Leo',
+          interests: [],
+          networkingProfile: {
+            canHelpWith: ['hiring'],
+            lookingFor: ['fundraising']
+          }
+        }
+      ],
+      existingMatches: [],
+      maxMatchesPerAttendee: 1
+    });
+
+    expect(matches).toHaveLength(1);
+    expect(matches[0].sharedInterests).toEqual([]);
+    expect(matches[0].sharedIntentTags).toEqual(['fundraising', 'hiring']);
   });
 });

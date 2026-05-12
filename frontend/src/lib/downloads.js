@@ -32,4 +32,17 @@ const downloadEventBookingsCsv = async (eventId, fallbackFileName = 'event-booki
   });
 };
 
-export { downloadEventBookingsCsv };
+const downloadTextFile = ({
+  content,
+  fileName,
+  mimeType = 'text/plain;charset=utf-8'
+}) => {
+  triggerBlobDownload({
+    blob: new Blob([content], {
+      type: mimeType
+    }),
+    fileName
+  });
+};
+
+export { downloadEventBookingsCsv, downloadTextFile };

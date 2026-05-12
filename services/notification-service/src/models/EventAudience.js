@@ -1,5 +1,33 @@
 const mongoose = require('mongoose');
 
+const networkingPreferencesSchema = new mongoose.Schema(
+  {
+    optedIn: {
+      type: Boolean,
+      default: false
+    },
+    optedInAt: Date,
+    lastMatchedAt: Date,
+    meetingGoal: {
+      type: String,
+      default: ''
+    },
+    canHelpWith: {
+      type: [String],
+      default: []
+    },
+    lookingFor: {
+      type: [String],
+      default: []
+    },
+    availabilityNote: {
+      type: String,
+      default: ''
+    }
+  },
+  { _id: false }
+);
+
 const eventAudienceSchema = new mongoose.Schema(
   {
     eventId: {
@@ -18,12 +46,8 @@ const eventAudienceSchema = new mongoose.Schema(
     eventTitle: String,
     eventStartsAt: Date,
     networking: {
-      optedIn: {
-        type: Boolean,
-        default: false
-      },
-      optedInAt: Date,
-      lastMatchedAt: Date
+      type: networkingPreferencesSchema,
+      default: () => ({})
     }
   },
   {

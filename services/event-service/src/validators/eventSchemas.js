@@ -134,7 +134,15 @@ const networkingSettingsSchema = Joi.object({
 }).min(1);
 
 const networkingOptInSchema = Joi.object({
-  optedIn: Joi.boolean().required()
+  optedIn: Joi.boolean(),
+  meetingGoal: Joi.string().trim().max(80).allow(''),
+  canHelpWith: Joi.array().items(Joi.string().trim().max(40)).max(8),
+  lookingFor: Joi.array().items(Joi.string().trim().max(40)).max(8),
+  availabilityNote: Joi.string().trim().max(240).allow('')
+}).min(1);
+
+const networkingMatchDecisionSchema = Joi.object({
+  decision: Joi.string().valid('pending', 'accepted', 'skipped').required()
 });
 
 const networkingGenerateSchema = Joi.object({
@@ -249,6 +257,7 @@ module.exports = {
   updateWebhookEndpointSchema,
   networkingSettingsSchema,
   networkingOptInSchema,
+  networkingMatchDecisionSchema,
   networkingGenerateSchema,
   promoPreviewSchema,
   promoConsumeSchema,

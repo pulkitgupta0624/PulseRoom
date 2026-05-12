@@ -324,6 +324,90 @@ const pageThemeSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const postEventSummarySchema = new mongoose.Schema(
+  {
+    generatedAt: Date,
+    generatedByUserId: String,
+    executiveSummary: String,
+    keyTakeaways: {
+      type: [String],
+      default: []
+    },
+    flashcards: {
+      type: [
+        new mongoose.Schema(
+          {
+            front: String,
+            back: String
+          },
+          { _id: false }
+        )
+      ],
+      default: []
+    },
+    followUpActions: {
+      type: [
+        new mongoose.Schema(
+          {
+            owner: {
+              type: String,
+              enum: ['organizer', 'attendee', 'speaker'],
+              default: 'organizer'
+            },
+            action: String,
+            priority: {
+              type: String,
+              enum: ['high', 'medium', 'low'],
+              default: 'medium'
+            }
+          },
+          { _id: false }
+        )
+      ],
+      default: []
+    },
+    audienceSignals: {
+      type: [
+        new mongoose.Schema(
+          {
+            signal: String,
+            evidence: String
+          },
+          { _id: false }
+        )
+      ],
+      default: []
+    },
+    sourceMetrics: {
+      pollCount: {
+        type: Number,
+        default: 0
+      },
+      questionCount: {
+        type: Number,
+        default: 0
+      },
+      announcementCount: {
+        type: Number,
+        default: 0
+      },
+      reactionCount: {
+        type: Number,
+        default: 0
+      },
+      totalInteractions: {
+        type: Number,
+        default: 0
+      },
+      peakInteractions: {
+        type: Number,
+        default: 0
+      }
+    }
+  },
+  { _id: false }
+);
+
 const eventSchema = new mongoose.Schema(
   {
     organizerId: {
@@ -500,6 +584,10 @@ const eventSchema = new mongoose.Schema(
         type: Number,
         default: 0
       }
+    },
+    postEventSummary: {
+      type: postEventSummarySchema,
+      default: null
     },
     analytics: {
       views: {

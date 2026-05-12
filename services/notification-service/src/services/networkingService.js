@@ -3,6 +3,24 @@ const normalizeInterestList = (values = []) =>
     .map((value) => String(value || '').trim().toLowerCase())
     .filter(Boolean))];
 
+const getNetworkingProfile = (attendee = {}) => attendee.networkingProfile || {};
+
+const normalizeGoal = (value) => String(value || '').trim().toLowerCase();
+
+const buildComplementaryTags = (firstAttendee, secondAttendee) => {
+  const firstProfile = getNetworkingProfile(firstAttendee);
+  const secondProfile = getNetworkingProfile(secondAttendee);
+  const firstOffers = new Set(normalizeInterestList(firstProfile.canHelpWith));
+  const secondOffers = new Set(normalizeInterestList(secondProfile.canHelpWith));
+  const firstNeeds = normalizeInterestList(firstProfile.lookingFor);
+  const secondNeeds = normalizeInterestList(secondProfile.lookingFor);
+
+  return normalizeInterestList([
+    ...secondNeeds.filter((topic) => firstOffers.has(topic)),
+    ...firstNeeds.filter((topic) => secondOffers.has(topic))
+  ]);
+};
+
 const buildPairKey = (firstUserId, secondUserId) =>
   [firstUserId, secondUserId].sort().join(':');
 
@@ -13,6 +31,7 @@ const buildSharedInterests = (firstAttendee, secondAttendee) => {
 
 const scoreMatch = (firstAttendee, secondAttendee) => {
   const sharedInterests = buildSharedInterests(firstAttendee, secondAttendee);
+  const sharedIntentTags = buildComplementaryTags(firstAttendee, secondAttendee);
   const sameLocation =
     firstAttendee.location &&
     secondAttendee.location &&
@@ -21,27 +40,47 @@ const scoreMatch = (firstAttendee, secondAttendee) => {
     firstAttendee.role &&
     secondAttendee.role &&
     firstAttendee.role !== secondAttendee.role;
+  const firstGoal = normalizeGoal(getNetworkingProfile(firstAttendee).meetingGoal);
+  const secondGoal = normalizeGoal(getNetworkingProfile(secondAttendee).meetingGoal);
+  const alignedGoals = firstGoal && secondGoal && firstGoal === secondGoal;
 
   return {
     sharedInterests,
+    sharedIntentTags,
     score:
-      sharedInterests.length * 30 +
-      (sameLocation ? 10 : 0) +
-      (differentRoles ? 6 : 0)
+      sharedInterests.length * 24 +
+      sharedIntentTags.length * 20 +
+      (sameLocation ? 8 : 0) +
+      (differentRoles ? 6 : 0) +
+      (alignedGoals ? 5 : 0)
   };
 };
 
-const buildMatchSummary = ({ firstAttendee, secondAttendee, sharedInterests }) => {
+const buildMatchSummary = ({
+  firstAttendee,
+  secondAttendee,
+  sharedInterests,
+  sharedIntentTags
+}) => {
   const names = [firstAttendee.displayName, secondAttendee.displayName]
     .map((value) => String(value || '').trim())
     .filter(Boolean);
   const sharedList = sharedInterests.slice(0, 3).join(', ');
+  const intentList = sharedIntentTags.slice(0, 3).join(', ');
 
-  if (!sharedInterests.length) {
-    return `${names[0] || 'This attendee'} and ${names[1] || 'their match'} should connect before the event.`;
+  if (sharedInterests.length && sharedIntentTags.length) {
+    return `${names[0] || 'This attendee'} and ${names[1] || 'their match'} overlap on ${sharedList} and can help each other around ${intentList}.`;
   }
 
-  return `${names[0] || 'This attendee'} and ${names[1] || 'their match'} both care about ${sharedList}.`;
+  if (sharedIntentTags.length) {
+    return `${names[0] || 'This attendee'} and ${names[1] || 'their match'} have a strong complementary fit around ${intentList}.`;
+  }
+
+  if (sharedInterests.length) {
+    return `${names[0] || 'This attendee'} and ${names[1] || 'their match'} both care about ${sharedList}.`;
+  }
+
+  return `${names[0] || 'This attendee'} and ${names[1] || 'their match'} should connect before the event.`;
 };
 
 const introResponseSchema = {
@@ -77,7 +116,7 @@ const callGeminiForIntro = async ({ config, match, eventTitle }) => {
       parts: [{
         text: [
           'You write concise, warm networking introductions for event attendees.',
-          'Explain why the two people were matched using their interests, roles, and locations.',
+          'Explain why the two people were matched using their interests, roles, locations, and networking goals.',
           'Write one personalized message per participant, addressed to that participant.',
           'Do not invent private facts.'
         ].join(' ')
@@ -89,6 +128,7 @@ const callGeminiForIntro = async ({ config, match, eventTitle }) => {
         text: JSON.stringify({
           eventTitle,
           sharedInterests: match.sharedInterests,
+          sharedIntentTags: match.sharedIntentTags,
           firstAttendee: match.firstAttendee,
           secondAttendee: match.secondAttendee
         })
@@ -200,8 +240,8 @@ const generateNetworkingMatches = ({
         continue;
       }
 
-      const { sharedInterests, score } = scoreMatch(firstAttendee, secondAttendee);
-      if (!sharedInterests.length) {
+      const { sharedInterests, sharedIntentTags, score } = scoreMatch(firstAttendee, secondAttendee);
+      if (!sharedInterests.length && !sharedIntentTags.length) {
         continue;
       }
 
@@ -211,11 +251,13 @@ const generateNetworkingMatches = ({
         firstAttendee,
         secondAttendee,
         sharedInterests,
+        sharedIntentTags,
         score,
         summary: buildMatchSummary({
           firstAttendee,
           secondAttendee,
-          sharedInterests
+          sharedInterests,
+          sharedIntentTags
         })
       });
     }
@@ -247,6 +289,7 @@ const generateNetworkingMatches = ({
 
 module.exports = {
   buildPairKey,
+  buildComplementaryTags,
   buildSharedInterests,
   buildMatchSummary,
   enrichMatchesWithAiIntros,

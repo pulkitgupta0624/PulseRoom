@@ -14,7 +14,41 @@ const participantSnapshotSchema = new mongoose.Schema(
     interests: {
       type: [String],
       default: []
+    },
+    networkingProfile: {
+      meetingGoal: {
+        type: String,
+        default: ''
+      },
+      canHelpWith: {
+        type: [String],
+        default: []
+      },
+      lookingFor: {
+        type: [String],
+        default: []
+      },
+      availabilityNote: {
+        type: String,
+        default: ''
+      }
     }
+  },
+  { _id: false }
+);
+
+const participantStatusSchema = new mongoose.Schema(
+  {
+    userId: {
+      type: String,
+      required: true
+    },
+    decision: {
+      type: String,
+      enum: ['pending', 'accepted', 'skipped'],
+      default: 'pending'
+    },
+    decidedAt: Date
   },
   { _id: false }
 );
@@ -48,6 +82,10 @@ const networkingMatchSchema = new mongoose.Schema(
       type: [String],
       default: []
     },
+    sharedIntentTags: {
+      type: [String],
+      default: []
+    },
     score: {
       type: Number,
       default: 0
@@ -60,6 +98,10 @@ const networkingMatchSchema = new mongoose.Schema(
       type: Map,
       of: String,
       default: {}
+    },
+    participantStatuses: {
+      type: [participantStatusSchema],
+      default: []
     },
     introEmailSentAt: Date,
     generatedAt: {

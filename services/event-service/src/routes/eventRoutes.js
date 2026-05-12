@@ -27,6 +27,7 @@ const {
   updateWebhookEndpointSchema,
   networkingSettingsSchema,
   networkingOptInSchema,
+  networkingMatchDecisionSchema,
   networkingGenerateSchema,
   promoPreviewSchema,
   promoConsumeSchema,
@@ -38,6 +39,10 @@ const { slugify } = require('../services/slugify');
 const { generateEventDraft, answerEventQuestion, generatePostEventSummary } = require('../services/aiAssistant');
 const { buildCalendarFile, buildCalendarFileName } = require('../services/calendarService');
 const { buildEventPageTheme } = require('../services/eventThemeService');
+const {
+  buildStoredPostEventSummary,
+  serializePostEventSummary
+} = require('../services/postEventSummaryService');
 const { buildPublicEventFilters } = require('../services/publicEventFilters');
 const { buildPriceSummary } = require('../services/searchService');
 const {
@@ -122,6 +127,10 @@ const assertCanViewEvent = (event, viewer) => {
 
 const getViewerDisplayName = (viewer, fallback = 'Attendee') =>
   viewer?.email?.split('@')?.[0] || fallback;
+
+const hasEventEndedForRecap = (event) =>
+  event?.status === 'completed' ||
+  new Date(event?.endsAt || 0).getTime() <= Date.now();
 
 const normalizeEventFinanceSettings = (payload = {}, existingEvent = null) => {
   const nextPayload = { ...payload };
@@ -912,7 +921,7 @@ router.post(
       `/api/notifications/internal/networking/${req.params.eventId}/opt-in`,
       {
         userId: req.user.sub,
-        optedIn: Boolean(req.body.optedIn)
+        ...req.body
       }
     );
 
@@ -924,6 +933,31 @@ router.post(
         optedInAt: response.data.data.optedInAt || new Date()
       });
     }
+
+    sendSuccess(res, {
+      ...response.data.data,
+      settings: serializeNetworkingSettings(event)
+    });
+  })
+);
+
+router.post(
+  '/:eventId/networking/matches/:matchId/decision',
+  authenticate(),
+  validateSchema(networkingMatchDecisionSchema),
+  asyncHandler(async (req, res) => {
+    const event = await Event.findById(req.params.eventId);
+    if (!event) {
+      throw new AppError('Event not found', 404, 'event_not_found');
+    }
+
+    const response = await req.clients.notificationService.post(
+      `/api/notifications/internal/networking/${req.params.eventId}/matches/${req.params.matchId}/decision`,
+      {
+        userId: req.user.sub,
+        decision: req.body.decision
+      }
+    );
 
     sendSuccess(res, {
       ...response.data.data,
@@ -1106,13 +1140,21 @@ router.post(
   '/:eventId/assistant/post-event-summary',
   authenticate(),
   asyncHandler(async (req, res) => {
-    const event = await Event.findById(req.params.eventId).lean();
+    const event = await Event.findById(req.params.eventId);
     if (!event) {
       throw new AppError('Event not found', 404, 'event_not_found');
     }
 
     if (!canManageEvent(event, req.user)) {
       throw new AppError('Forbidden', 403, 'forbidden');
+    }
+
+    if (!hasEventEndedForRecap(event)) {
+      throw new AppError(
+        'AI recap opens once the event has ended.',
+        409,
+        'post_event_summary_not_ready'
+      );
     }
 
     const liveContextResponse = await req.clients.liveService.get(
@@ -1123,7 +1165,41 @@ router.post(
       liveContext: liveContextResponse.data.data
     });
 
-    sendSuccess(res, summary);
+    event.postEventSummary = buildStoredPostEventSummary({
+      summary,
+      liveContext: liveContextResponse.data.data,
+      generatedByUserId: req.user.sub
+    });
+    await event.save();
+
+    sendSuccess(res, {
+      eventId: event._id.toString(),
+      readyForRecap: true,
+      summary: serializePostEventSummary(event.postEventSummary)
+    });
+  })
+);
+
+router.get(
+  '/:eventId/post-event-summary',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const event = await Event.findById(req.params.eventId)
+      .select('organizerId status endsAt postEventSummary');
+    if (!event) {
+      throw new AppError('Event not found', 404, 'event_not_found');
+    }
+
+    if (!canManageEvent(event, req.user)) {
+      throw new AppError('Forbidden', 403, 'forbidden');
+    }
+
+    sendSuccess(res, {
+      eventId: event._id.toString(),
+      readyForRecap: hasEventEndedForRecap(event),
+      status: event.status,
+      summary: serializePostEventSummary(event.postEventSummary)
+    });
   })
 );
 

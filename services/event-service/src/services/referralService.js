@@ -182,6 +182,7 @@ const serializeEventForViewer = ({
   }
   if (!viewerIsOwner) {
     delete raw.promoCodes;
+    delete raw.postEventSummary;
   }
 
   raw.sponsorPackages = filterSponsorPackagesForViewer(raw.sponsorPackages || [], {

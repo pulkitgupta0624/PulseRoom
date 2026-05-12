@@ -14,6 +14,7 @@ const {
 } = require('../services/networkingService');
 
 const router = express.Router();
+const NETWORKING_DECISIONS = new Set(['pending', 'accepted', 'skipped']);
 
 const assertInternalEventService = (req) => {
   if (req.headers['x-service-name'] !== 'event-service') {
@@ -47,40 +48,161 @@ const buildNetworkingEmailHtml = ({
   </div>
 `;
 
+const sanitizeNetworkingText = (value, maxLength = 240) =>
+  String(value || '').trim().slice(0, maxLength);
+
+const normalizeNetworkingList = (values = []) =>
+  [...new Set((Array.isArray(values) ? values : [])
+    .map((value) => sanitizeNetworkingText(value, 40).toLowerCase())
+    .filter(Boolean))]
+    .slice(0, 8);
+
+const serializeNetworkingProfile = (networking = {}) => ({
+  meetingGoal: sanitizeNetworkingText(networking.meetingGoal, 80),
+  canHelpWith: Array.isArray(networking.canHelpWith) ? networking.canHelpWith : [],
+  lookingFor: Array.isArray(networking.lookingFor) ? networking.lookingFor : [],
+  availabilityNote: sanitizeNetworkingText(networking.availabilityNote, 240)
+});
+
+const hasNetworkingProfile = (networking = {}) => {
+  const profile = serializeNetworkingProfile(networking);
+  return Boolean(
+    profile.meetingGoal ||
+    profile.canHelpWith.length ||
+    profile.lookingFor.length ||
+    profile.availabilityNote
+  );
+};
+
+const buildParticipantStatuses = (participantUserIds = [], participantStatuses = []) => {
+  const existingStatuses = new Map(
+    (Array.isArray(participantStatuses) ? participantStatuses : [])
+      .filter((status) => status?.userId)
+      .map((status) => [status.userId, status])
+  );
+
+  return participantUserIds.map((userId) => {
+    const existing = existingStatuses.get(userId);
+    const decision = NETWORKING_DECISIONS.has(existing?.decision) ? existing.decision : 'pending';
+    return {
+      userId,
+      decision,
+      decidedAt: existing?.decidedAt || null
+    };
+  });
+};
+
+const serializeParticipantStatus = (status) => ({
+  decision: NETWORKING_DECISIONS.has(status?.decision) ? status.decision : 'pending',
+  decidedAt: status?.decidedAt || null
+});
+
+const serializeAudienceNetworking = (audience) => ({
+  optedIn: Boolean(audience.networking?.optedIn),
+  optedInAt: audience.networking?.optedInAt || null,
+  lastMatchedAt: audience.networking?.lastMatchedAt || null,
+  profile: serializeNetworkingProfile(audience.networking || {})
+});
+
+const serializeAudienceProfileForManage = (audience) => ({
+  userId: audience.userId,
+  attendeeName: audience.attendeeName || audience.email || 'Attendee',
+  email: audience.email || '',
+  optedInAt: audience.networking?.optedInAt || null,
+  lastMatchedAt: audience.networking?.lastMatchedAt || null,
+  profile: serializeNetworkingProfile(audience.networking || {})
+});
+
+const buildAudienceNetworkingUpdate = (payload = {}, currentNetworking = {}) => {
+  const nextNetworking = {
+    ...(currentNetworking?.toObject ? currentNetworking.toObject() : currentNetworking)
+  };
+
+  if (payload.optedIn !== undefined) {
+    const optedIn = Boolean(payload.optedIn);
+    nextNetworking.optedIn = optedIn;
+    nextNetworking.optedInAt = optedIn
+      ? (currentNetworking?.optedIn ? currentNetworking.optedInAt || new Date() : new Date())
+      : null;
+  }
+  if (payload.meetingGoal !== undefined) {
+    nextNetworking.meetingGoal = sanitizeNetworkingText(payload.meetingGoal, 80);
+  }
+  if (payload.canHelpWith !== undefined) {
+    nextNetworking.canHelpWith = normalizeNetworkingList(payload.canHelpWith);
+  }
+  if (payload.lookingFor !== undefined) {
+    nextNetworking.lookingFor = normalizeNetworkingList(payload.lookingFor);
+  }
+  if (payload.availabilityNote !== undefined) {
+    nextNetworking.availabilityNote = sanitizeNetworkingText(payload.availabilityNote, 240);
+  }
+
+  return nextNetworking;
+};
+
 const serializeMatchForUser = (match, userId) => {
   const participants = match.participants || [];
   const counterpart = participants.find((participant) => participant.userId !== userId);
+  const participantStatuses = buildParticipantStatuses(
+    match.participantUserIds || participants.map((participant) => participant.userId),
+    match.participantStatuses
+  );
+  const myStatus = participantStatuses.find((status) => status.userId === userId);
+  const counterpartStatus = participantStatuses.find((status) => status.userId !== userId);
 
   return {
     matchId: match._id.toString(),
     eventId: match.eventId,
     counterpart,
     sharedInterests: match.sharedInterests || [],
+    sharedIntentTags: match.sharedIntentTags || [],
     score: Number(match.score || 0),
     summary: match.summary || '',
+    myStatus: serializeParticipantStatus(myStatus),
+    counterpartStatus: serializeParticipantStatus(counterpartStatus),
+    mutualAcceptance:
+      myStatus?.decision === 'accepted' &&
+      counterpartStatus?.decision === 'accepted',
     introEmailSentAt: match.introEmailSentAt || null,
     createdAt: match.createdAt
   };
 };
 
 const buildManageResponse = async (eventId) => {
-  const [audienceCount, optedInCount, matches] = await Promise.all([
+  const [audienceCount, optedInAudience, matches] = await Promise.all([
     EventAudience.countDocuments({ eventId }),
-    EventAudience.countDocuments({
+    EventAudience.find({
       eventId,
       'networking.optedIn': true
-    }),
+    })
+      .sort({ updatedAt: -1 })
+      .lean(),
     NetworkingMatch.find({ eventId })
       .sort({ score: -1, createdAt: -1 })
       .lean()
   ]);
 
+  const optedInCount = optedInAudience.length;
   const matchedAttendeeIds = new Set();
+  const meetingGoalCounts = new Map();
+  let profiledOptIns = 0;
   for (const match of matches) {
     for (const participantUserId of match.participantUserIds || []) {
       matchedAttendeeIds.add(participantUserId);
     }
   }
+  for (const attendee of optedInAudience) {
+    if (hasNetworkingProfile(attendee.networking || {})) {
+      profiledOptIns += 1;
+    }
+
+    const goal = sanitizeNetworkingText(attendee.networking?.meetingGoal, 80);
+    if (goal) {
+      meetingGoalCounts.set(goal, (meetingGoalCounts.get(goal) || 0) + 1);
+    }
+  }
+
   const lastGeneratedAt = matches.reduce((latest, match) => {
     if (!match.generatedAt) {
       return latest;
@@ -96,17 +218,56 @@ const buildManageResponse = async (eventId) => {
   return {
     audienceCount,
     optedInCount,
+    profiledOptIns,
     createdMatches: matches.length,
     matchedAttendees: matchedAttendeeIds.size,
     introEmailsSent: matches.filter((match) => match.introEmailSentAt).length * 2,
+    acceptedResponses: matches.reduce(
+      (total, match) =>
+        total +
+        buildParticipantStatuses(match.participantUserIds, match.participantStatuses)
+          .filter((status) => status.decision === 'accepted')
+          .length,
+      0
+    ),
+    skippedResponses: matches.reduce(
+      (total, match) =>
+        total +
+        buildParticipantStatuses(match.participantUserIds, match.participantStatuses)
+          .filter((status) => status.decision === 'skipped')
+          .length,
+      0
+    ),
+    mutualMatches: matches.filter((match) => {
+      const statuses = buildParticipantStatuses(match.participantUserIds, match.participantStatuses);
+      return statuses.length > 1 && statuses.every((status) => status.decision === 'accepted');
+    }).length,
     lastGeneratedAt,
+    topGoals: [...meetingGoalCounts.entries()]
+      .sort((left, right) => {
+        if (right[1] !== left[1]) {
+          return right[1] - left[1];
+        }
+        return left[0].localeCompare(right[0]);
+      })
+      .slice(0, 5)
+      .map(([goal, count]) => ({ goal, count })),
+    audienceProfiles: optedInAudience.slice(0, 12).map(serializeAudienceProfileForManage),
     recentMatches: matches.slice(0, 10).map((match) => ({
       matchId: match._id.toString(),
       sharedInterests: match.sharedInterests || [],
+      sharedIntentTags: match.sharedIntentTags || [],
       score: Number(match.score || 0),
       summary: match.summary || '',
       introEmailSentAt: match.introEmailSentAt || null,
-      participants: match.participants || []
+      participants: match.participants || [],
+      participantStatuses: buildParticipantStatuses(
+        match.participantUserIds,
+        match.participantStatuses
+      ).map((status) => ({
+        userId: status.userId,
+        ...serializeParticipantStatus(status)
+      }))
     }))
   };
 };
@@ -184,8 +345,7 @@ router.post(
       eventId: req.params.eventId,
       eventTitle: audience.eventTitle,
       attendeeName: audience.attendeeName,
-      optedIn: Boolean(audience.networking?.optedIn),
-      optedInAt: audience.networking?.optedInAt || null,
+      ...serializeAudienceNetworking(audience),
       matches: matches.map((match) => serializeMatchForUser(match, req.body.userId))
     });
   })
@@ -201,25 +361,110 @@ router.post(
       userId: req.body.userId
     });
 
-    audience.networking = {
-      ...(audience.networking || {}),
-      optedIn: Boolean(req.body.optedIn),
-      optedInAt: req.body.optedIn ? new Date() : null
-    };
+    const previousOptInState = Boolean(audience.networking?.optedIn);
+    audience.networking = buildAudienceNetworkingUpdate(req.body, audience.networking || {});
     await audience.save();
 
-    const matches = await NetworkingMatch.find({
-      eventId: req.params.eventId,
-      participantUserIds: req.body.userId
-    })
-      .sort({ score: -1, createdAt: -1 })
-      .lean();
+    let matches = [];
+
+    if (audience.networking?.optedIn) {
+      matches = await NetworkingMatch.find({
+        eventId: req.params.eventId,
+        participantUserIds: req.body.userId
+      })
+        .sort({ score: -1, createdAt: -1 })
+        .lean();
+    } else if (previousOptInState) {
+      await NetworkingMatch.deleteMany({
+        eventId: req.params.eventId,
+        participantUserIds: req.body.userId
+      });
+    }
 
     sendSuccess(res, {
       eventId: req.params.eventId,
-      optedIn: Boolean(audience.networking?.optedIn),
-      optedInAt: audience.networking?.optedInAt || null,
+      ...serializeAudienceNetworking(audience),
       matches: matches.map((match) => serializeMatchForUser(match, req.body.userId))
+    });
+  })
+);
+
+router.post(
+  '/internal/networking/:eventId/matches/:matchId/decision',
+  asyncHandler(async (req, res) => {
+    assertInternalEventService(req);
+
+    const audience = await loadAudienceOrThrow({
+      eventId: req.params.eventId,
+      userId: req.body.userId
+    });
+    const match = await NetworkingMatch.findOne({
+      _id: req.params.matchId,
+      eventId: req.params.eventId,
+      participantUserIds: req.body.userId
+    });
+
+    if (!match) {
+      throw new AppError('Networking match not found', 404, 'networking_match_not_found');
+    }
+
+    const previousStatuses = buildParticipantStatuses(
+      match.participantUserIds,
+      match.participantStatuses
+    );
+    const previousStatus = previousStatuses.find((status) => status.userId === req.body.userId);
+    const nextDecision = NETWORKING_DECISIONS.has(req.body.decision)
+      ? req.body.decision
+      : 'pending';
+    const now = new Date();
+
+    match.participantStatuses = previousStatuses.map((status) =>
+      status.userId === req.body.userId
+        ? {
+            userId: status.userId,
+            decision: nextDecision,
+            decidedAt: nextDecision === 'pending' ? null : now
+          }
+        : status
+    );
+    await match.save();
+
+    const updatedStatuses = buildParticipantStatuses(match.participantUserIds, match.participantStatuses);
+    const actor = (match.participants || []).find((participant) => participant.userId === req.body.userId);
+    const counterpart = (match.participants || []).find((participant) => participant.userId !== req.body.userId);
+    const counterpartStatus = updatedStatuses.find((status) => status.userId === counterpart?.userId);
+
+    if (
+      nextDecision === 'accepted' &&
+      previousStatus?.decision !== 'accepted' &&
+      counterpart?.userId
+    ) {
+      const mutualAcceptance =
+        counterpartStatus?.decision === 'accepted' &&
+        updatedStatuses.every((status) => status.decision === 'accepted');
+      const actorName = actor?.displayName || audience.attendeeName || 'Your match';
+
+      await req.services.createNotification({
+        userId: counterpart.userId,
+        eventId: req.params.eventId,
+        email: counterpart.email,
+        type: 'networking.match.accepted',
+        title: mutualAcceptance
+          ? `Your networking intro is live for ${audience.eventTitle}`
+          : `${actorName} is ready to connect`,
+        body: mutualAcceptance
+          ? `You and ${actorName} both accepted the intro. Start the conversation when it feels right.`
+          : `${actorName} accepted the intro for ${audience.eventTitle}. Send a message if the fit looks good.`,
+        metadata: {
+          counterpartUserId: req.body.userId,
+          ctaUrl: buildMessageUrl(req.config.appOrigin, req.body.userId),
+          ctaLabel: mutualAcceptance ? 'Open messages' : 'View intro'
+        }
+      });
+    }
+
+    sendSuccess(res, {
+      match: serializeMatchForUser(match.toObject(), req.body.userId)
     });
   })
 );
@@ -295,7 +540,8 @@ router.post(
           avatarUrl: profile.avatarUrl || '',
           location: profile.location || '',
           role: profile.role || 'attendee',
-          interests: profile.interests || []
+          interests: profile.interests || [],
+          networkingProfile: serializeNetworkingProfile(audience.networking || {})
         };
       })
       .filter((attendee) => attendee.userId && attendee.email);
@@ -330,9 +576,11 @@ router.post(
         participantUserIds: match.participantUserIds,
         participants: [match.firstAttendee, match.secondAttendee],
         sharedInterests: match.sharedInterests,
+        sharedIntentTags: match.sharedIntentTags || [],
         score: match.score,
         summary: match.summary,
         introMessages: match.introMessages || {},
+        participantStatuses: buildParticipantStatuses(match.participantUserIds),
         introEmailSentAt: now,
         generatedAt: now
       }))

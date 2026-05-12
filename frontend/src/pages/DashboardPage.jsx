@@ -10,6 +10,7 @@ import PromoCodeManagerModal from '../components/PromoCodeManagerModal';
 import WebhookManagerModal from '../components/WebhookManagerModal';
 import NetworkingManagerModal from '../components/NetworkingManagerModal';
 import EngagementHeatmapModal from '../components/EngagementHeatmapModal';
+import EventRecapStudioModal from '../components/EventRecapStudioModal';
 import AnalyticsCharts from '../components/AnalyticsCharts';
 import OrganizerGrowthDashboard from '../components/OrganizerGrowthDashboard';
 import ModalShell from '../components/ModalShell';
@@ -213,6 +214,7 @@ const DashboardPage = () => {
   const [webhooksEvent, setWebhooksEvent] = useState(null);
   const [networkingEvent, setNetworkingEvent] = useState(null);
   const [engagementEvent, setEngagementEvent] = useState(null);
+  const [recapEvent, setRecapEvent] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [uploadingCover, setUploadingCover] = useState(false);
   const [createSuccess, setCreateSuccess] = useState(false);
@@ -1217,6 +1219,15 @@ const DashboardPage = () => {
                       >
                         Engagement
                       </button>
+                      {event.status === 'completed' && (
+                        <button
+                          type="button"
+                          onClick={() => setRecapEvent(event)}
+                          className="rounded-full border border-dusk/20 bg-dusk/5 px-3 py-2 text-xs font-medium text-dusk hover:bg-dusk/10"
+                        >
+                          {event.postEventSummary?.generatedAt ? 'AI recap ready' : 'AI recap'}
+                        </button>
+                      )}
                       <Link
                         to={`/events/${event._id}/check-in`}
                         className="rounded-full border border-dusk/20 bg-dusk/5 px-3 py-2 text-xs font-medium text-dusk hover:bg-dusk/10"
@@ -1289,6 +1300,9 @@ const DashboardPage = () => {
       )}
       {engagementEvent && (
         <EngagementHeatmapModal event={engagementEvent} onClose={() => setEngagementEvent(null)} />
+      )}
+      {recapEvent && (
+        <EventRecapStudioModal event={recapEvent} onClose={() => setRecapEvent(null)} />
       )}
 
       {confirmDelete && (
