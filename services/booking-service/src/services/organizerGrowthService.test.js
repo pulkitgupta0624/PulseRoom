@@ -60,8 +60,27 @@ describe('buildOrganizerGrowthDashboard', () => {
             email: 'alex@example.com'
           },
           confirmedAt: '2026-05-01T11:15:00.000Z',
-          checkedInAt: '2026-05-01T12:00:00.000Z',
           createdAt: '2026-05-01T11:00:00.000Z',
+          tickets: [
+            {
+              ticketId: 'ticket-1a',
+              position: 1,
+              attendee: {
+                name: 'Alex',
+                email: 'alex@example.com'
+              },
+              checkedInAt: '2026-05-01T12:00:00.000Z'
+            },
+            {
+              ticketId: 'ticket-1b',
+              position: 2,
+              attendee: {
+                name: 'Jordan',
+                email: 'jordan@example.com'
+              },
+              checkedInAt: null
+            }
+          ],
           eventSnapshot: {
             title: 'Growth Summit'
           },
@@ -128,7 +147,7 @@ describe('buildOrganizerGrowthDashboard', () => {
       confirmedBookings: 3,
       revenue: 510,
       attendees: 4,
-      checkedIns: 2
+      checkedIns: 1
     });
     expect(dashboard.funnel).toMatchObject({
       pageViews: 240,
@@ -205,6 +224,27 @@ describe('buildEventBookingsCsv', () => {
             name: 'Alex',
             email: 'alex@example.com'
           },
+          tickets: [
+            {
+              ticketId: 'ticket-1a',
+              position: 1,
+              attendee: {
+                name: 'Alex',
+                email: 'alex@example.com'
+              },
+              assignedAt: '2026-05-01T10:00:00.000Z'
+            },
+            {
+              ticketId: 'ticket-1b',
+              position: 2,
+              attendee: {
+                name: 'Jordan',
+                email: 'jordan@example.com'
+              },
+              assignedAt: '2026-05-01T10:01:00.000Z',
+              transferredAt: '2026-05-01T10:02:00.000Z'
+            }
+          ],
           tierId: 'vip',
           tierName: 'VIP',
           quantity: 2,
@@ -236,9 +276,11 @@ describe('buildEventBookingsCsv', () => {
       reportingCurrency: 'USD'
     });
 
-    expect(csv).toContain('attendeeLocation');
+    expect(csv).toContain('ticketNumber');
     expect(csv).toContain('Bengaluru, India');
     expect(csv).toContain('INV-101');
     expect(csv).toContain('LAUNCH');
+    expect(csv).toContain('Jordan');
+    expect(csv.split('\n')).toHaveLength(3);
   });
 });

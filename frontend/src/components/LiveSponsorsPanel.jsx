@@ -1,4 +1,4 @@
-import { api } from '../lib/api';
+import { Link } from 'react-router-dom';
 
 const TIER_META = {
   gold: {
@@ -39,10 +39,6 @@ const LiveSponsorsPanel = ({ eventId, sponsors = [] }) => {
     return null;
   }
 
-  const trackSponsorClick = (sponsorId) => {
-    api.post(`/api/events/${eventId}/sponsors/${sponsorId}/click`).catch(() => {});
-  };
-
   return (
     <div className="rounded-[28px] border border-ink/10 bg-white/80 p-5 shadow-bloom">
       <div className="flex items-center justify-between">
@@ -64,7 +60,7 @@ const LiveSponsorsPanel = ({ eventId, sponsors = [] }) => {
 
             <div className="space-y-3">
               {groups[tier].map((sponsor) => {
-                const destination = sponsor.boothUrl || sponsor.websiteUrl;
+                const boothPath = `/events/${eventId}/sponsors/${sponsor.sponsorId}`;
                 return (
                   <div key={sponsor.sponsorId} className="rounded-2xl border border-ink/8 bg-white px-4 py-3">
                     <div className="flex items-center gap-3">
@@ -91,19 +87,12 @@ const LiveSponsorsPanel = ({ eventId, sponsors = [] }) => {
                       </div>
                     </div>
 
-                    {destination ? (
-                      <a
-                        href={destination}
-                        target="_blank"
-                        rel="noreferrer"
-                        onClick={() => trackSponsorClick(sponsor.sponsorId)}
-                        className="mt-3 inline-flex rounded-full border border-ink/10 bg-sand px-3 py-1.5 text-xs font-semibold text-ink transition hover:bg-white"
-                      >
-                        Visit booth
-                      </a>
-                    ) : (
-                      <p className="mt-3 text-xs text-ink/40">Booth link coming soon</p>
-                    )}
+                    <Link
+                      to={boothPath}
+                      className="mt-3 inline-flex rounded-full border border-ink/10 bg-sand px-3 py-1.5 text-xs font-semibold text-ink transition hover:bg-white"
+                    >
+                      Open booth
+                    </Link>
                   </div>
                 );
               })}

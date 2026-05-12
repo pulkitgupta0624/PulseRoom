@@ -22,6 +22,7 @@ const {
   confirmPaymentSchema,
   joinWaitlistSchema,
   checkInSchema,
+  updateTicketSchema,
   agendaSessionUpdateSchema
 } = require('../validators/bookingSchemas');
 const {
@@ -34,7 +35,14 @@ const {
   retrievePaymentIntent,
   constructWebhookEvent
 } = require('../services/paymentService');
-const { buildTicketToken, serializeBooking } = require('../services/ticketService');
+const {
+  buildBookingTickets,
+  findTicketById,
+  findTicketByToken,
+  getCheckedInTicketCount,
+  serializeBooking,
+  syncBookingTickets
+} = require('../services/ticketService');
 const { assertTicketTierAccessible } = require('../services/ticketAccessService');
 const { buildBookingAnalytics, clampWindowDays } = require('../services/analyticsService');
 const { buildReferralAnalytics } = require('../services/referralAnalyticsService');
@@ -53,8 +61,24 @@ const {
   getCommittedQuantity,
   findActiveWaitlistEntry
 } = require('../services/waitlistService');
+const {
+  hasAssignedEventTeamRole
+} = require('../services/eventTeamAccessService');
 
 const router = express.Router();
+
+const loadInternalEventMeta = async (req, eventId) => {
+  try {
+    const response = await req.clients.eventService.get(`/api/events/${eventId}/internal-meta`);
+    return response.data.data;
+  } catch (error) {
+    if (error.response?.status === 404) {
+      throw new AppError('Event not found', 404, 'event_not_found');
+    }
+
+    throw new AppError('Unable to verify event access', 502, 'event_lookup_failed');
+  }
+};
 
 const calculateReferralDiscountAmount = ({ subtotal, referral }) => {
   const safeSubtotal = Number(subtotal || 0);
@@ -172,6 +196,29 @@ const canAccessBooking = (booking, user) =>
 const getReportingAmount = (booking) =>
   Number(booking?.pricing?.reportingAmount ?? booking?.amount ?? 0);
 
+const syncPersistedBookingTickets = async (booking, options = {}) => {
+  if (!booking) {
+    return booking;
+  }
+
+  const { changed } = syncBookingTickets(booking, options);
+  if (changed) {
+    await booking.save();
+  }
+
+  return booking;
+};
+
+const syncPersistedBookingCollection = async (bookings = []) => {
+  for (const booking of bookings) {
+    await syncPersistedBookingTickets(booking, {
+      assignTokens: booking.status === BookingStatus.CONFIRMED
+    });
+  }
+
+  return bookings;
+};
+
 const buildPaymentResponse = (payment, paymentIntentStatus = null) => ({
   id: payment._id,
   status: payment.status,
@@ -196,17 +243,14 @@ const syncPaymentStatusFromIntent = (payment, intent) => {
 };
 
 const finalizeSuccessfulPayment = async ({ booking, payment, req, providerPaymentId }) => {
-  if (
-    booking.status === BookingStatus.CONFIRMED &&
-    payment.status === PaymentStatus.SUCCEEDED &&
-    booking.qrCodeToken
-  ) {
+  if (booking.status === BookingStatus.CONFIRMED && payment.status === PaymentStatus.SUCCEEDED) {
+    await syncPersistedBookingTickets(booking, { assignTokens: true });
     return booking;
   }
 
   booking.status = BookingStatus.CONFIRMED;
   booking.confirmedAt = booking.confirmedAt || new Date();
-  booking.qrCodeToken = booking.qrCodeToken || buildTicketToken();
+  syncBookingTickets(booking, { assignTokens: true });
   booking.invoice = {
     invoiceNumber: booking.invoice?.invoiceNumber || buildInvoiceNumber(),
     issuedAt: new Date()
@@ -494,7 +538,7 @@ router.get(
       status: BookingStatus.CONFIRMED,
       eventId: { $in: eventIds }
     })
-      .select('eventId eventSnapshot amount quantity confirmedAt createdAt checkedInAt pricing')
+      .select('eventId eventSnapshot amount quantity confirmedAt createdAt checkedInAt pricing tickets')
       .lean();
 
     sendSuccess(res, {
@@ -528,7 +572,7 @@ router.get(
       eventId: { $in: eventIds }
     })
       .select(
-        'bookingNumber userId eventId tierId tierName quantity amount currency status attendee promoCode referral invoice createdAt confirmedAt checkedInAt cancelledAt refundedAt eventSnapshot pricing'
+        'bookingNumber userId eventId tierId tierName quantity amount currency status attendee promoCode referral invoice createdAt confirmedAt checkedInAt cancelledAt refundedAt eventSnapshot pricing tickets'
       )
       .lean();
 
@@ -601,7 +645,7 @@ router.get(
     const bookings = await Booking.find({
       status: BookingStatus.CONFIRMED
     })
-      .select('eventId eventSnapshot amount quantity confirmedAt createdAt checkedInAt pricing')
+      .select('eventId eventSnapshot amount quantity confirmedAt createdAt checkedInAt pricing tickets')
       .lean();
 
     sendSuccess(res, {
@@ -976,6 +1020,13 @@ router.post(
       currency: pricing.settlementCurrency,
       pricing,
       attendee,
+      tickets: buildBookingTickets(
+        {
+          quantity,
+          attendee
+        },
+        { assignTokens: false }
+      ),
       ...(referralCode
         ? {
             referral: {
@@ -1217,6 +1268,7 @@ router.get(
   authenticate(),
   asyncHandler(async (req, res) => {
     const bookings = await Booking.find({ userId: req.user.sub }).sort({ createdAt: -1 });
+    await syncPersistedBookingCollection(bookings);
     sendSuccess(res, bookings.map(serializeBooking));
   })
 );
@@ -1351,17 +1403,28 @@ router.get(
 router.get(
   '/event/:eventId',
   authenticate(),
-  authorize(Roles.ORGANIZER, Roles.ADMIN),
   asyncHandler(async (req, res) => {
-    const filter =
-      req.user.role === Roles.ADMIN
-        ? { eventId: req.params.eventId }
-        : {
-            eventId: req.params.eventId,
-            'eventSnapshot.organizerId': req.user.sub
-          };
+    let canAccessCheckInDesk = req.user.role === Roles.ADMIN;
 
-    const bookings = await Booking.find(filter).sort({ createdAt: -1 });
+    if (!canAccessCheckInDesk) {
+      const eventMeta = await loadInternalEventMeta(req, req.params.eventId);
+      canAccessCheckInDesk =
+        eventMeta.organizerId === req.user.sub ||
+        hasAssignedEventTeamRole({
+          eventMeta,
+          user: req.user,
+          role: 'checkin'
+        });
+    }
+
+    if (!canAccessCheckInDesk) {
+      throw new AppError('Forbidden', 403, 'forbidden');
+    }
+
+    const bookings = await Booking.find({
+      eventId: req.params.eventId
+    }).sort({ createdAt: -1 });
+    await syncPersistedBookingCollection(bookings);
     sendSuccess(res, bookings.map(serializeBooking));
   })
 );
@@ -1383,7 +1446,7 @@ router.get(
     })
       .sort({ createdAt: -1 })
       .select(
-        'bookingNumber userId eventId tierId tierName quantity amount currency status attendee promoCode referral invoice createdAt confirmedAt checkedInAt cancelledAt refundedAt eventSnapshot pricing'
+        'bookingNumber userId eventId tierId tierName quantity amount currency status attendee promoCode referral invoice createdAt confirmedAt checkedInAt cancelledAt refundedAt eventSnapshot pricing tickets'
       )
       .lean();
 
@@ -1407,7 +1470,6 @@ router.get(
 router.post(
   '/:bookingId/check-in',
   authenticate(),
-  authorize(Roles.ORGANIZER, Roles.ADMIN),
   validateSchema(checkInSchema),
   asyncHandler(async (req, res) => {
     const booking = await Booking.findById(req.params.bookingId);
@@ -1415,7 +1477,15 @@ router.post(
       throw new AppError('Booking not found', 404, 'booking_not_found');
     }
 
-    const canManage = req.user.role === Roles.ADMIN || booking.eventSnapshot.organizerId === req.user.sub;
+    const eventMeta = await loadInternalEventMeta(req, booking.eventId);
+    const canManage =
+      req.user.role === Roles.ADMIN ||
+      eventMeta.organizerId === req.user.sub ||
+      hasAssignedEventTeamRole({
+        eventMeta,
+        user: req.user,
+        role: 'checkin'
+      });
     if (!canManage) {
       throw new AppError('Forbidden', 403, 'forbidden');
     }
@@ -1424,28 +1494,109 @@ router.post(
       throw new AppError('Only confirmed tickets can be checked in', 409, 'check_in_not_allowed');
     }
 
-    if (!booking.qrCodeToken || booking.qrCodeToken !== req.body.token) {
+    await syncPersistedBookingTickets(booking, { assignTokens: true });
+
+    const ticket = findTicketByToken(booking, req.body.token);
+    if (!ticket) {
       throw new AppError('Invalid ticket QR code', 403, 'invalid_ticket_qr');
     }
 
-    const alreadyCheckedIn = Boolean(booking.checkedInAt);
+    const alreadyCheckedIn = Boolean(ticket.checkedInAt);
+    const bookingAlreadyHadCheckIn = getCheckedInTicketCount(booking) > 0;
     if (!alreadyCheckedIn) {
-      booking.checkedInAt = new Date();
-      booking.checkedInBy = req.user.sub;
+      ticket.checkedInAt = new Date();
+      ticket.checkedInBy = req.user.sub;
+      syncBookingTickets(booking, { assignTokens: true });
       await booking.save();
 
-      await req.eventBus.publish(DomainEvents.BOOKING_CHECKED_IN, {
-        bookingId: booking._id.toString(),
-        eventId: booking.eventId,
-        userId: booking.userId,
-        eventTitle: booking.eventSnapshot?.title || '',
-        checkedInAt: booking.checkedInAt
-      });
+      if (!bookingAlreadyHadCheckIn) {
+        await req.eventBus.publish(DomainEvents.BOOKING_CHECKED_IN, {
+          bookingId: booking._id.toString(),
+          eventId: booking.eventId,
+          userId: booking.userId,
+          eventTitle: booking.eventSnapshot?.title || '',
+          checkedInAt: booking.checkedInAt
+        });
+      }
     }
 
+    const serializedBooking = serializeBooking(booking);
     sendSuccess(res, {
-      booking: serializeBooking(booking),
+      booking: serializedBooking,
+      ticket: serializedBooking.tickets.find(
+        (item) => String(item.ticketId) === String(ticket.ticketId)
+      ) || null,
       alreadyCheckedIn
+    });
+  })
+);
+
+router.patch(
+  '/:bookingId/tickets/:ticketId',
+  authenticate(),
+  validateSchema(updateTicketSchema),
+  asyncHandler(async (req, res) => {
+    const booking = await Booking.findById(req.params.bookingId);
+    if (!booking) {
+      throw new AppError('Booking not found', 404, 'booking_not_found');
+    }
+
+    if (!canAccessBooking(booking, req.user)) {
+      throw new AppError('Forbidden', 403, 'forbidden');
+    }
+
+    if (![BookingStatus.PENDING, BookingStatus.CONFIRMED].includes(booking.status)) {
+      throw new AppError('This booking can no longer be changed', 409, 'ticket_update_not_allowed');
+    }
+
+    if (
+      booking.status === BookingStatus.CONFIRMED &&
+      booking.eventSnapshot?.startsAt &&
+      new Date(booking.eventSnapshot.startsAt).getTime() <= Date.now()
+    ) {
+      throw new AppError(
+        'Tickets can no longer be reassigned after the event has started',
+        409,
+        'ticket_transfer_closed'
+      );
+    }
+
+    await syncPersistedBookingTickets(booking, {
+      assignTokens: booking.status === BookingStatus.CONFIRMED
+    });
+
+    const ticket = findTicketById(booking, req.params.ticketId);
+    if (!ticket) {
+      throw new AppError('Ticket not found', 404, 'ticket_not_found');
+    }
+
+    if (ticket.checkedInAt) {
+      throw new AppError('Checked-in tickets cannot be reassigned', 409, 'ticket_already_checked_in');
+    }
+
+    const nextAttendee = {
+      name: String(req.body.attendee.name || '').trim(),
+      email: String(req.body.attendee.email || '').trim()
+    };
+    const attendeeChanged =
+      String(ticket.attendee?.name || '').trim() !== nextAttendee.name ||
+      String(ticket.attendee?.email || '').trim().toLowerCase() !==
+        nextAttendee.email.toLowerCase();
+
+    ticket.attendee = nextAttendee;
+    ticket.assignedAt = ticket.assignedAt || new Date();
+    if (attendeeChanged) {
+      ticket.transferredAt = new Date();
+    }
+
+    await booking.save();
+
+    const serializedBooking = serializeBooking(booking);
+    sendSuccess(res, {
+      booking: serializedBooking,
+      ticket: serializedBooking.tickets.find(
+        (item) => String(item.ticketId) === String(ticket.ticketId)
+      ) || null
     });
   })
 );

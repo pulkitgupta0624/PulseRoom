@@ -1,5 +1,10 @@
 const Joi = require('joi');
 
+const attendeeSchema = Joi.object({
+  name: Joi.string().trim().min(2).max(120).required(),
+  email: Joi.string().email().required()
+});
+
 const checkoutSchema = Joi.object({
   eventId: Joi.string().required(),
   tierId: Joi.string().required(),
@@ -8,10 +13,7 @@ const checkoutSchema = Joi.object({
   referralCode: Joi.string().max(64).allow('').optional(),
   promoCode: Joi.string().max(64).allow('').optional(),
   waitlistOfferToken: Joi.string().min(16).allow('').optional(),
-  attendee: Joi.object({
-    name: Joi.string().min(2).max(120).required(),
-    email: Joi.string().email().required()
-  }).required()
+  attendee: attendeeSchema.required()
 });
 
 const quoteSchema = Joi.object({
@@ -31,14 +33,15 @@ const joinWaitlistSchema = Joi.object({
   eventId: Joi.string().required(),
   tierId: Joi.string().required(),
   quantity: Joi.number().integer().min(1).max(10).required(),
-  attendee: Joi.object({
-    name: Joi.string().min(2).max(120).required(),
-    email: Joi.string().email().required()
-  }).required()
+  attendee: attendeeSchema.required()
 });
 
 const checkInSchema = Joi.object({
   token: Joi.string().min(16).required()
+});
+
+const updateTicketSchema = Joi.object({
+  attendee: attendeeSchema.required()
 });
 
 const agendaSessionUpdateSchema = Joi.object({
@@ -52,5 +55,6 @@ module.exports = {
   confirmPaymentSchema,
   joinWaitlistSchema,
   checkInSchema,
+  updateTicketSchema,
   agendaSessionUpdateSchema
 };

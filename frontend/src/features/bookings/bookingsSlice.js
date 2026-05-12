@@ -19,9 +19,23 @@ export const requestRefund = createAsyncThunk('bookings/refund', async (bookingI
   }
 });
 
+export const updateBookingTicket = createAsyncThunk(
+  'bookings/updateTicket',
+  async ({ bookingId, ticketId, attendee }, thunkApi) => {
+    try {
+      const response = await api.patch(`/api/bookings/${bookingId}/tickets/${ticketId}`, {
+        attendee
+      });
+      return response.data.data.booking;
+    } catch (error) {
+      return thunkApi.rejectWithValue(error.response?.data?.message || 'Unable to update ticket');
+    }
+  }
+);
+
 const bookingsSlice = createSlice({
   name: 'bookings',
-  initialState: { list: [], loading: false, error: null, refundingId: null },
+  initialState: { list: [], loading: false, error: null, refundingId: null, updatingTicketId: null },
   reducers: {},
   extraReducers: (builder) => {
     builder
@@ -33,7 +47,17 @@ const bookingsSlice = createSlice({
         state.refundingId = null;
         state.list = state.list.map((item) => item._id === action.payload._id ? action.payload : item);
       })
-      .addCase(requestRefund.rejected, (state) => { state.refundingId = null; });
+      .addCase(requestRefund.rejected, (state) => { state.refundingId = null; })
+      .addCase(updateBookingTicket.pending, (state, action) => {
+        state.updatingTicketId = action.meta.arg.ticketId;
+      })
+      .addCase(updateBookingTicket.fulfilled, (state, action) => {
+        state.updatingTicketId = null;
+        state.list = state.list.map((item) => item._id === action.payload._id ? action.payload : item);
+      })
+      .addCase(updateBookingTicket.rejected, (state) => {
+        state.updatingTicketId = null;
+      });
   }
 });
 

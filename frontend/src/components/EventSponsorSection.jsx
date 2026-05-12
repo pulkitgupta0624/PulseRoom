@@ -1,6 +1,5 @@
 import { Link } from 'react-router-dom';
 import SectionHeader from './SectionHeader';
-import { api } from '../lib/api';
 
 const TIER_META = {
   gold: {
@@ -42,10 +41,6 @@ const EventSponsorSection = ({ eventId, sponsors = [], canApply = false }) => {
     return null;
   }
 
-  const trackSponsorClick = (sponsorId) => {
-    api.post(`/api/events/${eventId}/sponsors/${sponsorId}/click`).catch(() => {});
-  };
-
   return (
     <section className="rounded-[32px] border border-ink/10 bg-white/80 p-6 shadow-bloom">
       <SectionHeader
@@ -81,7 +76,7 @@ const EventSponsorSection = ({ eventId, sponsors = [], canApply = false }) => {
 
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {groups[tier].map((sponsor) => {
-                  const destination = sponsor.boothUrl || sponsor.websiteUrl;
+                  const boothPath = `/events/${eventId}/sponsors/${sponsor.sponsorId}`;
                   return (
                     <article
                       key={sponsor.sponsorId}
@@ -123,23 +118,14 @@ const EventSponsorSection = ({ eventId, sponsors = [], canApply = false }) => {
                       )}
 
                       <div className="mt-4 flex flex-wrap gap-2">
-                        {destination ? (
-                          <a
-                            href={destination}
-                            target="_blank"
-                            rel="noreferrer"
-                            onClick={() => trackSponsorClick(sponsor.sponsorId)}
-                            className="rounded-full bg-ink px-4 py-2 text-sm font-semibold text-sand transition hover:bg-ink/90"
-                          >
-                            Visit booth
-                          </a>
-                        ) : (
-                          <span className="rounded-full border border-ink/10 bg-white px-4 py-2 text-sm text-ink/45">
-                            Booth link coming soon
-                          </span>
-                        )}
+                        <Link
+                          to={boothPath}
+                          className="rounded-full bg-ink px-4 py-2 text-sm font-semibold text-sand transition hover:bg-ink/90"
+                        >
+                          Open booth
+                        </Link>
 
-                        {sponsor.websiteUrl && sponsor.websiteUrl !== destination && (
+                        {sponsor.websiteUrl && (
                           <a
                             href={sponsor.websiteUrl}
                             target="_blank"

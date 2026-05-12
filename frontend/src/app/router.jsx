@@ -5,10 +5,12 @@ import HomePage from '../pages/HomePage';
 import AuthPage from '../pages/AuthPage';
 import EventDetailPage from '../pages/EventDetailPage';
 import SponsorApplicationPage from '../pages/SponsorApplicationPage';
+import SponsorBoothPage from '../pages/SponsorBoothPage';
 import DashboardPage from '../pages/DashboardPage';
 import LiveEventPage from '../pages/LiveEventPage';
 import AdminPage from '../pages/AdminPage';
 import ProfilePage from '../pages/ProfilePage.jsx';
+import SpeakerPortalPage from '../pages/SpeakerPortalPage.jsx';
 import BookingsPage from '../pages/BookingsPage';
 import MessagesPage from '../pages/MessagesPage';
 import CheckInPage from '../pages/CheckInPage';
@@ -24,13 +26,14 @@ export const router = createBrowserRouter([
       { path: 'auth', element: <AuthPage /> },
       { path: 'events/:eventId', element: <EventDetailPage /> },
       { path: 'events/:eventId/sponsor', element: <SponsorApplicationPage /> },
+      { path: 'events/:eventId/sponsors/:sponsorId', element: <SponsorBoothPage /> },
       {
         path: 'events/:eventId/live',
         element: <ProtectedRoute><LiveEventPage /></ProtectedRoute>
       },
       {
         path: 'events/:eventId/check-in',
-        element: <ProtectedRoute roles={['organizer', 'admin']}><CheckInPage /></ProtectedRoute>
+        element: <ProtectedRoute><CheckInPage /></ProtectedRoute>
       },
       {
         path: 'dashboard',
@@ -43,6 +46,10 @@ export const router = createBrowserRouter([
       {
         path: 'profile',
         element: <ProtectedRoute><ProfilePage /></ProtectedRoute>
+      },
+      {
+        path: 'speaker',
+        element: <ProtectedRoute><SpeakerPortalPage /></ProtectedRoute>
       },
       {
         path: 'my-bookings',

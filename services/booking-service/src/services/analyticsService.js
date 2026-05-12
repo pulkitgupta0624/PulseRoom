@@ -1,3 +1,5 @@
+const { getCheckedInTicketCount } = require('./ticketService');
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const toDayKey = (value) => {
@@ -9,6 +11,15 @@ const clampWindowDays = (value) => Math.max(7, Math.min(Number(value || 30), 90)
 
 const getReportingAmount = (booking) =>
   Number(booking?.pricing?.reportingAmount ?? booking?.amount ?? 0);
+
+const getAttendeeCount = (booking) => {
+  const quantity = Number(booking?.quantity);
+  if (Number.isFinite(quantity) && quantity > 0) {
+    return quantity;
+  }
+
+  return Array.isArray(booking?.tickets) ? booking.tickets.length : 0;
+};
 
 const buildBookingAnalytics = ({ bookings, days = 30 }) => {
   const windowDays = clampWindowDays(days);
@@ -41,21 +52,19 @@ const buildBookingAnalytics = ({ bookings, days = 30 }) => {
     const dayKey = toDayKey(effectiveDate);
     const bucket = bucketMap.get(dayKey);
     const bookingRevenue = getReportingAmount(booking);
+    const attendeeCount = getAttendeeCount(booking);
+    const checkedInCount = getCheckedInTicketCount(booking);
 
     confirmedBookings += 1;
     revenue += bookingRevenue;
-    attendees += booking.quantity || 0;
-    if (booking.checkedInAt) {
-      checkedIns += booking.quantity || 0;
-    }
+    attendees += attendeeCount;
+    checkedIns += checkedInCount;
 
     if (bucket) {
       bucket.bookings += 1;
       bucket.revenue += bookingRevenue;
-      bucket.attendees += booking.quantity || 0;
-      if (booking.checkedInAt) {
-        bucket.checkedIns += booking.quantity || 0;
-      }
+      bucket.attendees += attendeeCount;
+      bucket.checkedIns += checkedInCount;
     }
 
     const currentEvent = topEvents.get(booking.eventId) || {
@@ -67,7 +76,7 @@ const buildBookingAnalytics = ({ bookings, days = 30 }) => {
     };
     currentEvent.revenue += bookingRevenue;
     currentEvent.bookings += 1;
-    currentEvent.attendees += booking.quantity || 0;
+    currentEvent.attendees += attendeeCount;
     topEvents.set(booking.eventId, currentEvent);
   }
 

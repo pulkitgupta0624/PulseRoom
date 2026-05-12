@@ -1163,6 +1163,11 @@ const EventDetailPage = () => {
                   className="w-full rounded-2xl border border-ink/10 bg-white px-4 py-3 disabled:opacity-50"
                   disabled={!isPublished || waitlistOfferActive}
                 />
+                {quantity > 1 && (
+                  <p className="mt-2 text-xs text-ink/45">
+                    You can assign each ticket holder and transfer seats later from My Tickets.
+                  </p>
+                )}
               </div>
 
               {acceptedCurrencies.length > 0 && (

@@ -1,0 +1,21 @@
+{
+  "id": "/?source=pwa",
+  "name": "PulseRoom",
+  "short_name": "PulseRoom",
+  "description": "Event operations, live rooms, check-in, tickets, and sponsor workflows in one place.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f6efe6",
+  "theme_color": "#0f1720",
+  "categories": ["business", "productivity", "events"],
+  "icons": [
+    {
+      "src": "/pulseroom-mark.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

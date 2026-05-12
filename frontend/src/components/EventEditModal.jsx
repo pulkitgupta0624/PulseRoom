@@ -14,6 +14,66 @@ const toDatetimeLocal = (isoString) => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
+const createEmptyTeamMember = () => ({
+  name: '',
+  email: '',
+  role: 'producer',
+  notes: ''
+});
+
+const TeamMemberEditor = ({ member, index, onChange, onRemove }) => (
+  <div className="rounded-2xl border border-ink/10 bg-sand/60 p-4 space-y-3">
+    <div className="flex items-center justify-between">
+      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-ink/50">
+        Team member {index + 1}
+      </p>
+      <button
+        type="button"
+        onClick={onRemove}
+        className="rounded-full border border-ember/20 bg-ember/5 px-3 py-1 text-xs font-medium text-ember hover:bg-ember/10"
+      >
+        Remove
+      </button>
+    </div>
+
+    <div className="grid gap-3 sm:grid-cols-2">
+      <input
+        value={member.name}
+        onChange={(e) => onChange('name', e.target.value)}
+        placeholder="Full name"
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+        required
+      />
+      <input
+        type="email"
+        value={member.email}
+        onChange={(e) => onChange('email', e.target.value)}
+        placeholder="Sign-in email"
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+        required
+      />
+    </div>
+
+    <div className="grid gap-3 sm:grid-cols-[0.9fr,1.1fr]">
+      <select
+        value={member.role}
+        onChange={(e) => onChange('role', e.target.value)}
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+      >
+        <option value="producer">Producer</option>
+        <option value="moderator">Moderator</option>
+        <option value="checkin">Check-in</option>
+      </select>
+      <input
+        value={member.notes}
+        onChange={(e) => onChange('notes', e.target.value)}
+        placeholder="Notes or responsibilities"
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+      />
+    </div>
+  </div>
+);
+
 const EventEditModal = ({ event, onClose }) => {
   const dispatch = useDispatch();
   const [saving, setSaving] = useState(false);
@@ -41,10 +101,36 @@ const EventEditModal = ({ event, onClose }) => {
     streamUrl: event.streamUrl || '',
     pageTheme: normalizeEventTheme(event.pageTheme),
     allowsChat: event.allowsChat !== false,
-    allowsQa: event.allowsQa !== false
+    allowsQa: event.allowsQa !== false,
+    teamMembers: (event.teamMembers || []).map((member) => ({
+      name: member.name || '',
+      email: member.email || '',
+      role: member.role || 'producer',
+      notes: member.notes || ''
+    }))
   });
 
   const update = (key, value) => setForm((f) => ({ ...f, [key]: value }));
+
+  const updateTeamMember = (index, key, value) =>
+    setForm((current) => ({
+      ...current,
+      teamMembers: current.teamMembers.map((member, memberIndex) =>
+        memberIndex === index ? { ...member, [key]: value } : member
+      )
+    }));
+
+  const addTeamMember = () =>
+    setForm((current) => ({
+      ...current,
+      teamMembers: [...current.teamMembers, createEmptyTeamMember()]
+    }));
+
+  const removeTeamMember = (index) =>
+    setForm((current) => ({
+      ...current,
+      teamMembers: current.teamMembers.filter((_, memberIndex) => memberIndex !== index)
+    }));
 
   const handleCoverUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -88,7 +174,15 @@ const EventEditModal = ({ event, onClose }) => {
         tags: form.tags.split(',').map((t) => t.trim()).filter(Boolean),
         pageTheme: form.pageTheme,
         allowsChat: form.allowsChat,
-        allowsQa: form.allowsQa
+        allowsQa: form.allowsQa,
+        teamMembers: form.teamMembers
+          .filter((member) => member.name.trim() && member.email.trim())
+          .map((member) => ({
+            name: member.name.trim(),
+            email: member.email.trim(),
+            role: member.role,
+            notes: member.notes.trim()
+          }))
       };
       if (form.coverImageUrl) payload.coverImageUrl = form.coverImageUrl;
 
@@ -324,6 +418,42 @@ const EventEditModal = ({ event, onClose }) => {
                 placeholder="Shown on attendance certificates"
                 className="mt-2 w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
               />
+            </div>
+
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <label className="text-xs uppercase tracking-[0.22em] text-ink/45">Event team</label>
+                  <p className="mt-2 text-sm text-ink/55">
+                    Assign staff by sign-in email. Check-in staff can use the venue scanner, and everyone assigned appears in the speaker hub.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={addTeamMember}
+                  className="shrink-0 rounded-full border border-ink/10 bg-white px-4 py-2 text-xs font-semibold text-ink hover:bg-sand"
+                >
+                  Add member
+                </button>
+              </div>
+
+              {form.teamMembers.length === 0 ? (
+                <div className="rounded-2xl bg-sand/50 px-5 py-8 text-center">
+                  <p className="text-sm text-ink/45">No team members assigned yet.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {form.teamMembers.map((member, index) => (
+                    <TeamMemberEditor
+                      key={`${member.email || 'member'}-${index}`}
+                      member={member}
+                      index={index}
+                      onChange={(key, value) => updateTeamMember(index, key, value)}
+                      onRemove={() => removeTeamMember(index)}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
 
             <EventThemeFields

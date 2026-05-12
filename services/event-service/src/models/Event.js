@@ -18,6 +18,27 @@ const speakerSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const teamMemberSchema = new mongoose.Schema(
+  {
+    userId: String,
+    email: {
+      type: String,
+      required: true
+    },
+    name: {
+      type: String,
+      required: true
+    },
+    role: {
+      type: String,
+      enum: ['moderator', 'checkin', 'producer'],
+      required: true
+    },
+    notes: String
+  },
+  { _id: false }
+);
+
 const sessionSchema = new mongoose.Schema(
   {
     title: {
@@ -225,7 +246,15 @@ const sponsorSchema = new mongoose.Schema(
       }
     },
     metrics: {
+      boothViews: {
+        type: Number,
+        default: 0
+      },
       boothClicks: {
+        type: Number,
+        default: 0
+      },
+      leadsCaptured: {
         type: Number,
         default: 0
       }
@@ -485,6 +514,10 @@ const eventSchema = new mongoose.Schema(
     },
     speakers: {
       type: [speakerSchema],
+      default: []
+    },
+    teamMembers: {
+      type: [teamMemberSchema],
       default: []
     },
     sessions: {

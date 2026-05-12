@@ -54,6 +54,14 @@ const createEmptySpeaker = () => ({
   bio: ''
 });
 
+const createEmptyTeamMember = () => ({
+  id: makeId('team'),
+  name: '',
+  email: '',
+  role: 'producer',
+  notes: ''
+});
+
 const createInitialForm = () => ({
   title: '',
   summary: '',
@@ -76,6 +84,7 @@ const createInitialForm = () => ({
   pageTheme: normalizeEventTheme(),
   tiers: [createEmptyTier()],
   speakers: [],
+  teamMembers: [],
   sessions: [],
   assumptions: [],
   suggestedFaq: []
@@ -188,6 +197,57 @@ const SpeakerRow = ({ speaker, index, onChange, onRemove }) => (
         onChange={(e) => onChange('bio', e.target.value)}
         placeholder="Short bio"
         className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef sm:col-span-2"
+      />
+    </div>
+  </div>
+);
+
+const TeamMemberRow = ({ member, index, onChange, onRemove }) => (
+  <div className="rounded-2xl border border-ink/10 bg-sand/60 p-4 space-y-3">
+    <div className="flex items-center justify-between">
+      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-ink/50">
+        Team member {index + 1}
+      </p>
+      <button
+        type="button"
+        onClick={onRemove}
+        className="rounded-full border border-ember/20 bg-ember/5 px-3 py-1 text-xs font-medium text-ember hover:bg-ember/10"
+      >
+        Remove
+      </button>
+    </div>
+    <div className="grid gap-3 sm:grid-cols-2">
+      <input
+        value={member.name}
+        onChange={(e) => onChange('name', e.target.value)}
+        placeholder="Full name"
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+        required
+      />
+      <input
+        type="email"
+        value={member.email}
+        onChange={(e) => onChange('email', e.target.value)}
+        placeholder="Sign-in email"
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+        required
+      />
+    </div>
+    <div className="grid gap-3 sm:grid-cols-[0.9fr,1.1fr]">
+      <select
+        value={member.role}
+        onChange={(e) => onChange('role', e.target.value)}
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+      >
+        <option value="producer">Producer</option>
+        <option value="moderator">Moderator</option>
+        <option value="checkin">Check-in</option>
+      </select>
+      <input
+        value={member.notes}
+        onChange={(e) => onChange('notes', e.target.value)}
+        placeholder="Notes or responsibilities"
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
       />
     </div>
   </div>
@@ -392,6 +452,21 @@ const DashboardPage = () => {
       speakers: current.speakers.filter((_, i) => i !== index)
     }));
 
+  const updateTeamMember = (index, key, value) =>
+    setForm((current) => ({
+      ...current,
+      teamMembers: current.teamMembers.map((member, i) => (i === index ? { ...member, [key]: value } : member))
+    }));
+
+  const addTeamMember = () =>
+    setForm((current) => ({ ...current, teamMembers: [...current.teamMembers, createEmptyTeamMember()] }));
+
+  const removeTeamMember = (index) =>
+    setForm((current) => ({
+      ...current,
+      teamMembers: current.teamMembers.filter((_, i) => i !== index)
+    }));
+
   const handleCoverUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -446,6 +521,7 @@ const DashboardPage = () => {
         company: speaker.company || '',
         bio: speaker.bio || ''
       })),
+      teamMembers: current.teamMembers,
       pageTheme: normalizeEventTheme(draft.pageTheme || current.pageTheme),
       sessions: draft.sessions || [],
       assumptions: draft.assumptions || [],
@@ -490,6 +566,15 @@ const DashboardPage = () => {
       .filter((s) => s.name.trim())
       .map(({ id, ...rest }) => rest);
 
+    const teamMembers = form.teamMembers
+      .filter((member) => member.name.trim() && member.email.trim())
+      .map(({ id, ...rest }) => ({
+        ...rest,
+        name: rest.name.trim(),
+        email: rest.email.trim(),
+        notes: rest.notes.trim()
+      }));
+
     const sessions = form.sessions?.length
       ? form.sessions
       : [
@@ -521,6 +606,7 @@ const DashboardPage = () => {
       tags: form.tags.split(',').map((t) => t.trim()).filter(Boolean),
       pageTheme: form.pageTheme,
       speakers,
+      teamMembers,
       sessions,
       ticketTiers,
       allowsChat: true,
@@ -575,7 +661,8 @@ const DashboardPage = () => {
   const formTabs = [
     { key: 'details', label: 'Event Details' },
     { key: 'tiers', label: `Tickets (${form.tiers.length})` },
-    { key: 'speakers', label: `Speakers (${form.speakers.length})` }
+    { key: 'speakers', label: `Speakers (${form.speakers.length})` },
+    { key: 'team', label: `Team (${form.teamMembers.length})` }
   ];
 
   return (
@@ -1071,6 +1158,35 @@ const DashboardPage = () => {
                     className="w-full rounded-2xl border-2 border-dashed border-ink/15 py-3 text-sm font-medium text-ink/50 hover:border-reef/40 hover:text-reef transition"
                   >
                     + Add a speaker
+                  </button>
+                </div>
+              )}
+
+              {createTab === 'team' && (
+                <div className="space-y-4">
+                  <p className="text-sm text-ink/60">
+                    Assign staff by the exact email they use to sign in. Check-in staff can run the scanner desk, while moderators and producers get this event in their workspace hub.
+                  </p>
+                  {form.teamMembers.length === 0 && (
+                    <div className="rounded-2xl bg-sand/50 px-5 py-8 text-center">
+                      <p className="text-sm text-ink/45">No team members added yet.</p>
+                    </div>
+                  )}
+                  {form.teamMembers.map((member, index) => (
+                    <TeamMemberRow
+                      key={member.id}
+                      member={member}
+                      index={index}
+                      onChange={(key, value) => updateTeamMember(index, key, value)}
+                      onRemove={() => removeTeamMember(index)}
+                    />
+                  ))}
+                  <button
+                    type="button"
+                    onClick={addTeamMember}
+                    className="w-full rounded-2xl border-2 border-dashed border-ink/15 py-3 text-sm font-medium text-ink/50 hover:border-reef/40 hover:text-reef transition"
+                  >
+                    + Add a team member
                   </button>
                 </div>
               )}

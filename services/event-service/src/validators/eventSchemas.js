@@ -25,6 +25,14 @@ const speakerSchema = Joi.object({
   avatarUrl: Joi.string().uri().allow('')
 });
 
+const teamMemberSchema = Joi.object({
+  userId: Joi.string().allow(''),
+  email: Joi.string().email().required(),
+  name: Joi.string().min(2).max(120).required(),
+  role: Joi.string().valid('moderator', 'checkin', 'producer').required(),
+  notes: Joi.string().max(240).allow('')
+});
+
 const sessionSchema = Joi.object({
   title: Joi.string().required(),
   description: Joi.string().allow(''),
@@ -89,6 +97,15 @@ const sponsorDecisionSchema = Joi.object({
   showInEmails: Joi.boolean().optional(),
   featuredCallout: Joi.boolean().optional()
 }).min(1);
+
+const sponsorLeadSchema = Joi.object({
+  fullName: Joi.string().trim().min(2).max(120).required(),
+  workEmail: Joi.string().trim().email().required(),
+  companyName: Joi.string().trim().max(160).allow(''),
+  roleTitle: Joi.string().trim().max(120).allow(''),
+  interestType: Joi.string().valid('demo', 'pricing', 'partnership', 'content', 'general').default('general'),
+  message: Joi.string().trim().max(600).allow('')
+});
 
 const promoCodeSchema = Joi.object({
   code: Joi.string().trim().min(3).max(32).pattern(/^[A-Za-z0-9_-]+$/).required(),
@@ -197,6 +214,7 @@ const createEventSchema = Joi.object({
   categories: Joi.array().items(Joi.string().max(60)).min(1).required(),
   tags: Joi.array().items(Joi.string().max(40)).default([]),
   speakers: Joi.array().items(speakerSchema).default([]),
+  teamMembers: Joi.array().items(teamMemberSchema).max(12).default([]),
   sessions: Joi.array().items(sessionSchema).default([]),
   ticketTiers: Joi.array().items(ticketTierSchema).min(1).required(),
   acceptedCurrencies: Joi.array().items(Joi.string().length(3).uppercase()).min(1).default(['INR']),
@@ -251,6 +269,7 @@ module.exports = {
   updateSponsorPackageSchema,
   sponsorApplicationSchema,
   sponsorDecisionSchema,
+  sponsorLeadSchema,
   promoCodeSchema,
   updatePromoCodeSchema,
   webhookEndpointSchema,

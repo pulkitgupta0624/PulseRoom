@@ -14,11 +14,13 @@ const {
 } = require('@pulseroom/common');
 const Event = require('../models/Event');
 const SponsorApplication = require('../models/SponsorApplication');
+const SponsorLead = require('../models/SponsorLead');
 const {
   sponsorPackageSchema,
   updateSponsorPackageSchema,
   sponsorApplicationSchema,
-  sponsorDecisionSchema
+  sponsorDecisionSchema,
+  sponsorLeadSchema
 } = require('../validators/eventSchemas');
 const {
   ACTIVE_SLOT_STATUSES,
@@ -32,8 +34,11 @@ const {
 } = require('../services/sponsorService');
 
 const router = express.Router();
+const SPONSOR_LEAD_INTEREST_OPTIONS = ['demo', 'pricing', 'partnership', 'content', 'general'];
 
 const canManageEvent = (event, user) => user.role === Roles.ADMIN || event.organizerId === user.sub;
+const isViewerOwner = (event, viewer) =>
+  Boolean(viewer && (viewer.role === Roles.ADMIN || viewer.sub === event.organizerId));
 
 const loadEventOrThrow = async (eventId) => {
   const event = await Event.findById(eventId);
@@ -65,25 +70,116 @@ const findPackageOrThrow = (event, packageId) => {
   return sponsorPackage;
 };
 
+const findSponsorForViewerOrThrow = (event, sponsorId, { viewerIsOwner = false } = {}) => {
+  const sponsor = (event.sponsors || []).find((item) => item.sponsorId === sponsorId);
+  if (!sponsor) {
+    throw new AppError('Sponsor not found', 404, 'sponsor_not_found');
+  }
+
+  if (viewerIsOwner) {
+    return sponsor;
+  }
+
+  const isVisible =
+    sponsor.status === 'active' &&
+    sponsor.paymentStatus === 'paid' &&
+    (sponsor.showOnEventPage || sponsor.showInLiveRoom || sponsor.showInEmails);
+
+  if (!isVisible) {
+    throw new AppError('Sponsor not found', 404, 'sponsor_not_found');
+  }
+
+  return sponsor;
+};
+
+const serializeLead = (lead, sponsorRecordsById = {}) => {
+  const raw = typeof lead.toObject === 'function' ? lead.toObject() : { ...lead };
+  const relatedSponsor = sponsorRecordsById[raw.sponsorId];
+
+  return {
+    leadId: raw._id?.toString?.() || raw.leadId,
+    sponsorId: raw.sponsorId,
+    sponsorCompanyName:
+      raw.sponsorCompanyName || relatedSponsor?.companyName || 'Sponsor',
+    fullName: raw.fullName,
+    workEmail: raw.workEmail,
+    companyName: raw.companyName || '',
+    roleTitle: raw.roleTitle || '',
+    interestType: raw.interestType || 'general',
+    message: raw.message || '',
+    source: raw.source || 'booth_page',
+    createdAt: raw.createdAt
+  };
+};
+
 const buildManageResponse = async (req, event) => {
   syncSponsorPackageSlots(event);
-  const applications = await SponsorApplication.find({
-    eventId: event._id.toString()
-  }).sort({ createdAt: -1 });
+  const eventId = event._id.toString();
+  const [applications, recentLeads, leadSummaryRows] = await Promise.all([
+    SponsorApplication.find({
+      eventId
+    }).sort({ createdAt: -1 }),
+    SponsorLead.find({ eventId }).sort({ createdAt: -1 }).limit(40),
+    SponsorLead.aggregate([
+      { $match: { eventId } },
+      {
+        $group: {
+          _id: '$sponsorId',
+          leadsCaptured: { $sum: 1 },
+          lastLeadCapturedAt: { $max: '$createdAt' }
+        }
+      }
+    ])
+  ]);
 
   const sponsorSummary = buildSponsorRevenueSummary(event.sponsors || []);
   const pendingApplications = applications.filter((application) => application.status === 'pending').length;
+  const leadSummaryBySponsorId = leadSummaryRows.reduce((accumulator, row) => {
+    accumulator[row._id] = {
+      leadsCaptured: Number(row.leadsCaptured || 0),
+      lastLeadCapturedAt: row.lastLeadCapturedAt || null
+    };
+    return accumulator;
+  }, {});
+  const totalLeadsCaptured = Object.values(leadSummaryBySponsorId).reduce(
+    (sum, row) => sum + Number(row.leadsCaptured || 0),
+    0
+  );
+  const sponsors = filterSponsorsForViewer(event.sponsors || [], {
+    viewerIsOwner: true
+  }).map((sponsor) => {
+    const summary = leadSummaryBySponsorId[sponsor.sponsorId];
+    return {
+      ...sponsor,
+      metrics: {
+        boothViews: Number(sponsor.metrics?.boothViews || 0),
+        boothClicks: Number(sponsor.metrics?.boothClicks || 0),
+        leadsCaptured:
+          summary?.leadsCaptured ?? Number(sponsor.metrics?.leadsCaptured || 0)
+      },
+      lastLeadCapturedAt: summary?.lastLeadCapturedAt || null
+    };
+  });
+  const sponsorRecordsById = sponsors.reduce((accumulator, sponsor) => {
+    accumulator[sponsor.sponsorId] = sponsor;
+    return accumulator;
+  }, {});
 
   return {
     sponsorPackages: filterSponsorPackagesForViewer(event.sponsorPackages || [], {
       viewerIsOwner: true
     }),
-    sponsors: filterSponsorsForViewer(event.sponsors || [], {
-      viewerIsOwner: true
+    sponsors,
+    applications: applications.map((application) => {
+      const raw = typeof application.toObject === 'function' ? application.toObject() : application;
+      const leadSummary = leadSummaryBySponsorId[raw.sponsorId];
+      return {
+        ...raw,
+        leadsCaptured: Number(leadSummary?.leadsCaptured || 0),
+        lastLeadCapturedAt: leadSummary?.lastLeadCapturedAt || null
+      };
     }),
-    applications: applications.map((application) =>
-      typeof application.toObject === 'function' ? application.toObject() : application
-    ),
+    leads: recentLeads.map((lead) => serializeLead(lead, sponsorRecordsById)),
     totals: {
       totalApplications: applications.length,
       pendingApplications,
@@ -91,7 +187,9 @@ const buildManageResponse = async (req, event) => {
       sponsorRevenue: sponsorSummary.grossRevenue,
       platformFees: sponsorSummary.platformFees,
       organizerNetRevenue: sponsorSummary.organizerNetRevenue,
-      boothClicks: sponsorSummary.boothClicks
+      boothViews: sponsorSummary.boothViews,
+      boothClicks: sponsorSummary.boothClicks,
+      leadsCaptured: totalLeadsCaptured
     },
     applicationLink: buildSponsorApplicationLink(event._id, req.config.appOrigin)
   };
@@ -327,6 +425,171 @@ router.post(
   })
 );
 
+router.get(
+  '/:eventId/sponsors/:sponsorId/booth',
+  asyncHandler(async (req, res) => {
+    const viewer = decodeOptionalToken(req);
+    const event = await loadEventOrThrow(req.params.eventId);
+    assertViewerCanAccessEvent(event, viewer);
+
+    const viewerOwnsEvent = isViewerOwner(event, viewer);
+    if (!viewerOwnsEvent && event.status !== 'published') {
+      throw new AppError('Sponsor booth not available', 404, 'sponsor_not_found');
+    }
+
+    const sponsor = findSponsorForViewerOrThrow(event, req.params.sponsorId, {
+      viewerIsOwner: viewerOwnsEvent
+    });
+    const sponsorPackage = (event.sponsorPackages || []).find(
+      (pkg) => pkg.packageId === sponsor.packageId
+    );
+
+    sendSuccess(res, {
+      event: {
+        eventId: event._id.toString(),
+        title: event.title,
+        summary: event.summary,
+        startsAt: event.startsAt,
+        endsAt: event.endsAt,
+        type: event.type,
+        coverImageUrl: event.coverImageUrl || '',
+        city: event.city || '',
+        country: event.country || '',
+        attendeesCount: Number(event.attendeesCount || 0)
+      },
+      sponsor: {
+        sponsorId: sponsor.sponsorId,
+        tier: sponsor.tier,
+        packageName: sponsor.packageName,
+        companyName: sponsor.companyName,
+        logoUrl: sponsor.logoUrl || '',
+        description: sponsor.description || '',
+        boothUrl: sponsor.boothUrl || '',
+        websiteUrl: sponsor.websiteUrl || '',
+        featuredCallout: Boolean(sponsor.featuredCallout),
+        highlights: sponsorPackage?.perks || [],
+        ownerPreview: viewerOwnsEvent,
+        metrics: viewerOwnsEvent
+          ? {
+              boothViews: Number(sponsor.metrics?.boothViews || 0),
+              boothClicks: Number(sponsor.metrics?.boothClicks || 0),
+              leadsCaptured: Number(sponsor.metrics?.leadsCaptured || 0)
+            }
+          : undefined
+      },
+      leadCapture: {
+        enabled: true,
+        interestOptions: SPONSOR_LEAD_INTEREST_OPTIONS
+      }
+    });
+  })
+);
+
+router.post(
+  '/:eventId/sponsors/:sponsorId/booth-view',
+  asyncHandler(async (req, res) => {
+    const viewer = decodeOptionalToken(req);
+    const event = await loadEventOrThrow(req.params.eventId);
+    assertViewerCanAccessEvent(event, viewer);
+
+    const viewerOwnsEvent = isViewerOwner(event, viewer);
+    if (!viewerOwnsEvent && event.status !== 'published') {
+      throw new AppError('Sponsor booth not available', 404, 'sponsor_not_found');
+    }
+
+    findSponsorForViewerOrThrow(event, req.params.sponsorId, {
+      viewerIsOwner: viewerOwnsEvent
+    });
+
+    await Event.updateOne(
+      {
+        _id: event._id,
+        'sponsors.sponsorId': req.params.sponsorId
+      },
+      {
+        $inc: {
+          'sponsors.$.metrics.boothViews': 1
+        }
+      }
+    );
+
+    sendSuccess(res, { tracked: true });
+  })
+);
+
+router.post(
+  '/:eventId/sponsors/:sponsorId/leads',
+  validateSchema(sponsorLeadSchema),
+  asyncHandler(async (req, res) => {
+    const viewer = decodeOptionalToken(req);
+    const event = await loadEventOrThrow(req.params.eventId);
+    assertViewerCanAccessEvent(event, viewer);
+
+    if (!event.sponsors?.length || event.status !== 'published') {
+      throw new AppError('Sponsor booth not available', 404, 'sponsor_not_found');
+    }
+
+    const sponsor = findSponsorForViewerOrThrow(event, req.params.sponsorId, {
+      viewerIsOwner: false
+    });
+    const workEmail = String(req.body.workEmail || '').trim().toLowerCase();
+    const duplicateWindowStartsAt = new Date(Date.now() - 10 * 60 * 1000);
+    const recentDuplicate = await SponsorLead.exists({
+      eventId: event._id.toString(),
+      sponsorId: sponsor.sponsorId,
+      workEmail,
+      createdAt: {
+        $gte: duplicateWindowStartsAt
+      }
+    });
+
+    if (recentDuplicate) {
+      throw new AppError(
+        'You already submitted your details recently. Give the sponsor a few minutes before sending another request.',
+        409,
+        'sponsor_lead_recent_duplicate'
+      );
+    }
+
+    const lead = await SponsorLead.create({
+      eventId: event._id.toString(),
+      organizerId: event.organizerId,
+      sponsorId: sponsor.sponsorId,
+      sponsorCompanyName: sponsor.companyName,
+      eventTitle: event.title,
+      attendeeUserId: viewer?.sub || '',
+      fullName: req.body.fullName,
+      workEmail,
+      companyName: req.body.companyName,
+      roleTitle: req.body.roleTitle,
+      interestType: req.body.interestType || 'general',
+      message: req.body.message,
+      source: 'booth_page'
+    });
+
+    await Event.updateOne(
+      {
+        _id: event._id,
+        'sponsors.sponsorId': req.params.sponsorId
+      },
+      {
+        $inc: {
+          'sponsors.$.metrics.leadsCaptured': 1
+        }
+      }
+    );
+
+    sendSuccess(
+      res,
+      {
+        leadId: lead._id.toString(),
+        sponsorId: sponsor.sponsorId
+      },
+      201
+    );
+  })
+);
+
 router.post(
   '/:eventId/sponsors/:sponsorId/click',
   asyncHandler(async (req, res) => {
@@ -334,15 +597,14 @@ router.post(
     const event = await loadEventOrThrow(req.params.eventId);
     assertViewerCanAccessEvent(event, viewer);
 
-    const sponsor = (event.sponsors || []).find(
-      (item) =>
-        item.sponsorId === req.params.sponsorId &&
-        item.status === 'active' &&
-        item.paymentStatus === 'paid'
-    );
-    if (!sponsor) {
+    const viewerOwnsEvent = isViewerOwner(event, viewer);
+    if (!viewerOwnsEvent && event.status !== 'published') {
       throw new AppError('Sponsor not found', 404, 'sponsor_not_found');
     }
+
+    findSponsorForViewerOrThrow(event, req.params.sponsorId, {
+      viewerIsOwner: viewerOwnsEvent
+    });
 
     await Event.updateOne(
       {

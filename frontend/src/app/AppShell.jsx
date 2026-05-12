@@ -1,24 +1,91 @@
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import NotificationPanel from '../components/NotificationPanel';
 import { bootstrapSession, logout } from '../features/auth/authSlice';
-import { fetchUnreadCount, toggleNotifications } from '../features/notifications/notificationsSlice';
+import PwaInstallPrompt from '../components/PwaInstallPrompt';
+import {
+  fetchNotifications,
+  fetchUnreadCount,
+  toggleNotifications
+} from '../features/notifications/notificationsSlice';
 import ToastContainer from '../components/ToastContainer';
-import { toggleTheme } from '../features/ui/uiSlice';
+import { showToast, toggleTheme } from '../features/ui/uiSlice';
 
 const AppShell = () => {
   const theme = useSelector((state) => state.ui.theme);
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const { user } = useSelector((state) => state.auth);
-  const { unreadCount } = useSelector((state) => state.notifications);
+  const { unreadCount, isOpen: notificationsOpen } = useSelector((state) => state.notifications);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const previousUnreadCountRef = useRef(null);
 
   useEffect(() => { dispatch(bootstrapSession()); }, [dispatch]);
   useEffect(() => {
-    if (user) dispatch(fetchUnreadCount());
-  }, [dispatch, user]);
+    if (!user) {
+      previousUnreadCountRef.current = null;
+      return undefined;
+    }
+
+    let isActive = true;
+
+    const syncNotifications = async ({ allowToast = false } = {}) => {
+      try {
+        const nextUnreadCount = await dispatch(fetchUnreadCount()).unwrap();
+        if (!isActive) {
+          return;
+        }
+
+        const previousUnreadCount = previousUnreadCountRef.current;
+        if (
+          allowToast &&
+          previousUnreadCount !== null &&
+          nextUnreadCount > previousUnreadCount
+        ) {
+          const nextNotificationCount = nextUnreadCount - previousUnreadCount;
+          dispatch(showToast({
+            message:
+              nextNotificationCount === 1
+                ? '1 new update is waiting in your inbox.'
+                : `${nextNotificationCount} new updates are waiting in your inbox.`,
+            tone: 'info'
+          }));
+        }
+
+        previousUnreadCountRef.current = nextUnreadCount;
+        if (notificationsOpen) {
+          dispatch(fetchNotifications());
+        }
+      } catch (_error) {
+        // Ignore intermittent refresh issues and keep the current notification state.
+      }
+    };
+
+    void syncNotifications();
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void syncNotifications({ allowToast: true });
+      }
+    }, notificationsOpen ? 15000 : 30000);
+
+    const handleFocus = () => {
+      if (document.visibilityState === 'visible') {
+        void syncNotifications({ allowToast: true });
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleFocus);
+
+    return () => {
+      isActive = false;
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleFocus);
+    };
+  }, [dispatch, notificationsOpen, user]);
 
   useEffect(() => {
     if (theme === 'dark') {
@@ -28,6 +95,31 @@ const AppShell = () => {
     }
     document.documentElement.style.colorScheme = theme;
   }, [theme]);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      dispatch(showToast({
+        message: 'Back online. PulseRoom is syncing fresh updates.',
+        tone: 'success'
+      }));
+    };
+
+    const handleOffline = () => {
+      dispatch(showToast({
+        message: 'You are offline. Cached screens and tickets stay available.',
+        tone: 'warning',
+        duration: 5000
+      }));
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [dispatch]);
 
   const navLinkClass = ({ isActive }) =>
     `rounded-full px-4 py-2 text-sm font-medium transition ${isActive ? 'bg-ink text-sand' : 'text-ink/70 hover:bg-white/60'}`;
@@ -59,6 +151,7 @@ const AppShell = () => {
             {user && user.role === 'admin' && (
               <NavLink to="/admin" className={navLinkClass}>Admin</NavLink>
             )}
+            {user && <NavLink to="/speaker" className={navLinkClass}>Workspace</NavLink>}
             {user && <NavLink to="/my-bookings" className={navLinkClass}>My Tickets</NavLink>}
           </nav>
 
@@ -123,6 +216,11 @@ const AppShell = () => {
                         className="block px-4 py-3 text-sm text-ink hover:bg-sand/60"
                       >My Tickets</Link>
                       <Link
+                        to="/speaker"
+                        onClick={() => setMobileOpen(false)}
+                        className="block px-4 py-3 text-sm text-ink hover:bg-sand/60"
+                      >Workspace</Link>
+                      <Link
                         to="/messages"
                         onClick={() => setMobileOpen(false)}
                         className="block px-4 py-3 text-sm text-ink hover:bg-sand/60"
@@ -163,6 +261,7 @@ const AppShell = () => {
             {user.role === 'admin' && (
               <NavLink to="/admin" className={navLinkClass}>Admin</NavLink>
             )}
+            <NavLink to="/speaker" className={navLinkClass}>Workspace</NavLink>
             <NavLink to="/my-bookings" className={navLinkClass}>My Tickets</NavLink>
             <NavLink to="/profile" className={navLinkClass}>Profile</NavLink>
             <NavLink to="/messages" className={navLinkClass}>Messages</NavLink>
@@ -171,6 +270,7 @@ const AppShell = () => {
       </header>
 
       <NotificationPanel />
+      <PwaInstallPrompt />
       <ToastContainer />
 
       <main id="main-content" className="mx-auto max-w-7xl px-4 py-8 md:px-8 md:py-12">

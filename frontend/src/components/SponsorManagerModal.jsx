@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
-import { formatCurrency } from '../lib/formatters';
+import { formatCurrency, formatDate } from '../lib/formatters';
 import ModalShell from './ModalShell';
 
 const STATUS_STYLES = {
@@ -14,6 +15,14 @@ const PAYMENT_STYLES = {
   unpaid: 'bg-amber-100 text-amber-700',
   paid: 'bg-reef/10 text-reef',
   refunded: 'bg-ember/10 text-ember'
+};
+
+const INTEREST_LABELS = {
+  demo: 'Book demo',
+  pricing: 'Pricing',
+  partnership: 'Partnership',
+  content: 'Resources',
+  general: 'General'
 };
 
 const createEmptyPackageDraft = () => ({
@@ -68,6 +77,7 @@ const SponsorManagerModal = ({ event, onClose, onUpdated }) => {
     sponsorPackages: [],
     sponsors: [],
     applications: [],
+    leads: [],
     totals: {},
     applicationLink: ''
   });
@@ -268,7 +278,7 @@ const SponsorManagerModal = ({ event, onClose, onUpdated }) => {
                   </div>
                 </div>
 
-                <div className="grid gap-3 sm:grid-cols-2">
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                   <div className="rounded-[24px] border border-ink/8 bg-white px-4 py-4">
                     <p className="text-xs uppercase tracking-[0.18em] text-ink/45">Pending</p>
                     <p className="mt-2 font-display text-3xl text-ink">{data.totals?.pendingApplications || 0}</p>
@@ -284,8 +294,16 @@ const SponsorManagerModal = ({ event, onClose, onUpdated }) => {
                     </p>
                   </div>
                   <div className="rounded-[24px] border border-ink/8 bg-white px-4 py-4">
+                    <p className="text-xs uppercase tracking-[0.18em] text-ink/45">Booth Views</p>
+                    <p className="mt-2 font-display text-3xl text-ink">{data.totals?.boothViews || 0}</p>
+                  </div>
+                  <div className="rounded-[24px] border border-ink/8 bg-white px-4 py-4">
                     <p className="text-xs uppercase tracking-[0.18em] text-ink/45">Booth Clicks</p>
                     <p className="mt-2 font-display text-3xl text-dusk">{data.totals?.boothClicks || 0}</p>
+                  </div>
+                  <div className="rounded-[24px] border border-ink/8 bg-white px-4 py-4">
+                    <p className="text-xs uppercase tracking-[0.18em] text-ink/45">Leads Captured</p>
+                    <p className="mt-2 font-display text-3xl text-reef">{data.totals?.leadsCaptured || 0}</p>
                   </div>
                 </div>
               </section>
@@ -616,11 +634,33 @@ const SponsorManagerModal = ({ event, onClose, onUpdated }) => {
                                   Organizer net {formatCurrency(application.payout?.organizerNetAmount || 0, currency)}
                                 </span>
                                 <span className="rounded-full border border-ink/10 bg-white px-3 py-1">
+                                  Booth views {relatedSponsor?.metrics?.boothViews || 0}
+                                </span>
+                                <span className="rounded-full border border-ink/10 bg-white px-3 py-1">
                                   Booth clicks {relatedSponsor?.metrics?.boothClicks || 0}
+                                </span>
+                                <span className="rounded-full border border-ink/10 bg-white px-3 py-1">
+                                  Leads {application.leadsCaptured || 0}
                                 </span>
                               </div>
 
+                              {application.lastLeadCapturedAt && (
+                                <p className="mt-3 text-xs text-ink/45">
+                                  Last lead captured {formatDate(application.lastLeadCapturedAt)}
+                                </p>
+                              )}
+
                               <div className="mt-4 flex flex-wrap gap-2">
+                                {relatedSponsor && (
+                                  <Link
+                                    to={`/events/${event._id}/sponsors/${application.sponsorId}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="rounded-full border border-ink/10 bg-white px-4 py-2 text-sm text-ink/60 transition hover:bg-sand"
+                                  >
+                                    Open booth page
+                                  </Link>
+                                )}
                                 {(application.boothUrl || application.websiteUrl) && (
                                   <a
                                     href={application.boothUrl || application.websiteUrl}
@@ -628,7 +668,7 @@ const SponsorManagerModal = ({ event, onClose, onUpdated }) => {
                                     rel="noreferrer"
                                     className="rounded-full border border-ink/10 bg-white px-4 py-2 text-sm text-ink/60 transition hover:bg-sand"
                                   >
-                                    Preview booth
+                                    External CTA
                                   </a>
                                 )}
                                 {application.logoUrl && (
@@ -700,6 +740,84 @@ const SponsorManagerModal = ({ event, onClose, onUpdated }) => {
                                   Remove sponsor
                                 </button>
                               )}
+                            </div>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+
+              <section className="space-y-4 rounded-[28px] border border-ink/10 bg-white/80 p-5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.2em] text-ink/45">Lead Inbox</p>
+                    <h3 className="mt-1 font-display text-2xl text-ink">Captured sponsor interest</h3>
+                  </div>
+                  <span className="rounded-full bg-sand px-3 py-1 text-xs text-ink/45">
+                    {data.leads?.length || 0} recent lead{data.leads?.length === 1 ? '' : 's'}
+                  </span>
+                </div>
+
+                {!data.leads?.length ? (
+                  <div className="rounded-[24px] bg-sand/50 px-5 py-10 text-center">
+                    <p className="text-sm text-ink/50">
+                      Once attendees share their details from a sponsor booth, they will show up here.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {data.leads.map((lead) => {
+                      const relatedSponsor = sponsorById[lead.sponsorId];
+                      return (
+                        <article key={lead.leadId} className="rounded-[24px] border border-ink/10 bg-sand/55 p-5">
+                          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <h4 className="font-display text-2xl text-ink">{lead.fullName}</h4>
+                                <span className="rounded-full bg-reef/10 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-reef">
+                                  {INTEREST_LABELS[lead.interestType] || lead.interestType}
+                                </span>
+                                <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-ink/50">
+                                  {lead.sponsorCompanyName}
+                                </span>
+                              </div>
+
+                              <div className="mt-2 flex flex-wrap gap-4 text-sm text-ink/60">
+                                <a href={`mailto:${lead.workEmail}`} className="font-medium text-reef hover:underline">
+                                  {lead.workEmail}
+                                </a>
+                                {lead.companyName && <span>{lead.companyName}</span>}
+                                {lead.roleTitle && <span>{lead.roleTitle}</span>}
+                              </div>
+
+                              {lead.message && (
+                                <p className="mt-3 text-sm leading-6 text-ink/70">{lead.message}</p>
+                              )}
+
+                              <p className="mt-3 text-xs text-ink/45">
+                                Captured {formatDate(lead.createdAt)}
+                              </p>
+                            </div>
+
+                            <div className="flex flex-wrap gap-2 lg:w-[260px] lg:justify-end">
+                              {relatedSponsor && (
+                                <Link
+                                  to={`/events/${event._id}/sponsors/${lead.sponsorId}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="rounded-full border border-ink/10 bg-white px-4 py-2 text-sm text-ink/60 transition hover:bg-sand"
+                                >
+                                  Open booth page
+                                </Link>
+                              )}
+                              <a
+                                href={`mailto:${lead.workEmail}?subject=${encodeURIComponent(`Follow-up from ${lead.sponsorCompanyName} on PulseRoom`)}`}
+                                className="rounded-full bg-ink px-4 py-2 text-sm font-semibold text-sand transition hover:bg-ink/90"
+                              >
+                                Email lead
+                              </a>
                             </div>
                           </div>
                         </article>

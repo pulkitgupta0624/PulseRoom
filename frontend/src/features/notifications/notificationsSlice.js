@@ -33,7 +33,8 @@ const notificationsSlice = createSlice({
   initialState: {
     list: [],
     unreadCount: 0,
-    isOpen: false
+    isOpen: false,
+    lastSyncedAt: null
   },
   reducers: {
     toggleNotifications(state) {
@@ -44,17 +45,20 @@ const notificationsSlice = createSlice({
     builder
       .addCase(fetchNotifications.fulfilled, (state, action) => {
         state.list = action.payload;
+        state.unreadCount = action.payload.filter((item) => !item.readAt).length;
+        state.lastSyncedAt = new Date().toISOString();
       })
       .addCase(fetchUnreadCount.fulfilled, (state, action) => {
         state.unreadCount = action.payload;
+        state.lastSyncedAt = new Date().toISOString();
       })
       .addCase(markNotificationRead.fulfilled, (state, action) => {
         state.list = state.list.map((item) => (item._id === action.payload._id ? action.payload : item));
         state.unreadCount = state.list.filter((item) => !item.readAt).length;
+        state.lastSyncedAt = new Date().toISOString();
       });
   }
 });
 
 export const { toggleNotifications } = notificationsSlice.actions;
 export default notificationsSlice.reducer;
-

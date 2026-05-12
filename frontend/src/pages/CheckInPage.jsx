@@ -1,15 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import SectionHeader from '../components/SectionHeader';
 import CameraQrScanner from '../components/CameraQrScanner';
-import OrganizerCheckInStats from '../components/OrganizerCheckInStats';   // ← NEW
+import OrganizerCheckInStats from '../components/OrganizerCheckInStats';
+import SectionHeader from '../components/SectionHeader';
 import { api } from '../lib/api';
 import { formatDate } from '../lib/formatters';
+import { flattenBookingTickets } from '../lib/tickets';
 
 const parseTicketPayload = (value) => {
   try {
     const parsed = JSON.parse(value);
-    if (parsed?.type !== 'pulseroom-ticket') return null;
+    if (parsed?.type !== 'pulseroom-ticket') {
+      return null;
+    }
     return parsed;
   } catch {
     return null;
@@ -63,13 +66,15 @@ const CheckInPage = () => {
       const response = await api.post(`/api/bookings/${parsed.bookingId}/check-in`, {
         token: parsed.token
       });
-      const { booking, alreadyCheckedIn } = response.data.data;
+      const { booking, ticket, alreadyCheckedIn } = response.data.data;
+      const attendeeName = ticket?.attendee?.name || booking.attendee?.name || 'Attendee';
       setFeedback({
         tone: alreadyCheckedIn ? 'info' : 'success',
         message: alreadyCheckedIn
-          ? `${booking.attendee?.name || 'Attendee'} was already checked in.`
-          : `${booking.attendee?.name || 'Attendee'} checked in successfully.`,
-        booking
+          ? `${attendeeName} was already checked in.`
+          : `${attendeeName} checked in successfully.`,
+        booking,
+        ticket
       });
       await loadData();
     } catch (error) {
@@ -82,28 +87,20 @@ const CheckInPage = () => {
     }
   }, [eventId, loadData]);
 
-  const recentCheckIns = useMemo(
-    () => bookings
-      .filter((booking) => booking.ticket?.checkedInAt)
-      .sort((left, right) => new Date(right.ticket.checkedInAt) - new Date(left.ticket.checkedInAt))
-      .slice(0, 8),
-    [bookings]
-  );
+  const recentCheckIns = flattenBookingTickets(bookings)
+    .filter(({ ticket }) => ticket.checkedInAt)
+    .sort((left, right) => new Date(right.ticket.checkedInAt) - new Date(left.ticket.checkedInAt))
+    .slice(0, 8);
 
   return (
     <div className="space-y-8">
       <SectionHeader
         eyebrow="Venue Desk"
         title={event ? `${event.title} check-in` : 'Check-in desk'}
-        description="Scan attendee QR codes and mark tickets as checked in in real time."
+        description="Scan attendee QR codes and mark each seat as checked in in real time."
       />
 
-      {/*
-        OrganizerCheckInStats replaces the three hand-rolled stat tiles that were
-        here before. It polls /api/bookings/event/:id every 15 s and shows a
-        progress bar — no prop drilling needed.
-      */}
-      <OrganizerCheckInStats eventId={eventId} />   {/* ← NEW */}
+      <OrganizerCheckInStats eventId={eventId} />
 
       <section className="grid gap-6 xl:grid-cols-[1.1fr,0.9fr]">
         <div className="space-y-4">
@@ -145,18 +142,26 @@ const CheckInPage = () => {
             >
               <p
                 className={`font-display text-2xl ${
-                  feedback.tone === 'error' ? 'text-ember' : feedback.tone === 'info' ? 'text-dusk' : 'text-reef'
+                  feedback.tone === 'error'
+                    ? 'text-ember'
+                    : feedback.tone === 'info'
+                      ? 'text-dusk'
+                      : 'text-reef'
                 }`}
               >
-                {feedback.tone === 'error' ? 'Scan issue' : feedback.tone === 'info' ? 'Already checked in' : 'Check-in complete'}
+                {feedback.tone === 'error'
+                  ? 'Scan issue'
+                  : feedback.tone === 'info'
+                    ? 'Already checked in'
+                    : 'Check-in complete'}
               </p>
               <p className="mt-2 text-sm text-ink/70">{feedback.message}</p>
-              {feedback.booking && (
+              {feedback.ticket && (
                 <div className="mt-4 rounded-2xl bg-white/80 p-4">
-                  <p className="font-semibold text-ink">{feedback.booking.attendee?.name}</p>
-                  <p className="mt-1 text-sm text-ink/55">{feedback.booking.attendee?.email}</p>
+                  <p className="font-semibold text-ink">{feedback.ticket.attendee?.name}</p>
+                  <p className="mt-1 text-sm text-ink/55">{feedback.ticket.attendee?.email}</p>
                   <p className="mt-2 text-xs uppercase tracking-[0.18em] text-ink/40">
-                    {feedback.booking.bookingNumber} · {feedback.booking.tierName}
+                    {feedback.ticket.ticketNumber} · {feedback.booking.tierName}
                   </p>
                 </div>
               )}
@@ -179,20 +184,25 @@ const CheckInPage = () => {
 
             {loading ? (
               <div className="mt-6 flex items-center justify-center py-10">
-                <div className="h-8 w-8 rounded-full border-2 border-reef border-t-transparent animate-spin" />
+                <div className="h-8 w-8 animate-spin rounded-full border-2 border-reef border-t-transparent" />
               </div>
             ) : recentCheckIns.length ? (
               <div className="mt-5 space-y-3">
-                {recentCheckIns.map((booking) => (
-                  <div key={booking._id} className="rounded-2xl bg-sand/65 px-4 py-4">
+                {recentCheckIns.map(({ booking, ticket }) => (
+                  <div
+                    key={`${booking._id}-${ticket.ticketId || ticket.ticketNumber}`}
+                    className="rounded-2xl bg-sand/65 px-4 py-4"
+                  >
                     <div className="flex items-start justify-between gap-4">
                       <div>
-                        <p className="font-semibold text-ink">{booking.attendee?.name}</p>
-                        <p className="mt-1 text-sm text-ink/55">{booking.attendee?.email}</p>
-                        <p className="mt-2 text-xs text-ink/40">{booking.bookingNumber} · {booking.tierName}</p>
+                        <p className="font-semibold text-ink">{ticket.attendee?.name}</p>
+                        <p className="mt-1 text-sm text-ink/55">{ticket.attendee?.email}</p>
+                        <p className="mt-2 text-xs text-ink/40">
+                          {ticket.ticketNumber} · {booking.tierName}
+                        </p>
                       </div>
                       <span className="rounded-full bg-reef/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-reef">
-                        {formatDate(booking.ticket.checkedInAt)}
+                        {formatDate(ticket.checkedInAt)}
                       </span>
                     </div>
                   </div>

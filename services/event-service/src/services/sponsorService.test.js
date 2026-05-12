@@ -1,4 +1,6 @@
 const {
+  buildSponsorRecordFromApplication,
+  buildSponsorRevenueSummary,
   calculateSponsorRevenueBreakdown,
   filterSponsorsForViewer,
   syncSponsorPackageSlots
@@ -75,6 +77,114 @@ describe('sponsorService', () => {
 
     expect(visibleSponsors).toHaveLength(1);
     expect(visibleSponsors[0].companyName).toBe('Visible Co');
+    expect(visibleSponsors[0].paymentStatus).toBeUndefined();
+  });
+
+  test('buildSponsorRecordFromApplication preserves booth funnel metrics on updates', () => {
+    const nextSponsor = buildSponsorRecordFromApplication({
+      application: {
+        sponsorId: 'sponsor-1',
+        packageName: 'Gold',
+        companyName: 'Visible Co',
+        price: 4000,
+        currency: 'USD'
+      },
+      sponsorPackage: {
+        packageId: 'gold-1',
+        tier: 'gold',
+        name: 'Gold',
+        currency: 'USD'
+      },
+      existingSponsor: {
+        sponsorId: 'sponsor-1',
+        metrics: {
+          boothViews: 18,
+          boothClicks: 7,
+          leadsCaptured: 3
+        }
+      }
+    });
+
+    expect(nextSponsor.metrics).toEqual({
+      boothViews: 18,
+      boothClicks: 7,
+      leadsCaptured: 3
+    });
+  });
+
+  test('buildSponsorRevenueSummary includes booth funnel totals', () => {
+    const summary = buildSponsorRevenueSummary([
+      {
+        status: 'active',
+        paymentStatus: 'paid',
+        featuredCallout: true,
+        price: 5000,
+        metrics: {
+          boothViews: 22,
+          boothClicks: 9,
+          leadsCaptured: 4
+        }
+      },
+      {
+        status: 'approved',
+        paymentStatus: 'unpaid',
+        featuredCallout: false,
+        price: 2500,
+        metrics: {
+          boothViews: 8,
+          boothClicks: 2,
+          leadsCaptured: 1
+        }
+      }
+    ]);
+
+    expect(summary.boothViews).toBe(30);
+    expect(summary.boothClicks).toBe(11);
+    expect(summary.leadsCaptured).toBe(5);
+    expect(summary.activeSponsors).toBe(1);
+    expect(summary.paidSponsors).toBe(1);
+  });
+
+  test('an activated paid sponsor becomes publicly visible as a booth placement', () => {
+    const activatedSponsor = buildSponsorRecordFromApplication({
+      application: {
+        sponsorId: 'sponsor-2',
+        packageName: 'Gold Booth',
+        packageId: 'pkg-gold',
+        companyName: 'Booth Co',
+        boothUrl: 'https://booth.example.com',
+        websiteUrl: 'https://booth.example.com/site',
+        description: 'Launch partner',
+        price: 7500,
+        currency: 'INR'
+      },
+      sponsorPackage: {
+        packageId: 'pkg-gold',
+        tier: 'gold',
+        name: 'Gold Booth',
+        currency: 'INR',
+        showOnEventPage: true,
+        showInLiveRoom: true
+      },
+      overrides: {
+        status: 'active',
+        paymentStatus: 'paid',
+        showOnEventPage: true,
+        showInLiveRoom: true
+      }
+    });
+
+    const visibleSponsors = filterSponsorsForViewer([activatedSponsor], {
+      viewerIsOwner: false
+    });
+
+    expect(visibleSponsors).toHaveLength(1);
+    expect(visibleSponsors[0]).toMatchObject({
+      sponsorId: 'sponsor-2',
+      companyName: 'Booth Co',
+      status: 'active',
+      boothUrl: 'https://booth.example.com'
+    });
     expect(visibleSponsors[0].paymentStatus).toBeUndefined();
   });
 });

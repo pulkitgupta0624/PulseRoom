@@ -271,7 +271,9 @@ const buildSponsorRecordFromApplication = ({
       '',
     payout,
     metrics: {
-      boothClicks: toNumber(existingSponsor?.metrics?.boothClicks)
+      boothViews: toNumber(existingSponsor?.metrics?.boothViews),
+      boothClicks: toNumber(existingSponsor?.metrics?.boothClicks),
+      leadsCaptured: toNumber(existingSponsor?.metrics?.leadsCaptured)
     },
     createdAt: existingSponsor?.createdAt || application.createdAt || new Date(),
     updatedAt: new Date()
@@ -281,8 +283,12 @@ const buildSponsorRecordFromApplication = ({
 const buildSponsorRevenueSummary = (sponsors = []) =>
   sponsors.reduce(
     (summary, sponsor) => {
+      const boothViews = toNumber(sponsor.metrics?.boothViews);
       const boothClicks = toNumber(sponsor.metrics?.boothClicks);
+      const leadsCaptured = toNumber(sponsor.metrics?.leadsCaptured);
+      summary.boothViews += boothViews;
       summary.boothClicks += boothClicks;
+      summary.leadsCaptured += leadsCaptured;
 
       if (sponsor.status === 'active') {
         summary.activeSponsors += 1;
@@ -313,7 +319,9 @@ const buildSponsorRevenueSummary = (sponsors = []) =>
       activeSponsors: 0,
       featuredSponsors: 0,
       paidSponsors: 0,
-      boothClicks: 0
+      boothViews: 0,
+      boothClicks: 0,
+      leadsCaptured: 0
     }
   );
 

@@ -1,15 +1,15 @@
 import { useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { Link } from 'react-router-dom';
-import SectionHeader from '../components/SectionHeader';
 import BookingNetworkingPanel from '../components/BookingNetworkingPanel';
-import PersonalAgendaPanel from '../components/PersonalAgendaPanel';
-import QRCodeTicket from '../components/QRCodeTicket';
-import ReplayAccessButton from '../components/ReplayAccessButton';
-import TicketDownloadButton from '../components/TicketDownloadButton';
+import BookingTicketManager from '../components/BookingTicketManager';
 import InvoiceDownloadButton from '../components/InvoiceDownloadButton';
+import PersonalAgendaPanel from '../components/PersonalAgendaPanel';
+import ReplayAccessButton from '../components/ReplayAccessButton';
+import SectionHeader from '../components/SectionHeader';
 import { fetchMyBookings, requestRefund } from '../features/bookings/bookingsSlice';
 import { formatCurrency, formatDate } from '../lib/formatters';
+import { getBookingCheckedInCount } from '../lib/tickets';
 
 const STATUS_STYLES = {
   confirmed: 'bg-reef/10 text-reef',
@@ -46,7 +46,7 @@ const BookingsPage = () => {
       <SectionHeader
         eyebrow="Attendee"
         title="My tickets"
-        description="Your booking history, QR entry passes, invoices, and refund controls in one place."
+        description="Your booking history, seat-level QR passes, invoices, refunds, and attendee transfers in one place."
       />
 
       {loading && <p className="text-sm text-ink/50">Loading your bookings...</p>}
@@ -105,10 +105,12 @@ const BookingCard = ({ booking, onRefund, refundingId }) => {
   const isRefunding = refundingId === booking._id;
   const isUpcomingConfirmed =
     booking.status === 'confirmed' && new Date(booking.eventSnapshot?.startsAt) > new Date();
+  const checkedInCount = getBookingCheckedInCount(booking);
+  const ticketCount = booking.ticketCount || booking.quantity || 0;
 
   return (
     <div className="rounded-[28px] border border-ink/10 bg-white/80 p-5 shadow-bloom">
-      <div className="grid gap-5 lg:grid-cols-[1fr,280px]">
+      <div className="space-y-5">
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="font-display text-xl text-ink">{booking.eventSnapshot?.title || 'Event'}</h3>
@@ -119,9 +121,9 @@ const BookingCard = ({ booking, onRefund, refundingId }) => {
             >
               {booking.status}
             </span>
-            {booking.ticket?.checkedIn && (
+            {checkedInCount > 0 && (
               <span className="rounded-full bg-dusk/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-dusk">
-                checked in
+                {checkedInCount}/{ticketCount} checked in
               </span>
             )}
           </div>
@@ -148,12 +150,8 @@ const BookingCard = ({ booking, onRefund, refundingId }) => {
 
           {booking.attendee?.name && (
             <p className="text-xs text-ink/45">
-              Attendee: {booking.attendee.name} · {booking.attendee.email}
+              Booking contact: {booking.attendee.name} · {booking.attendee.email}
             </p>
-          )}
-
-          {booking.ticket?.checkedInAt && (
-            <p className="text-xs text-dusk">Checked in on {formatDate(booking.ticket.checkedInAt)}</p>
           )}
 
           <div className="flex flex-wrap items-center gap-2 pt-2">
@@ -172,7 +170,6 @@ const BookingCard = ({ booking, onRefund, refundingId }) => {
               </Link>
             )}
             <ReplayAccessButton booking={booking} />
-            <TicketDownloadButton booking={booking} />
             <InvoiceDownloadButton booking={booking} />
 
             {canRefund && (
@@ -186,25 +183,21 @@ const BookingCard = ({ booking, onRefund, refundingId }) => {
               </button>
             )}
           </div>
-
-          {isUpcomingConfirmed && (
-            <>
-              <BookingNetworkingPanel booking={booking} />
-              <PersonalAgendaPanel
-                eventId={booking.eventId}
-                eventTitle={booking.eventSnapshot?.title}
-                headline="Personal agenda"
-                description="Save the sessions you want, spot conflicts before event day, and export your plan."
-              />
-            </>
-          )}
         </div>
 
-        <QRCodeTicket
-          value={booking.ticket?.qrCodeValue}
-          checkedIn={booking.ticket?.checkedIn}
-          checkedInAt={booking.ticket?.checkedInAt}
-        />
+        <BookingTicketManager booking={booking} />
+
+        {isUpcomingConfirmed && (
+          <>
+            <BookingNetworkingPanel booking={booking} />
+            <PersonalAgendaPanel
+              eventId={booking.eventId}
+              eventTitle={booking.eventSnapshot?.title}
+              headline="Personal agenda"
+              description="Save the sessions you want, spot conflicts before event day, and export your plan."
+            />
+          </>
+        )}
       </div>
     </div>
   );

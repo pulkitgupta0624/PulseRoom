@@ -64,6 +64,10 @@ const {
   serializeEventForViewer
 } = require('../services/referralService');
 const {
+  buildSpeakerPortalEntry,
+  normalizeEmail
+} = require('../services/speakerPortalService');
+const {
   assertPromoCanBeApplied,
   buildPromoCodeRecord,
   calculatePromoDiscountAmount,
@@ -102,6 +106,58 @@ const normalizeAcceptedCurrencies = ({ acceptedCurrencies = [], ticketTiers = []
   return [...new Set(currencies.length ? currencies : ['INR'])];
 };
 
+const normalizeSpeakerAssignments = (speakers = []) =>
+  (Array.isArray(speakers) ? speakers : [])
+    .map((speaker) => ({
+      ...speaker,
+      userId: String(speaker.userId || '').trim(),
+      email: normalizeEmail(speaker.email),
+      name: String(speaker.name || '').trim(),
+      title: String(speaker.title || '').trim(),
+      company: String(speaker.company || '').trim(),
+      bio: String(speaker.bio || '').trim(),
+      avatarUrl: String(speaker.avatarUrl || '').trim()
+    }))
+    .filter((speaker) => speaker.name);
+
+const normalizeTeamAssignments = (teamMembers = []) => {
+  const seen = new Set();
+
+  return (Array.isArray(teamMembers) ? teamMembers : [])
+    .map((member) => ({
+      ...member,
+      userId: String(member.userId || '').trim(),
+      email: normalizeEmail(member.email),
+      name: String(member.name || '').trim(),
+      role: String(member.role || '').trim(),
+      notes: String(member.notes || '').trim()
+    }))
+    .filter((member) => member.name && member.email && member.role)
+    .filter((member) => {
+      const key = `${member.email}:${member.role}`;
+      if (seen.has(key)) {
+        return false;
+      }
+
+      seen.add(key);
+      return true;
+    });
+};
+
+const normalizeCollaboratorPayload = (payload = {}) => {
+  const nextPayload = { ...payload };
+
+  if (payload.speakers) {
+    nextPayload.speakers = normalizeSpeakerAssignments(payload.speakers);
+  }
+
+  if (payload.teamMembers) {
+    nextPayload.teamMembers = normalizeTeamAssignments(payload.teamMembers);
+  }
+
+  return nextPayload;
+};
+
 const assertInternalBookingService = (req) => {
   if (req.headers['x-service-name'] !== 'booking-service') {
     throw new AppError('Forbidden', 403, 'forbidden');
@@ -119,7 +175,13 @@ const assertCanViewEvent = (event, viewer) => {
     return;
   }
 
-  const canAccessPrivateEvent = viewer && (viewer.sub === event.organizerId || viewer.role === Roles.ADMIN);
+  const canAccessPrivateEvent =
+    viewer &&
+    (
+      viewer.sub === event.organizerId ||
+      viewer.role === Roles.ADMIN ||
+      Boolean(buildSpeakerPortalEntry(event, viewer))
+    );
   if (!canAccessPrivateEvent) {
     throw new AppError('Event not available', 403, 'event_private');
   }
@@ -1077,7 +1139,9 @@ router.post(
   validateSchema(createEventSchema),
   asyncHandler(async (req, res) => {
     const slugBase = slugify(req.body.title);
-    const normalizedPayload = normalizeEventFinanceSettings(req.body);
+    const normalizedPayload = normalizeCollaboratorPayload(
+      normalizeEventFinanceSettings(req.body)
+    );
     const event = new Event({
       ...normalizedPayload,
       pageTheme: buildEventPageTheme(req.body.pageTheme || {}),
@@ -1106,6 +1170,34 @@ router.post(
       }),
       201
     );
+  })
+);
+
+router.get(
+  '/speaker/portal',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const query = {
+      $or: [
+        { 'speakers.userId': req.user.sub },
+        { 'speakers.email': normalizeEmail(req.user.email) },
+        { 'teamMembers.userId': req.user.sub },
+        { 'teamMembers.email': normalizeEmail(req.user.email) }
+      ]
+    };
+
+    const events = await Event.find(query)
+      .select('organizerId title summary coverImageUrl type status startsAt endsAt venueName city country speakers teamMembers sessions')
+      .sort({ startsAt: 1 })
+      .lean();
+
+    const assignments = events
+      .map((event) => buildSpeakerPortalEntry(event, req.user))
+      .filter(Boolean);
+
+    sendSuccess(res, {
+      assignments
+    });
   })
 );
 
@@ -1209,7 +1301,7 @@ router.get(
     assertInternalService(req, ['live-service', 'notification-service', 'booking-service', 'chat-service']);
 
     const event = await Event.findById(req.params.eventId)
-      .select('organizerId title startsAt endsAt timezone venueName visibility status networking speakers sessions')
+      .select('organizerId title startsAt endsAt timezone venueName visibility status networking speakers teamMembers sessions')
       .lean();
 
     if (!event) {
@@ -1232,6 +1324,13 @@ router.get(
         name: speaker.name,
         title: speaker.title || '',
         company: speaker.company || ''
+      })),
+      teamMembers: (event.teamMembers || []).map((member) => ({
+        userId: member.userId || '',
+        email: member.email || '',
+        name: member.name || '',
+        role: member.role || '',
+        notes: member.notes || ''
       })),
       sessions: (event.sessions || []).map((session) => ({
         title: session.title,
@@ -1542,7 +1641,9 @@ router.patch(
       throw new AppError('Forbidden', 403, 'forbidden');
     }
 
-    const nextPayload = normalizeEventFinanceSettings(req.body, event);
+    const nextPayload = normalizeCollaboratorPayload(
+      normalizeEventFinanceSettings(req.body, event)
+    );
     if (req.body.pageTheme) {
       nextPayload.pageTheme = buildEventPageTheme({
         ...(event.pageTheme || {}),

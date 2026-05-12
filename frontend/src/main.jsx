@@ -7,6 +7,14 @@ import { router } from './app/router';
 import ErrorBoundary from './components/ErrorBoundary';
 import './styles/index.css';
 
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      // Ignore service worker registration failures outside supported hosts.
+    });
+  });
+}
+
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <ErrorBoundary>

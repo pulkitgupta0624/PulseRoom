@@ -24,6 +24,34 @@ const savedAgendaSessionSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const bookingTicketSchema = new mongoose.Schema(
+  {
+    ticketId: {
+      type: String,
+      required: true
+    },
+    position: {
+      type: Number,
+      required: true
+    },
+    attendee: {
+      name: String,
+      email: String
+    },
+    qrCodeToken: {
+      type: String,
+      index: true,
+      sparse: true,
+      unique: true
+    },
+    assignedAt: Date,
+    transferredAt: Date,
+    checkedInAt: Date,
+    checkedInBy: String
+  },
+  { _id: false }
+);
+
 const bookingSchema = new mongoose.Schema(
   {
     bookingNumber: {
@@ -102,6 +130,10 @@ const bookingSchema = new mongoose.Schema(
       name: String,
       email: String
     },
+    tickets: {
+      type: [bookingTicketSchema],
+      default: []
+    },
     referral: {
       code: {
         type: String,
@@ -157,12 +189,7 @@ const bookingSchema = new mongoose.Schema(
       invoiceNumber: String,
       issuedAt: Date
     },
-    qrCodeToken: {
-      type: String,
-      index: true,
-      sparse: true,
-      unique: true
-    },
+    qrCodeToken: String,
     paymentId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Payment'

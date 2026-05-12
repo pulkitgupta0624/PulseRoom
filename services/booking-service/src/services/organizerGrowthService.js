@@ -1,4 +1,9 @@
 const { BookingStatus } = require('@pulseroom/common');
+const {
+  buildBookingTickets,
+  buildTicketNumber,
+  getCheckedInTicketCount
+} = require('./ticketService');
 
 const REVENUE_MILESTONES = Object.freeze([100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000]);
 const BOOKING_RATE_WINDOW_MS = 60 * 60 * 1000;
@@ -33,6 +38,15 @@ const buildLocationRegion = (location) => {
 
 const getReportingAmount = (booking) =>
   normalizeCount(booking?.pricing?.reportingAmount ?? booking?.amount);
+
+const getAttendeeCount = (booking) => {
+  const quantity = normalizeCount(booking?.quantity);
+  if (quantity > 0) {
+    return quantity;
+  }
+
+  return Array.isArray(booking?.tickets) ? booking.tickets.length : 0;
+};
 
 const buildRate = (value, total) => {
   if (!total) {
@@ -174,15 +188,14 @@ const buildOrganizerGrowthDashboard = ({
 
   for (const booking of confirmedBookings) {
     const eventId = normalizeId(booking.eventId);
-    const quantity = normalizeCount(booking.quantity);
+    const quantity = getAttendeeCount(booking);
     const reportingAmount = getReportingAmount(booking);
     const eventMetrics = eventBreakdown.get(eventId);
+    const checkedInCount = getCheckedInTicketCount(booking);
 
     revenue += reportingAmount;
     attendees += quantity;
-    if (booking.checkedInAt) {
-      checkedIns += quantity;
-    }
+    checkedIns += checkedInCount;
 
     if (eventMetrics) {
       eventMetrics.confirmedBookings += 1;
@@ -255,10 +268,12 @@ const buildOrganizerGrowthDashboard = ({
         bookingNumber: booking.bookingNumber,
         eventId: booking.eventId,
         eventTitle: booking.eventSnapshot?.title || 'Event',
-        attendeeName: booking.attendee?.name || 'Guest',
-        attendeeEmail: booking.attendee?.email || '',
+        attendeeName:
+          buildBookingTickets(booking)[0]?.attendee?.name || booking.attendee?.name || 'Guest',
+        attendeeEmail:
+          buildBookingTickets(booking)[0]?.attendee?.email || booking.attendee?.email || '',
         attendeeLocation: locationByUserId.get(normalizeId(booking.userId)) || 'Unknown',
-        quantity: normalizeCount(booking.quantity),
+        quantity: getAttendeeCount(booking),
         reportingAmount: getReportingAmount(booking),
         confirmedAt: booking.confirmedAt || booking.createdAt
       })),
@@ -300,6 +315,9 @@ const buildEventBookingsCsv = ({
     [
       'bookingId',
       'bookingNumber',
+      'ticketId',
+      'ticketNumber',
+      'ticketPosition',
       'status',
       'eventId',
       'eventTitle',
@@ -321,6 +339,8 @@ const buildEventBookingsCsv = ({
       'createdAt',
       'confirmedAt',
       'checkedInAt',
+      'ticketAssignedAt',
+      'ticketTransferredAt',
       'cancelledAt',
       'refundedAt',
       'invoiceNumber'
@@ -328,34 +348,44 @@ const buildEventBookingsCsv = ({
   ];
 
   for (const booking of bookings) {
-    rows.push([
-      booking._id?.toString?.() || normalizeId(booking._id),
-      booking.bookingNumber,
-      booking.status,
-      booking.eventId,
-      event?.title || booking.eventSnapshot?.title || 'Event',
-      booking.userId,
-      booking.attendee?.name || '',
-      booking.attendee?.email || '',
-      locationByUserId.get(normalizeId(booking.userId)) || '',
-      booking.tierId,
-      booking.tierName,
-      normalizeCount(booking.quantity),
-      normalizeCount(booking.amount),
-      booking.currency || '',
-      getReportingAmount(booking),
-      booking.pricing?.reportingCurrency || reportingCurrency,
-      booking.promoCode?.code || '',
-      normalizeCount(booking.promoCode?.discountAmount),
-      booking.referral?.code || '',
-      normalizeCount(booking.referral?.discountAmount),
-      toIsoString(booking.createdAt),
-      toIsoString(booking.confirmedAt),
-      toIsoString(booking.checkedInAt),
-      toIsoString(booking.cancelledAt),
-      toIsoString(booking.refundedAt),
-      booking.invoice?.invoiceNumber || ''
-    ]);
+    const tickets = buildBookingTickets(booking);
+    const attendeeLocation = locationByUserId.get(normalizeId(booking.userId)) || '';
+
+    for (const ticket of tickets) {
+      rows.push([
+        booking._id?.toString?.() || normalizeId(booking._id),
+        booking.bookingNumber,
+        ticket.ticketId || '',
+        buildTicketNumber(booking, ticket),
+        normalizeCount(ticket.position, 1),
+        booking.status,
+        booking.eventId,
+        event?.title || booking.eventSnapshot?.title || 'Event',
+        booking.userId,
+        ticket.attendee?.name || booking.attendee?.name || '',
+        ticket.attendee?.email || booking.attendee?.email || '',
+        attendeeLocation,
+        booking.tierId,
+        booking.tierName,
+        normalizeCount(booking.quantity),
+        normalizeCount(booking.amount),
+        booking.currency || '',
+        getReportingAmount(booking),
+        booking.pricing?.reportingCurrency || reportingCurrency,
+        booking.promoCode?.code || '',
+        normalizeCount(booking.promoCode?.discountAmount),
+        booking.referral?.code || '',
+        normalizeCount(booking.referral?.discountAmount),
+        toIsoString(booking.createdAt),
+        toIsoString(booking.confirmedAt),
+        toIsoString(ticket.checkedInAt || booking.checkedInAt),
+        toIsoString(ticket.assignedAt),
+        toIsoString(ticket.transferredAt),
+        toIsoString(booking.cancelledAt),
+        toIsoString(booking.refundedAt),
+        booking.invoice?.invoiceNumber || ''
+      ]);
+    }
   }
 
   return rows.map((row) => row.map(escapeCsvValue).join(',')).join('\n');

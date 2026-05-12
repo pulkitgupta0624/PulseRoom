@@ -6,7 +6,7 @@ import { formatDate } from '../lib/formatters';
 const NotificationPanel = () => {
   const dispatch = useDispatch();
   const { user } = useSelector((state) => state.auth);
-  const { list, isOpen } = useSelector((state) => state.notifications);
+  const { list, isOpen, unreadCount, lastSyncedAt } = useSelector((state) => state.notifications);
 
   useEffect(() => {
     if (user && isOpen) {
@@ -23,6 +23,10 @@ const NotificationPanel = () => {
       <div className="mb-4">
         <p className="text-xs uppercase tracking-[0.28em] text-reef">Updates</p>
         <h3 className="mt-2 font-display text-2xl">Notifications</h3>
+        <p className="mt-2 text-xs text-ink/50">
+          {unreadCount > 0 ? `${unreadCount} unread` : 'All caught up'}
+          {lastSyncedAt ? ` - synced ${formatDate(lastSyncedAt)}` : ''}
+        </p>
       </div>
       <div className="max-h-[60vh] space-y-3 overflow-y-auto">
         {!list.length ? <p className="text-sm text-ink/65">New confirmations and reminders will show up here.</p> : null}
