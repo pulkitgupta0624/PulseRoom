@@ -41,10 +41,16 @@ const checkInSchema = Joi.object({
   token: Joi.string().min(16).required()
 });
 
+const agendaSessionUpdateSchema = Joi.object({
+  sessionKey: Joi.string().min(3).max(200).required(),
+  saved: Joi.boolean().required()
+});
+
 module.exports = {
   checkoutSchema,
   quoteSchema,
   confirmPaymentSchema,
   joinWaitlistSchema,
-  checkInSchema
+  checkInSchema,
+  agendaSessionUpdateSchema
 };

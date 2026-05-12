@@ -45,4 +45,70 @@ const downloadTextFile = ({
   });
 };
 
-export { downloadEventBookingsCsv, downloadTextFile };
+const sanitizeFileName = (value, fallback = 'download') =>
+  String(value || fallback)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || fallback;
+
+const escapeIcsText = (value) =>
+  String(value || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/\r?\n/g, '\\n')
+    .replace(/,/g, '\\,')
+    .replace(/;/g, '\\;');
+
+const toIcsDate = (value) =>
+  new Date(value || Date.now())
+    .toISOString()
+    .replace(/[-:]/g, '')
+    .replace(/\.\d{3}Z$/, 'Z');
+
+const downloadAgendaCalendar = ({ eventTitle, sessions = [], venueName = '' }) => {
+  const calendarLines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//PulseRoom//Personal Agenda//EN',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH'
+  ];
+
+  sessions.forEach((session, index) => {
+    calendarLines.push('BEGIN:VEVENT');
+    calendarLines.push(`UID:${escapeIcsText(session.sessionKey || `session-${index + 1}`)}@pulseroom`);
+    calendarLines.push(`DTSTAMP:${toIcsDate(Date.now())}`);
+    calendarLines.push(`DTSTART:${toIcsDate(session.startsAt)}`);
+    calendarLines.push(`DTEND:${toIcsDate(session.endsAt || session.startsAt)}`);
+    calendarLines.push(`SUMMARY:${escapeIcsText(session.title || 'Session')}`);
+
+    const description = [
+      session.description,
+      Array.isArray(session.speakerNames) && session.speakerNames.length
+        ? `Speakers: ${session.speakerNames.join(', ')}`
+        : ''
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    if (description) {
+      calendarLines.push(`DESCRIPTION:${escapeIcsText(description)}`);
+    }
+
+    const location = [venueName, session.roomLabel].filter(Boolean).join(' - ');
+    if (location) {
+      calendarLines.push(`LOCATION:${escapeIcsText(location)}`);
+    }
+
+    calendarLines.push('END:VEVENT');
+  });
+
+  calendarLines.push('END:VCALENDAR');
+
+  downloadTextFile({
+    content: calendarLines.join('\r\n'),
+    fileName: `${sanitizeFileName(eventTitle, 'event')}-agenda.ics`,
+    mimeType: 'text/calendar;charset=utf-8'
+  });
+};
+
+export { downloadAgendaCalendar, downloadEventBookingsCsv, downloadTextFile };

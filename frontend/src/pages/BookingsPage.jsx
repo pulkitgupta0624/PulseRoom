@@ -3,6 +3,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { Link } from 'react-router-dom';
 import SectionHeader from '../components/SectionHeader';
 import BookingNetworkingPanel from '../components/BookingNetworkingPanel';
+import PersonalAgendaPanel from '../components/PersonalAgendaPanel';
 import QRCodeTicket from '../components/QRCodeTicket';
 import ReplayAccessButton from '../components/ReplayAccessButton';
 import TicketDownloadButton from '../components/TicketDownloadButton';
@@ -186,7 +187,17 @@ const BookingCard = ({ booking, onRefund, refundingId }) => {
             )}
           </div>
 
-          {isUpcomingConfirmed && <BookingNetworkingPanel booking={booking} />}
+          {isUpcomingConfirmed && (
+            <>
+              <BookingNetworkingPanel booking={booking} />
+              <PersonalAgendaPanel
+                eventId={booking.eventId}
+                eventTitle={booking.eventSnapshot?.title}
+                headline="Personal agenda"
+                description="Save the sessions you want, spot conflicts before event day, and export your plan."
+              />
+            </>
+          )}
         </div>
 
         <QRCodeTicket

@@ -1,6 +1,29 @@
 const mongoose = require('mongoose');
 const { BookingStatus } = require('@pulseroom/common');
 
+const savedAgendaSessionSchema = new mongoose.Schema(
+  {
+    sessionKey: {
+      type: String,
+      required: true
+    },
+    title: {
+      type: String,
+      required: true
+    },
+    description: String,
+    startsAt: Date,
+    endsAt: Date,
+    roomLabel: String,
+    speakerNames: {
+      type: [String],
+      default: []
+    },
+    savedAt: Date
+  },
+  { _id: false }
+);
+
 const bookingSchema = new mongoose.Schema(
   {
     bookingNumber: {
@@ -122,6 +145,13 @@ const bookingSchema = new mongoose.Schema(
       title: String,
       startsAt: Date,
       organizerId: String
+    },
+    savedAgenda: {
+      sessions: {
+        type: [savedAgendaSessionSchema],
+        default: []
+      },
+      updatedAt: Date
     },
     invoice: {
       invoiceNumber: String,

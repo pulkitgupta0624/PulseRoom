@@ -6,6 +6,7 @@ import EventCapacityBar from '../components/EventCapacityBar';
 import EventReportModal from '../components/EventReportModal';
 import AddToCalendarButton from '../components/AddToCalendarButton';
 import EventConcierge from '../components/EventConcierge';
+import PersonalAgendaPanel from '../components/PersonalAgendaPanel';
 import EventSponsorSection from '../components/EventSponsorSection';
 import StripeCheckoutModal from '../components/StripeCheckoutModal';
 import StarRatingInput from '../components/StarRatingInput';
@@ -1469,20 +1470,11 @@ const EventDetailPage = () => {
       <section className="grid gap-8 lg:grid-cols-[1fr,1fr]">
         <div className="space-y-6 rounded-[32px] border border-ink/10 bg-white/75 p-6 shadow-bloom">
           <SectionHeader eyebrow="Agenda" title="Sessions" description="Structured programming for the event timeline." />
-          {!event.sessions?.length && <p className="text-sm text-ink/50">No sessions scheduled yet.</p>}
-          <div className="space-y-4">
-            {(event.sessions || []).map((session, index) => (
-              <div key={`${session.title}-${index}`} className="rounded-[24px] bg-sand p-4">
-                <p className="text-sm font-semibold text-ink">{session.title}</p>
-                {session.description && <p className="mt-1.5 text-sm text-ink/70">{session.description}</p>}
-                <div className="mt-2 flex flex-wrap gap-2 text-xs uppercase tracking-[0.15em] text-ink/45">
-                  <span>{formatDate(session.startsAt)}</span>
-                  {session.roomLabel && <span>| {session.roomLabel}</span>}
-                  {session.speakerNames?.length > 0 && <span>| {session.speakerNames.join(', ')}</span>}
-                </div>
-              </div>
-            ))}
-          </div>
+          <PersonalAgendaPanel
+            eventId={eventId}
+            eventTitle={event.title}
+            fallbackSessions={event.sessions || []}
+          />
         </div>
 
         <div className="space-y-6 rounded-[32px] border border-ink/10 bg-white/75 p-6 shadow-bloom">

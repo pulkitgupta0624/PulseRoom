@@ -21,7 +21,8 @@ const {
   quoteSchema,
   confirmPaymentSchema,
   joinWaitlistSchema,
-  checkInSchema
+  checkInSchema,
+  agendaSessionUpdateSchema
 } = require('../validators/bookingSchemas');
 const {
   buildInvoiceNumber,
@@ -41,6 +42,7 @@ const {
   buildEventBookingsCsv,
   buildOrganizerGrowthDashboard
 } = require('../services/organizerGrowthService');
+const { buildAgendaState, stripAgendaSessionForStorage } = require('../services/agendaService');
 const {
   roundCurrencyAmount,
   resolveSettlementCurrency,
@@ -294,6 +296,100 @@ const assertInternalService = (req, allowedServices = []) => {
 
 const assertInternalEventService = (req) => {
   assertInternalService(req, ['event-service']);
+};
+
+const loadEventMeta = async (req, eventId) => {
+  try {
+    const response = await req.clients.eventService.get(`/api/events/${eventId}/internal-meta`);
+    return response.data.data;
+  } catch (error) {
+    if (error.response?.status === 404) {
+      throw new AppError('Event not found', 404, 'event_not_found');
+    }
+
+    throw new AppError('Unable to load event schedule right now', 502, 'event_lookup_failed');
+  }
+};
+
+const loadViewableEventMeta = async (req, eventId) => {
+  try {
+    const response = await req.clients.eventService.get(`/api/events/${eventId}`, {
+      headers: {
+        Authorization: req.headers.authorization
+      }
+    });
+    const event = response.data.data;
+
+    return {
+      title: event.title,
+      venueName: event.venueName || '',
+      timezone: event.timezone || 'Asia/Calcutta',
+      sessions: event.sessions || []
+    };
+  } catch (error) {
+    if (error.response?.status === 404) {
+      throw new AppError('Event not found', 404, 'event_not_found');
+    }
+    if (error.response?.status === 403) {
+      throw new AppError('Event not available', 403, 'event_not_available');
+    }
+
+    throw new AppError('Unable to load event schedule right now', 502, 'event_lookup_failed');
+  }
+};
+
+const loadConfirmedAgendaBooking = async ({ eventId, userId }) =>
+  Booking.findOne({
+    eventId,
+    userId,
+    status: BookingStatus.CONFIRMED
+  }).sort({ confirmedAt: -1, createdAt: -1 });
+
+const applyAgendaSync = async ({ booking, eventMeta }) => {
+  if (!booking) {
+    return {
+      canPersonalize: false,
+      bookingId: null,
+      sessions: buildAgendaState({
+        eventSessions: eventMeta.sessions || [],
+        savedSessions: []
+      }).scheduleSessions,
+      savedSessions: [],
+      summary: {
+        savedCount: 0,
+        scheduledCount: 0,
+        totalMinutes: 0,
+        roomCount: 0,
+        conflictCount: 0,
+        staleSessions: 0
+      },
+      updatedAt: null
+    };
+  }
+
+  const agendaState = buildAgendaState({
+    eventSessions: eventMeta.sessions || [],
+    savedSessions: booking.savedAgenda?.sessions || []
+  });
+  const nextStoredSessions = agendaState.storedSessions.map(stripAgendaSessionForStorage);
+  const previousStoredSessions = (booking.savedAgenda?.sessions || []).map(stripAgendaSessionForStorage);
+
+  if (JSON.stringify(previousStoredSessions) !== JSON.stringify(nextStoredSessions)) {
+    booking.savedAgenda = {
+      sessions: nextStoredSessions,
+      updatedAt: new Date()
+    };
+    await booking.save();
+  }
+
+  return {
+    canPersonalize: true,
+    bookingId: booking._id.toString(),
+    sessions: agendaState.scheduleSessions,
+    savedSessions: agendaState.savedSessions,
+    summary: agendaState.summary,
+    updatedAt: booking.savedAgenda?.updatedAt || booking.updatedAt || null
+  };
 };
 
 router.post(
@@ -1122,6 +1218,106 @@ router.get(
   asyncHandler(async (req, res) => {
     const bookings = await Booking.find({ userId: req.user.sub }).sort({ createdAt: -1 });
     sendSuccess(res, bookings.map(serializeBooking));
+  })
+);
+
+router.get(
+  '/event/:eventId/agenda',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const booking = await loadConfirmedAgendaBooking({
+      eventId: req.params.eventId,
+      userId: req.user.sub
+    });
+    const eventMeta = booking
+      ? await loadEventMeta(req, req.params.eventId)
+      : await loadViewableEventMeta(req, req.params.eventId);
+
+    const agendaData = await applyAgendaSync({
+      booking,
+      eventMeta
+    });
+
+    sendSuccess(res, {
+      eventId: req.params.eventId,
+      eventTitle: eventMeta.title,
+      venueName: eventMeta.venueName || '',
+      timezone: eventMeta.timezone || 'Asia/Calcutta',
+      ...agendaData
+    });
+  })
+);
+
+router.post(
+  '/event/:eventId/agenda',
+  authenticate(),
+  validateSchema(agendaSessionUpdateSchema),
+  asyncHandler(async (req, res) => {
+    const [eventMeta, booking] = await Promise.all([
+      loadEventMeta(req, req.params.eventId),
+      loadConfirmedAgendaBooking({
+        eventId: req.params.eventId,
+        userId: req.user.sub
+      })
+    ]);
+
+    if (!booking) {
+      throw new AppError(
+        'Confirm a ticket for this event before saving sessions to your agenda',
+        403,
+        'agenda_booking_required'
+      );
+    }
+
+    const agendaState = buildAgendaState({
+      eventSessions: eventMeta.sessions || [],
+      savedSessions: booking.savedAgenda?.sessions || []
+    });
+    const sessionToSave = agendaState.scheduleSessions.find(
+      (session) => session.sessionKey === req.body.sessionKey
+    );
+    const existingSession = agendaState.storedSessions.find(
+      (session) => session.sessionKey === req.body.sessionKey
+    );
+
+    if (req.body.saved && !sessionToSave) {
+      throw new AppError('Session not found on this event schedule', 404, 'agenda_session_not_found');
+    }
+    if (!req.body.saved && !existingSession) {
+      throw new AppError('Session is not saved in your agenda', 404, 'agenda_session_not_saved');
+    }
+
+    const remainingSessions = agendaState.storedSessions.filter(
+      (session) => session.sessionKey !== req.body.sessionKey
+    );
+    const nextStoredSessions = req.body.saved
+      ? [
+          ...remainingSessions,
+          stripAgendaSessionForStorage({
+            ...sessionToSave,
+            savedAt: existingSession?.savedAt || new Date()
+          })
+        ]
+      : remainingSessions;
+
+    booking.savedAgenda = {
+      sessions: nextStoredSessions,
+      updatedAt: new Date()
+    };
+    await booking.save();
+
+    const nextAgendaData = await applyAgendaSync({
+      booking,
+      eventMeta
+    });
+
+    sendSuccess(res, {
+      eventId: req.params.eventId,
+      eventTitle: eventMeta.title,
+      venueName: eventMeta.venueName || '',
+      timezone: eventMeta.timezone || 'Asia/Calcutta',
+      ...nextAgendaData
+    });
   })
 );
 

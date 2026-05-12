@@ -1209,7 +1209,7 @@ router.get(
     assertInternalService(req, ['live-service', 'notification-service', 'booking-service', 'chat-service']);
 
     const event = await Event.findById(req.params.eventId)
-      .select('organizerId title startsAt endsAt visibility status networking speakers')
+      .select('organizerId title startsAt endsAt timezone venueName visibility status networking speakers sessions')
       .lean();
 
     if (!event) {
@@ -1222,6 +1222,8 @@ router.get(
       title: event.title,
       startsAt: event.startsAt,
       endsAt: event.endsAt,
+      timezone: event.timezone,
+      venueName: event.venueName || '',
       visibility: event.visibility,
       status: event.status,
       speakers: (event.speakers || []).map((speaker) => ({
@@ -1230,6 +1232,14 @@ router.get(
         name: speaker.name,
         title: speaker.title || '',
         company: speaker.company || ''
+      })),
+      sessions: (event.sessions || []).map((session) => ({
+        title: session.title,
+        description: session.description || '',
+        startsAt: session.startsAt,
+        endsAt: session.endsAt,
+        roomLabel: session.roomLabel || '',
+        speakerNames: session.speakerNames || []
       })),
       networking: {
         enabled: Boolean(event.networking?.enabled),
