@@ -651,6 +651,16 @@ const SponsorManagerModal = ({ event, onClose, onUpdated }) => {
                               )}
 
                               <div className="mt-4 flex flex-wrap gap-2">
+                                {application.portalLink && (
+                                  <a
+                                    href={application.portalLink}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="rounded-full border border-reef/20 bg-reef/5 px-4 py-2 text-sm text-reef transition hover:bg-reef/10"
+                                  >
+                                    Sponsor workspace
+                                  </a>
+                                )}
                                 {relatedSponsor && (
                                   <Link
                                     to={`/events/${event._id}/sponsors/${application.sponsorId}`}

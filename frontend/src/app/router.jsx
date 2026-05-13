@@ -4,8 +4,10 @@ import ProtectedRoute from '../components/ProtectedRoute';
 import HomePage from '../pages/HomePage';
 import AuthPage from '../pages/AuthPage';
 import EventDetailPage from '../pages/EventDetailPage';
+import SeriesDetailPage from '../pages/SeriesDetailPage';
 import SponsorApplicationPage from '../pages/SponsorApplicationPage';
 import SponsorBoothPage from '../pages/SponsorBoothPage';
+import SponsorPortalPage from '../pages/SponsorPortalPage';
 import DashboardPage from '../pages/DashboardPage';
 import LiveEventPage from '../pages/LiveEventPage';
 import AdminPage from '../pages/AdminPage';
@@ -25,8 +27,10 @@ export const router = createBrowserRouter([
       { index: true, element: <HomePage /> },
       { path: 'auth', element: <AuthPage /> },
       { path: 'events/:eventId', element: <EventDetailPage /> },
+      { path: 'series/:seriesId', element: <SeriesDetailPage /> },
       { path: 'events/:eventId/sponsor', element: <SponsorApplicationPage /> },
       { path: 'events/:eventId/sponsors/:sponsorId', element: <SponsorBoothPage /> },
+      { path: 'events/:eventId/sponsors/:sponsorId/portal', element: <SponsorPortalPage /> },
       {
         path: 'events/:eventId/live',
         element: <ProtectedRoute><LiveEventPage /></ProtectedRoute>

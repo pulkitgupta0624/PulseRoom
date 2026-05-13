@@ -19,7 +19,15 @@ const savedAgendaSessionSchema = new mongoose.Schema(
       type: [String],
       default: []
     },
-    savedAt: Date
+    capacity: Number,
+    savedAt: Date,
+    registrationStatus: {
+      type: String,
+      enum: ['saved', 'registered', 'waitlisted'],
+      default: 'saved'
+    },
+    registeredAt: Date,
+    waitlistedAt: Date
   },
   { _id: false }
 );
@@ -172,6 +180,30 @@ const bookingSchema = new mongoose.Schema(
       reportingDiscountAmount: Number,
       reservedAt: Date,
       releasedAt: Date
+    },
+    membership: {
+      membershipId: {
+        type: String,
+        index: true
+      },
+      seriesId: {
+        type: String,
+        index: true
+      },
+      planName: String,
+      discountPercent: Number,
+      earlyAccessHours: Number,
+      membersOnlyBooking: {
+        type: Boolean,
+        default: false
+      },
+      originalAmount: Number,
+      discountAmount: Number,
+      finalAmount: Number,
+      baseOriginalAmount: Number,
+      baseDiscountAmount: Number,
+      reportingDiscountAmount: Number,
+      appliedAt: Date
     },
     eventSnapshot: {
       title: String,

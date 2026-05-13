@@ -21,6 +21,16 @@ const createEmptyTeamMember = () => ({
   notes: ''
 });
 
+const createEmptySession = () => ({
+  title: '',
+  description: '',
+  startsAt: '',
+  endsAt: '',
+  roomLabel: '',
+  capacity: '',
+  speakerNames: ''
+});
+
 const TeamMemberEditor = ({ member, index, onChange, onRemove }) => (
   <div className="rounded-2xl border border-ink/10 bg-sand/60 p-4 space-y-3">
     <div className="flex items-center justify-between">
@@ -74,6 +84,79 @@ const TeamMemberEditor = ({ member, index, onChange, onRemove }) => (
   </div>
 );
 
+const SessionEditor = ({ session, index, onChange, onRemove }) => (
+  <div className="rounded-2xl border border-ink/10 bg-sand/60 p-4 space-y-3">
+    <div className="flex items-center justify-between">
+      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-ink/50">
+        Session {index + 1}
+      </p>
+      <button
+        type="button"
+        onClick={onRemove}
+        className="rounded-full border border-ember/20 bg-ember/5 px-3 py-1 text-xs font-medium text-ember hover:bg-ember/10"
+      >
+        Remove
+      </button>
+    </div>
+
+    <div className="grid gap-3 sm:grid-cols-2">
+      <input
+        value={session.title}
+        onChange={(e) => onChange('title', e.target.value)}
+        placeholder="Session title"
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef sm:col-span-2"
+        required
+      />
+      <input
+        type="datetime-local"
+        value={session.startsAt}
+        onChange={(e) => onChange('startsAt', e.target.value)}
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+        required
+      />
+      <input
+        type="datetime-local"
+        value={session.endsAt}
+        onChange={(e) => onChange('endsAt', e.target.value)}
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+        required
+      />
+    </div>
+
+    <div className="grid gap-3 sm:grid-cols-[1.1fr,0.9fr]">
+      <input
+        value={session.roomLabel}
+        onChange={(e) => onChange('roomLabel', e.target.value)}
+        placeholder="Room / track label"
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+      />
+      <input
+        type="number"
+        min="1"
+        value={session.capacity}
+        onChange={(e) => onChange('capacity', e.target.value)}
+        placeholder="Seat limit (optional)"
+        className="rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+      />
+    </div>
+
+    <input
+      value={session.speakerNames}
+      onChange={(e) => onChange('speakerNames', e.target.value)}
+      placeholder="Speaker names (comma-separated)"
+      className="w-full rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+    />
+
+    <textarea
+      value={session.description}
+      onChange={(e) => onChange('description', e.target.value)}
+      rows={3}
+      placeholder="Session description"
+      className="w-full rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-reef"
+    />
+  </div>
+);
+
 const EventEditModal = ({ event, onClose }) => {
   const dispatch = useDispatch();
   const [saving, setSaving] = useState(false);
@@ -102,6 +185,15 @@ const EventEditModal = ({ event, onClose }) => {
     pageTheme: normalizeEventTheme(event.pageTheme),
     allowsChat: event.allowsChat !== false,
     allowsQa: event.allowsQa !== false,
+    sessions: (event.sessions || []).map((session) => ({
+      title: session.title || '',
+      description: session.description || '',
+      startsAt: toDatetimeLocal(session.startsAt),
+      endsAt: toDatetimeLocal(session.endsAt),
+      roomLabel: session.roomLabel || '',
+      capacity: session.capacity || '',
+      speakerNames: (session.speakerNames || []).join(', ')
+    })),
     teamMembers: (event.teamMembers || []).map((member) => ({
       name: member.name || '',
       email: member.email || '',
@@ -130,6 +222,26 @@ const EventEditModal = ({ event, onClose }) => {
     setForm((current) => ({
       ...current,
       teamMembers: current.teamMembers.filter((_, memberIndex) => memberIndex !== index)
+    }));
+
+  const updateSession = (index, key, value) =>
+    setForm((current) => ({
+      ...current,
+      sessions: current.sessions.map((session, sessionIndex) =>
+        sessionIndex === index ? { ...session, [key]: value } : session
+      )
+    }));
+
+  const addSession = () =>
+    setForm((current) => ({
+      ...current,
+      sessions: [...current.sessions, createEmptySession()]
+    }));
+
+  const removeSession = (index) =>
+    setForm((current) => ({
+      ...current,
+      sessions: current.sessions.filter((_, sessionIndex) => sessionIndex !== index)
     }));
 
   const handleCoverUpload = async (e) => {
@@ -182,6 +294,20 @@ const EventEditModal = ({ event, onClose }) => {
             email: member.email.trim(),
             role: member.role,
             notes: member.notes.trim()
+          })),
+        sessions: form.sessions
+          .filter((session) => session.title.trim() && session.startsAt && session.endsAt)
+          .map((session) => ({
+            title: session.title.trim(),
+            description: session.description.trim(),
+            startsAt: session.startsAt,
+            endsAt: session.endsAt,
+            roomLabel: session.roomLabel.trim(),
+            capacity: session.capacity ? Number(session.capacity) : undefined,
+            speakerNames: session.speakerNames
+              .split(',')
+              .map((name) => name.trim())
+              .filter(Boolean)
           }))
       };
       if (form.coverImageUrl) payload.coverImageUrl = form.coverImageUrl;
@@ -418,6 +544,42 @@ const EventEditModal = ({ event, onClose }) => {
                 placeholder="Shown on attendance certificates"
                 className="mt-2 w-full rounded-2xl border border-ink/10 bg-sand px-4 py-3 outline-none focus:border-reef"
               />
+            </div>
+
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <label className="text-xs uppercase tracking-[0.22em] text-ink/45">Sessions</label>
+                  <p className="mt-2 text-sm text-ink/55">
+                    Shape the event schedule and optionally cap session demand so attendees can reserve seats.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={addSession}
+                  className="shrink-0 rounded-full border border-ink/10 bg-white px-4 py-2 text-xs font-semibold text-ink hover:bg-sand"
+                >
+                  Add session
+                </button>
+              </div>
+
+              {form.sessions.length === 0 ? (
+                <div className="rounded-2xl bg-sand/50 px-5 py-8 text-center">
+                  <p className="text-sm text-ink/45">No sessions configured yet.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {form.sessions.map((session, index) => (
+                    <SessionEditor
+                      key={`${session.title || 'session'}-${index}`}
+                      session={session}
+                      index={index}
+                      onChange={(key, value) => updateSession(index, key, value)}
+                      onRemove={() => removeSession(index)}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="space-y-4">

@@ -71,6 +71,7 @@ const DomainEvents = Object.freeze({
   WAITLIST_SPOT_OFFERED: 'waitlist.spot.offered',
   WAITLIST_SPOT_CLAIMED: 'waitlist.spot.claimed',
   WAITLIST_SPOT_EXPIRED: 'waitlist.spot.expired',
+  SESSION_WAITLIST_PROMOTED: 'session.waitlist.promoted',
   CHAT_MESSAGE_SENT: 'chat.message.sent',
   CHAT_MESSAGE_MODERATED: 'chat.message.moderated',
   POLL_CREATED: 'poll.created',
@@ -80,6 +81,8 @@ const DomainEvents = Object.freeze({
   ANNOUNCEMENT_POSTED: 'announcement.posted',
   REPLAY_AVAILABLE: 'replay.available',
   EVENT_REVIEW_SUBMITTED: 'event.review.submitted',
+  EVENT_FEEDBACK_SUBMITTED: 'event.feedback.submitted',
+  SERIES_MEMBERSHIP_ACTIVATED: 'series.membership.activated',
   NETWORKING_OPTED_IN: 'networking.opted_in',
   NOTIFICATION_CREATED: 'notification.created'
 });

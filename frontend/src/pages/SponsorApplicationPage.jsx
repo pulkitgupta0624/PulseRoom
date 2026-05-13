@@ -182,6 +182,14 @@ const SponsorApplicationPage = () => {
           </div>
 
           <div className="mt-6 flex flex-wrap gap-3">
+            {success.portalUrl && (
+              <a
+                href={success.portalUrl}
+                className="rounded-full bg-reef px-5 py-3 text-sm font-semibold text-white transition hover:bg-reef/90"
+              >
+                Open sponsor workspace
+              </a>
+            )}
             <Link
               to={`/events/${eventId}`}
               className="rounded-full bg-ink px-5 py-3 text-sm font-semibold text-sand transition hover:bg-ink/90"
@@ -196,6 +204,12 @@ const SponsorApplicationPage = () => {
               Submit another application
             </button>
           </div>
+
+          {success.portalUrl && (
+            <p className="mt-4 text-sm text-ink/55">
+              Use your sponsor workspace anytime to update booth assets, review status, and manage leads once attendees start engaging.
+            </p>
+          )}
         </section>
       </div>
     );

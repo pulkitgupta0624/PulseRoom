@@ -3,18 +3,66 @@ const {
   AppError,
   asyncHandler,
   authenticate,
+  Roles,
   sendSuccess
 } = require('@pulseroom/common');
 const Notification = require('../models/Notification');
 const EventAudience = require('../models/EventAudience');
 const NetworkingMatch = require('../models/NetworkingMatch');
+const AudienceSegment = require('../models/AudienceSegment');
+const AudienceCampaign = require('../models/AudienceCampaign');
+const AudienceAutomation = require('../models/AudienceAutomation');
+const {
+  CAMPAIGN_STATUS_QUEUED,
+  CAMPAIGN_STATUS_SCHEDULED,
+  TRACKING_PIXEL_GIF,
+  buildCampaignRecipientCounts,
+  collectCampaignAnalytics,
+  dispatchCampaign,
+  loadCrmEventMeta: loadEventMetaForCampaigns,
+  loadCrmSeriesMeta: loadSeriesMetaForCampaigns,
+  loadMergedCrmAudience: loadMergedAudienceForCampaigns,
+  loadSeriesCrmAudience: loadSeriesAudienceForCampaigns,
+  markDeliveryClicked,
+  markDeliveryOpened,
+  scheduleCampaignDispatch,
+  serializeAudienceCampaign
+} = require('../services/campaignService');
+const {
+  AUTOMATION_STATUS_ACTIVE,
+  AUTOMATION_STATUS_PAUSED,
+  AUTOMATION_TRIGGER_CONFIG,
+  computeAutomationScheduledFor,
+  isScheduledAutomationTrigger,
+  removeAutomationDispatchJob,
+  scheduleAutomationDispatch,
+  serializeAudienceAutomation
+} = require('../services/automationService');
 const {
   enrichMatchesWithAiIntros,
   generateNetworkingMatches
 } = require('../services/networkingService');
+const {
+  applyAudienceCrmFilters,
+  buildAudienceCrmSummary,
+  normalizeAudienceCrmFilters
+} = require('../services/crmService');
+const {
+  applySeriesCrmFilters,
+  buildSeriesCrmSummary,
+  normalizeSeriesCrmFilters
+} = require('../services/seriesCrmService');
 
 const router = express.Router();
 const NETWORKING_DECISIONS = new Set(['pending', 'accepted', 'skipped']);
+const CRM_CAMPAIGN_CHANNELS = new Set(['in_app', 'email', 'both']);
+const CRM_AUTOMATION_STATUSES = new Set([AUTOMATION_STATUS_ACTIVE, AUTOMATION_STATUS_PAUSED]);
+const getCrmAutomationTriggersForScope = (scopeType = 'event') =>
+  new Set(
+    Object.entries(AUTOMATION_TRIGGER_CONFIG)
+      .filter(([, config]) => (config.scopeType || 'event') === scopeType)
+      .map(([triggerType]) => triggerType)
+  );
 
 const assertInternalEventService = (req) => {
   if (req.headers['x-service-name'] !== 'event-service') {
@@ -112,6 +160,102 @@ const serializeAudienceProfileForManage = (audience) => ({
   lastMatchedAt: audience.networking?.lastMatchedAt || null,
   profile: serializeNetworkingProfile(audience.networking || {})
 });
+
+const serializeAudienceSegment = (segment) => ({
+  segmentId: segment._id.toString(),
+  name: segment.name,
+  filters: normalizeAudienceCrmFilters(segment.filters || {}),
+  createdAt: segment.createdAt,
+  updatedAt: segment.updatedAt
+});
+
+const serializeSeriesAudienceSegment = (segment) => ({
+  segmentId: segment._id.toString(),
+  name: segment.name,
+  filters: normalizeSeriesCrmFilters(segment.filters || {}),
+  createdAt: segment.createdAt,
+  updatedAt: segment.updatedAt
+});
+
+const assertOrganizerCrmAccess = (eventMeta, user) => {
+  if (!user || ![Roles.ORGANIZER, Roles.ADMIN].includes(user.role)) {
+    throw new AppError('Forbidden', 403, 'forbidden');
+  }
+
+  if (user.role !== Roles.ADMIN && eventMeta?.organizerId !== user.sub) {
+    throw new AppError('Forbidden', 403, 'forbidden');
+  }
+};
+
+const loadCrmEventMeta = async (req, eventId) => {
+  try {
+    return await loadEventMetaForCampaigns({
+      eventServiceClient: req.clients.eventService,
+      eventId
+    });
+  } catch (error) {
+    if (error.response?.status === 404) {
+      throw new AppError('Event not found', 404, 'event_not_found');
+    }
+
+    throw new AppError('Unable to load event CRM context right now', 502, 'event_lookup_failed');
+  }
+};
+
+const loadMergedCrmAudience = async (req, eventId, eventMeta) => {
+  try {
+    const audience = await loadMergedAudienceForCampaigns({
+      bookingServiceClient: req.clients.bookingService,
+      eventId,
+      eventMeta
+    });
+
+    return {
+      audience,
+      bookingSummary: {}
+    };
+  } catch (error) {
+    throw new AppError(
+      error.response?.data?.message || 'Unable to load attendee CRM data right now',
+      error.response?.status || 502,
+      error.response?.data?.code || 'crm_audience_lookup_failed'
+    );
+  }
+};
+
+const loadCrmSeriesMeta = async (req, seriesId) => {
+  try {
+    return await loadSeriesMetaForCampaigns({
+      eventServiceClient: req.clients.eventService,
+      seriesId
+    });
+  } catch (error) {
+    if (error.response?.status === 404) {
+      throw new AppError('Series not found', 404, 'series_not_found');
+    }
+
+    throw new AppError('Unable to load series CRM context right now', 502, 'series_lookup_failed');
+  }
+};
+
+const loadSeriesCrmAudience = async (req, seriesId) => {
+  try {
+    const audience = await loadSeriesAudienceForCampaigns({
+      eventServiceClient: req.clients.eventService,
+      seriesId
+    });
+
+    return {
+      audience
+    };
+  } catch (error) {
+    throw new AppError(
+      error.response?.data?.message || 'Unable to load series member CRM data right now',
+      error.response?.status || 502,
+      error.response?.data?.code || 'series_crm_audience_lookup_failed'
+    );
+  }
+};
 
 const buildAudienceNetworkingUpdate = (payload = {}, currentNetworking = {}) => {
   const nextNetworking = {
@@ -286,6 +430,30 @@ const loadAudienceOrThrow = async ({ eventId, userId }) => {
 };
 
 router.get(
+  '/campaigns/track/open/:trackingToken',
+  asyncHandler(async (req, res) => {
+    await markDeliveryOpened({
+      trackingToken: req.params.trackingToken
+    });
+
+    res.set('Content-Type', 'image/gif');
+    res.set('Cache-Control', 'no-store, max-age=0');
+    res.status(200).send(TRACKING_PIXEL_GIF);
+  })
+);
+
+router.get(
+  '/campaigns/track/click/:trackingToken',
+  asyncHandler(async (req, res) => {
+    const delivery = await markDeliveryClicked({
+      trackingToken: req.params.trackingToken
+    });
+
+    res.redirect(delivery?.ctaUrl || req.config.appOrigin);
+  })
+);
+
+router.get(
   '/me',
   authenticate(),
   asyncHandler(async (req, res) => {
@@ -321,7 +489,916 @@ router.patch(
 
     notification.readAt = new Date();
     await notification.save();
+
+    if (notification.metadata?.campaignDeliveryId) {
+      await markDeliveryOpened(
+        {
+          _id: notification.metadata.campaignDeliveryId
+        },
+        notification.readAt
+      );
+    }
+
     sendSuccess(res, notification);
+  })
+);
+
+router.get(
+  '/events/:eventId/crm',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const eventMeta = await loadCrmEventMeta(req, req.params.eventId);
+    assertOrganizerCrmAccess(eventMeta, req.user);
+    const eventAutomationTriggers = getCrmAutomationTriggersForScope('event');
+
+    const filters = normalizeAudienceCrmFilters(req.query);
+    const [{ audience }, segments, recentCampaigns, automations] = await Promise.all([
+      loadMergedCrmAudience(req, req.params.eventId, eventMeta),
+      AudienceSegment.find({
+        scopeType: {
+          $ne: 'series'
+        },
+        eventId: req.params.eventId,
+        organizerId: eventMeta.organizerId
+      })
+        .sort({ updatedAt: -1, createdAt: -1 })
+        .lean(),
+      AudienceCampaign.find({
+        scopeType: {
+          $ne: 'series'
+        },
+        eventId: req.params.eventId,
+        organizerId: eventMeta.organizerId
+      })
+        .sort({ createdAt: -1 })
+        .limit(8)
+        .lean(),
+      AudienceAutomation.find({
+        scopeType: {
+          $ne: 'series'
+        },
+        eventId: req.params.eventId,
+        organizerId: eventMeta.organizerId
+      })
+        .sort({ updatedAt: -1, createdAt: -1 })
+        .lean()
+    ]);
+    const campaignAnalytics = await collectCampaignAnalytics(
+      recentCampaigns.map((campaign) => campaign._id.toString())
+    );
+
+    const filteredAudience = applyAudienceCrmFilters(audience, filters);
+
+    sendSuccess(res, {
+      event: {
+        eventId: req.params.eventId,
+        title: eventMeta.title,
+        status: eventMeta.status,
+        startsAt: eventMeta.startsAt,
+        endsAt: eventMeta.endsAt
+      },
+      filters,
+      summary: {
+        total: buildAudienceCrmSummary(audience),
+        filtered: buildAudienceCrmSummary(filteredAudience)
+      },
+      audience: filteredAudience,
+      segments: segments.map(serializeAudienceSegment),
+      automations: automations.map(serializeAudienceAutomation),
+      recentCampaigns: recentCampaigns.map((campaign) =>
+        serializeAudienceCampaign(
+          campaign,
+          campaignAnalytics.get(campaign._id.toString())
+        )
+      )
+    });
+  })
+);
+
+router.post(
+  '/events/:eventId/crm/segments',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const eventMeta = await loadCrmEventMeta(req, req.params.eventId);
+    assertOrganizerCrmAccess(eventMeta, req.user);
+
+    const name = String(req.body.name || '').trim();
+    if (!name) {
+      throw new AppError('Segment name is required', 422, 'crm_segment_name_required');
+    }
+
+    const filters = normalizeAudienceCrmFilters(req.body.filters || {});
+    let segment = null;
+
+    if (req.body.segmentId) {
+      segment = await AudienceSegment.findOne({
+        _id: req.body.segmentId,
+        scopeType: {
+          $ne: 'series'
+        },
+        eventId: req.params.eventId,
+        organizerId: eventMeta.organizerId
+      });
+      if (!segment) {
+        throw new AppError('Segment not found', 404, 'crm_segment_not_found');
+      }
+
+      segment.name = name;
+      segment.filters = filters;
+      segment.updatedByUserId = req.user.sub;
+      await segment.save();
+    } else {
+      segment = await AudienceSegment.create({
+        scopeType: 'event',
+        eventId: req.params.eventId,
+        organizerId: eventMeta.organizerId,
+        createdByUserId: req.user.sub,
+        updatedByUserId: req.user.sub,
+        name,
+        filters
+      });
+    }
+
+    sendSuccess(res, {
+      segment: serializeAudienceSegment(segment)
+    });
+  })
+);
+
+router.delete(
+  '/events/:eventId/crm/segments/:segmentId',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const eventMeta = await loadCrmEventMeta(req, req.params.eventId);
+    assertOrganizerCrmAccess(eventMeta, req.user);
+
+    const deletion = await AudienceSegment.findOneAndDelete({
+      _id: req.params.segmentId,
+      scopeType: {
+        $ne: 'series'
+      },
+      eventId: req.params.eventId,
+      organizerId: eventMeta.organizerId
+    });
+
+    if (!deletion) {
+      throw new AppError('Segment not found', 404, 'crm_segment_not_found');
+    }
+
+    sendSuccess(res, {
+      deleted: true
+    });
+  })
+);
+
+router.post(
+  '/events/:eventId/crm/campaigns',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const eventMeta = await loadCrmEventMeta(req, req.params.eventId);
+    assertOrganizerCrmAccess(eventMeta, req.user);
+
+    const title = String(req.body.title || '').trim().slice(0, 140);
+    const body = String(req.body.body || '').trim().slice(0, 1600);
+    const channel = CRM_CAMPAIGN_CHANNELS.has(String(req.body.channel || '').trim())
+      ? String(req.body.channel).trim()
+      : 'both';
+
+    if (!title) {
+      throw new AppError('Campaign title is required', 422, 'crm_campaign_title_required');
+    }
+    if (!body) {
+      throw new AppError('Campaign body is required', 422, 'crm_campaign_body_required');
+    }
+    const scheduleMode = String(req.body.scheduleMode || 'now').trim() === 'later'
+      ? 'later'
+      : 'now';
+    const scheduledFor = scheduleMode === 'later'
+      ? new Date(req.body.scheduledFor)
+      : null;
+
+    if (
+      scheduleMode === 'later' &&
+      (!(scheduledFor instanceof Date) ||
+        Number.isNaN(scheduledFor.getTime()) ||
+        scheduledFor.getTime() <= Date.now())
+    ) {
+      throw new AppError(
+        'Choose a valid future time for this scheduled campaign',
+        422,
+        'crm_campaign_schedule_invalid'
+      );
+    }
+
+    let segment = null;
+    if (req.body.segmentId) {
+      segment = await AudienceSegment.findOne({
+        _id: req.body.segmentId,
+        scopeType: {
+          $ne: 'series'
+        },
+        eventId: req.params.eventId,
+        organizerId: eventMeta.organizerId
+      }).lean();
+
+      if (!segment) {
+        throw new AppError('Segment not found', 404, 'crm_segment_not_found');
+      }
+    }
+
+    const filters = normalizeAudienceCrmFilters(req.body.filters || segment?.filters || {});
+    const { audience } = await loadMergedCrmAudience(req, req.params.eventId, eventMeta);
+    const recipients = applyAudienceCrmFilters(audience, filters);
+
+    if (!recipients.length) {
+      throw new AppError(
+        'No attendees match this audience segment right now',
+        409,
+        'crm_campaign_empty_audience'
+      );
+    }
+
+    const recipientCounts = buildCampaignRecipientCounts({
+      recipients,
+      channel
+    });
+
+    if (channel === 'email' && recipientCounts.emailRecipientCount < 1) {
+      throw new AppError(
+        'This audience does not have any email addresses to send to yet',
+        409,
+        'crm_campaign_email_audience_empty'
+      );
+    }
+
+    const campaign = await AudienceCampaign.create({
+      scopeType: 'event',
+      eventId: req.params.eventId,
+      organizerId: eventMeta.organizerId,
+      createdByUserId: req.user.sub,
+      segmentId: segment?._id?.toString() || '',
+      segmentName: segment?.name || '',
+      title,
+      body,
+      channel,
+      filters,
+      status: scheduleMode === 'later' ? CAMPAIGN_STATUS_SCHEDULED : CAMPAIGN_STATUS_QUEUED,
+      scheduledFor,
+      ...recipientCounts
+    });
+
+    let nextCampaign = campaign;
+
+    if (scheduleMode === 'later') {
+      await scheduleCampaignDispatch({
+        campaignId: campaign._id.toString(),
+        queue: req.services.queue,
+        scheduledFor
+      });
+    } else {
+      nextCampaign = await dispatchCampaign({
+        campaignId: campaign._id.toString(),
+        config: req.config,
+        createNotification: req.services.createNotification,
+        queue: req.services.queue,
+        eventServiceClient: req.clients.eventService,
+        bookingServiceClient: req.clients.bookingService,
+        logger: req.logger
+      });
+
+      if (nextCampaign?.status === 'failed') {
+        throw new AppError(
+          nextCampaign.dispatchError || 'Unable to send this campaign right now',
+          409,
+          'crm_campaign_dispatch_failed'
+        );
+      }
+    }
+
+    sendSuccess(res, {
+      campaign: serializeAudienceCampaign(nextCampaign)
+    }, 201);
+  })
+);
+
+router.post(
+  '/events/:eventId/crm/automations',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const eventMeta = await loadCrmEventMeta(req, req.params.eventId);
+    assertOrganizerCrmAccess(eventMeta, req.user);
+
+    const name = String(req.body.name || '').trim().slice(0, 120);
+    const title = String(req.body.title || '').trim().slice(0, 140);
+    const body = String(req.body.body || '').trim().slice(0, 1600);
+    const channel = CRM_CAMPAIGN_CHANNELS.has(String(req.body.channel || '').trim())
+      ? String(req.body.channel).trim()
+      : 'both';
+    const triggerType = eventAutomationTriggers.has(String(req.body.triggerType || '').trim())
+      ? String(req.body.triggerType).trim()
+      : '';
+    const status = CRM_AUTOMATION_STATUSES.has(String(req.body.status || '').trim())
+      ? String(req.body.status).trim()
+      : AUTOMATION_STATUS_ACTIVE;
+
+    if (!name) {
+      throw new AppError('Automation name is required', 422, 'crm_automation_name_required');
+    }
+    if (!title) {
+      throw new AppError('Automation title is required', 422, 'crm_automation_title_required');
+    }
+    if (!body) {
+      throw new AppError('Automation body is required', 422, 'crm_automation_body_required');
+    }
+    if (!triggerType) {
+      throw new AppError('Choose a valid automation trigger', 422, 'crm_automation_trigger_invalid');
+    }
+
+    let segment = null;
+    if (req.body.segmentId) {
+      segment = await AudienceSegment.findOne({
+        _id: req.body.segmentId,
+        eventId: req.params.eventId,
+        organizerId: eventMeta.organizerId
+      }).lean();
+
+      if (!segment) {
+        throw new AppError('Segment not found', 404, 'crm_segment_not_found');
+      }
+    }
+
+    const filters = normalizeAudienceCrmFilters(req.body.filters || segment?.filters || {});
+    const validatedScheduledFor =
+      status === AUTOMATION_STATUS_ACTIVE && isScheduledAutomationTrigger(triggerType)
+        ? computeAutomationScheduledFor(triggerType, eventMeta)
+        : null;
+
+    if (
+      status === AUTOMATION_STATUS_ACTIVE &&
+      isScheduledAutomationTrigger(triggerType) &&
+      (
+        !validatedScheduledFor ||
+        Number.isNaN(validatedScheduledFor.getTime()) ||
+        validatedScheduledFor.getTime() <= Date.now()
+      )
+    ) {
+      throw new AppError(
+        'This automation trigger is already in the past for this event',
+        409,
+        'crm_automation_schedule_past'
+      );
+    }
+
+    let automation = null;
+
+    if (req.body.automationId) {
+      automation = await AudienceAutomation.findOne({
+        _id: req.body.automationId,
+        scopeType: {
+          $ne: 'series'
+        },
+        eventId: req.params.eventId,
+        organizerId: eventMeta.organizerId
+      });
+
+      if (!automation) {
+        throw new AppError('Automation not found', 404, 'crm_automation_not_found');
+      }
+
+      automation.name = name;
+      automation.title = title;
+      automation.body = body;
+      automation.channel = channel;
+      automation.triggerType = triggerType;
+      automation.status = status;
+      automation.segmentId = segment?._id?.toString() || '';
+      automation.segmentName = segment?.name || '';
+      automation.filters = filters;
+      automation.updatedByUserId = req.user.sub;
+    } else {
+      automation = await AudienceAutomation.create({
+        scopeType: 'event',
+        eventId: req.params.eventId,
+        organizerId: eventMeta.organizerId,
+        createdByUserId: req.user.sub,
+        updatedByUserId: req.user.sub,
+        name,
+        title,
+        body,
+        channel,
+        triggerType,
+        status,
+        segmentId: segment?._id?.toString() || '',
+        segmentName: segment?.name || '',
+        filters
+      });
+    }
+
+    if (
+      automation.status === AUTOMATION_STATUS_ACTIVE &&
+      isScheduledAutomationTrigger(automation.triggerType)
+    ) {
+      automation.scheduledFor = validatedScheduledFor;
+      await automation.save();
+      await scheduleAutomationDispatch({
+        automation,
+        scopeMeta: {
+          ...eventMeta,
+          eventId: req.params.eventId
+        },
+        queue: req.services.queue
+      });
+    } else {
+      automation.scheduledFor = null;
+      await automation.save();
+      await removeAutomationDispatchJob({
+        automationId: automation._id.toString(),
+        queue: req.services.queue
+      });
+    }
+
+    sendSuccess(res, {
+      automation: serializeAudienceAutomation(automation)
+    }, 201);
+  })
+);
+
+router.delete(
+  '/events/:eventId/crm/automations/:automationId',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const eventMeta = await loadCrmEventMeta(req, req.params.eventId);
+    assertOrganizerCrmAccess(eventMeta, req.user);
+
+    const automation = await AudienceAutomation.findOneAndDelete({
+      _id: req.params.automationId,
+      scopeType: {
+        $ne: 'series'
+      },
+      eventId: req.params.eventId,
+      organizerId: eventMeta.organizerId
+    });
+
+    if (!automation) {
+      throw new AppError('Automation not found', 404, 'crm_automation_not_found');
+    }
+
+    await removeAutomationDispatchJob({
+      automationId: req.params.automationId,
+      queue: req.services.queue
+    });
+
+    sendSuccess(res, {
+      deleted: true
+    });
+  })
+);
+
+router.get(
+  '/series/:seriesId/crm',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const seriesMeta = await loadCrmSeriesMeta(req, req.params.seriesId);
+    assertOrganizerCrmAccess(seriesMeta, req.user);
+
+    const filters = normalizeSeriesCrmFilters(req.query);
+    const [{ audience }, segments, recentCampaigns, automations] = await Promise.all([
+      loadSeriesCrmAudience(req, req.params.seriesId),
+      AudienceSegment.find({
+        scopeType: 'series',
+        eventId: req.params.seriesId,
+        seriesId: req.params.seriesId,
+        organizerId: seriesMeta.organizerId
+      })
+        .sort({ updatedAt: -1, createdAt: -1 })
+        .lean(),
+      AudienceCampaign.find({
+        scopeType: 'series',
+        eventId: req.params.seriesId,
+        seriesId: req.params.seriesId,
+        organizerId: seriesMeta.organizerId
+      })
+        .sort({ createdAt: -1 })
+        .limit(8)
+        .lean(),
+      AudienceAutomation.find({
+        scopeType: 'series',
+        eventId: req.params.seriesId,
+        seriesId: req.params.seriesId,
+        organizerId: seriesMeta.organizerId
+      })
+        .sort({ updatedAt: -1, createdAt: -1 })
+        .lean()
+    ]);
+    const campaignAnalytics = await collectCampaignAnalytics(
+      recentCampaigns.map((campaign) => campaign._id.toString())
+    );
+
+    const filteredAudience = applySeriesCrmFilters(audience, filters);
+
+    sendSuccess(res, {
+      series: {
+        seriesId: req.params.seriesId,
+        name: seriesMeta.name,
+        slug: seriesMeta.slug || '',
+        status: seriesMeta.status,
+        nextEventId: seriesMeta.nextEventId || null,
+        nextEventTitle: seriesMeta.nextEventTitle || '',
+        nextEventStartsAt: seriesMeta.nextEventStartsAt || null
+      },
+      filters,
+      summary: {
+        total: buildSeriesCrmSummary(audience),
+        filtered: buildSeriesCrmSummary(filteredAudience)
+      },
+      audience: filteredAudience,
+      segments: segments.map(serializeSeriesAudienceSegment),
+      automations: automations.map(serializeAudienceAutomation),
+      recentCampaigns: recentCampaigns.map((campaign) =>
+        serializeAudienceCampaign(
+          campaign,
+          campaignAnalytics.get(campaign._id.toString())
+        )
+      )
+    });
+  })
+);
+
+router.post(
+  '/series/:seriesId/crm/segments',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const seriesMeta = await loadCrmSeriesMeta(req, req.params.seriesId);
+    assertOrganizerCrmAccess(seriesMeta, req.user);
+
+    const name = String(req.body.name || '').trim();
+    if (!name) {
+      throw new AppError('Segment name is required', 422, 'crm_segment_name_required');
+    }
+
+    const filters = normalizeSeriesCrmFilters(req.body.filters || {});
+    let segment = null;
+
+    if (req.body.segmentId) {
+      segment = await AudienceSegment.findOne({
+        _id: req.body.segmentId,
+        scopeType: 'series',
+        eventId: req.params.seriesId,
+        seriesId: req.params.seriesId,
+        organizerId: seriesMeta.organizerId
+      });
+      if (!segment) {
+        throw new AppError('Segment not found', 404, 'crm_segment_not_found');
+      }
+
+      segment.name = name;
+      segment.filters = filters;
+      segment.updatedByUserId = req.user.sub;
+      await segment.save();
+    } else {
+      segment = await AudienceSegment.create({
+        scopeType: 'series',
+        eventId: req.params.seriesId,
+        seriesId: req.params.seriesId,
+        organizerId: seriesMeta.organizerId,
+        createdByUserId: req.user.sub,
+        updatedByUserId: req.user.sub,
+        name,
+        filters
+      });
+    }
+
+    sendSuccess(res, {
+      segment: serializeSeriesAudienceSegment(segment)
+    });
+  })
+);
+
+router.delete(
+  '/series/:seriesId/crm/segments/:segmentId',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const seriesMeta = await loadCrmSeriesMeta(req, req.params.seriesId);
+    assertOrganizerCrmAccess(seriesMeta, req.user);
+
+    const deletion = await AudienceSegment.findOneAndDelete({
+      _id: req.params.segmentId,
+      scopeType: 'series',
+      eventId: req.params.seriesId,
+      seriesId: req.params.seriesId,
+      organizerId: seriesMeta.organizerId
+    });
+
+    if (!deletion) {
+      throw new AppError('Segment not found', 404, 'crm_segment_not_found');
+    }
+
+    sendSuccess(res, {
+      deleted: true
+    });
+  })
+);
+
+router.post(
+  '/series/:seriesId/crm/campaigns',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const seriesMeta = await loadCrmSeriesMeta(req, req.params.seriesId);
+    assertOrganizerCrmAccess(seriesMeta, req.user);
+
+    const title = String(req.body.title || '').trim().slice(0, 140);
+    const body = String(req.body.body || '').trim().slice(0, 1600);
+    const channel = CRM_CAMPAIGN_CHANNELS.has(String(req.body.channel || '').trim())
+      ? String(req.body.channel).trim()
+      : 'both';
+
+    if (!title) {
+      throw new AppError('Campaign title is required', 422, 'crm_campaign_title_required');
+    }
+    if (!body) {
+      throw new AppError('Campaign body is required', 422, 'crm_campaign_body_required');
+    }
+
+    const scheduleMode = String(req.body.scheduleMode || 'now').trim() === 'later'
+      ? 'later'
+      : 'now';
+    const scheduledFor = scheduleMode === 'later'
+      ? new Date(req.body.scheduledFor)
+      : null;
+
+    if (
+      scheduleMode === 'later' &&
+      (!(scheduledFor instanceof Date) ||
+        Number.isNaN(scheduledFor.getTime()) ||
+        scheduledFor.getTime() <= Date.now())
+    ) {
+      throw new AppError(
+        'Choose a valid future time for this scheduled campaign',
+        422,
+        'crm_campaign_schedule_invalid'
+      );
+    }
+
+    let segment = null;
+    if (req.body.segmentId) {
+      segment = await AudienceSegment.findOne({
+        _id: req.body.segmentId,
+        scopeType: 'series',
+        eventId: req.params.seriesId,
+        seriesId: req.params.seriesId,
+        organizerId: seriesMeta.organizerId
+      }).lean();
+
+      if (!segment) {
+        throw new AppError('Segment not found', 404, 'crm_segment_not_found');
+      }
+    }
+
+    const filters = normalizeSeriesCrmFilters(req.body.filters || segment?.filters || {});
+    const { audience } = await loadSeriesCrmAudience(req, req.params.seriesId);
+    const recipients = applySeriesCrmFilters(audience, filters);
+
+    if (!recipients.length) {
+      throw new AppError(
+        'No series members match this audience segment right now',
+        409,
+        'crm_campaign_empty_audience'
+      );
+    }
+
+    const recipientCounts = buildCampaignRecipientCounts({
+      recipients,
+      channel
+    });
+
+    if (channel === 'email' && recipientCounts.emailRecipientCount < 1) {
+      throw new AppError(
+        'This member audience does not have any email addresses to send to yet',
+        409,
+        'crm_campaign_email_audience_empty'
+      );
+    }
+
+    const campaign = await AudienceCampaign.create({
+      scopeType: 'series',
+      eventId: req.params.seriesId,
+      seriesId: req.params.seriesId,
+      organizerId: seriesMeta.organizerId,
+      createdByUserId: req.user.sub,
+      segmentId: segment?._id?.toString() || '',
+      segmentName: segment?.name || '',
+      title,
+      body,
+      channel,
+      filters,
+      status: scheduleMode === 'later' ? CAMPAIGN_STATUS_SCHEDULED : CAMPAIGN_STATUS_QUEUED,
+      scheduledFor,
+      ...recipientCounts
+    });
+
+    let nextCampaign = campaign;
+
+    if (scheduleMode === 'later') {
+      await scheduleCampaignDispatch({
+        campaignId: campaign._id.toString(),
+        queue: req.services.queue,
+        scheduledFor
+      });
+    } else {
+      nextCampaign = await dispatchCampaign({
+        campaignId: campaign._id.toString(),
+        config: req.config,
+        createNotification: req.services.createNotification,
+        queue: req.services.queue,
+        eventServiceClient: req.clients.eventService,
+        bookingServiceClient: req.clients.bookingService,
+        logger: req.logger
+      });
+
+      if (nextCampaign?.status === 'failed') {
+        throw new AppError(
+          nextCampaign.dispatchError || 'Unable to send this campaign right now',
+          409,
+          'crm_campaign_dispatch_failed'
+        );
+      }
+    }
+
+    sendSuccess(res, {
+      campaign: serializeAudienceCampaign(nextCampaign)
+    }, 201);
+  })
+);
+
+router.post(
+  '/series/:seriesId/crm/automations',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const seriesMeta = await loadCrmSeriesMeta(req, req.params.seriesId);
+    assertOrganizerCrmAccess(seriesMeta, req.user);
+    const seriesAutomationTriggers = getCrmAutomationTriggersForScope('series');
+
+    const name = String(req.body.name || '').trim().slice(0, 120);
+    const title = String(req.body.title || '').trim().slice(0, 140);
+    const body = String(req.body.body || '').trim().slice(0, 1600);
+    const channel = CRM_CAMPAIGN_CHANNELS.has(String(req.body.channel || '').trim())
+      ? String(req.body.channel).trim()
+      : 'both';
+    const triggerType = seriesAutomationTriggers.has(String(req.body.triggerType || '').trim())
+      ? String(req.body.triggerType).trim()
+      : '';
+    const status = CRM_AUTOMATION_STATUSES.has(String(req.body.status || '').trim())
+      ? String(req.body.status).trim()
+      : AUTOMATION_STATUS_ACTIVE;
+
+    if (!name) {
+      throw new AppError('Automation name is required', 422, 'crm_automation_name_required');
+    }
+    if (!title) {
+      throw new AppError('Automation title is required', 422, 'crm_automation_title_required');
+    }
+    if (!body) {
+      throw new AppError('Automation body is required', 422, 'crm_automation_body_required');
+    }
+    if (!triggerType) {
+      throw new AppError('Choose a valid automation trigger', 422, 'crm_automation_trigger_invalid');
+    }
+
+    let segment = null;
+    if (req.body.segmentId) {
+      segment = await AudienceSegment.findOne({
+        _id: req.body.segmentId,
+        scopeType: 'series',
+        eventId: req.params.seriesId,
+        seriesId: req.params.seriesId,
+        organizerId: seriesMeta.organizerId
+      }).lean();
+
+      if (!segment) {
+        throw new AppError('Segment not found', 404, 'crm_segment_not_found');
+      }
+    }
+
+    const filters = normalizeSeriesCrmFilters(req.body.filters || segment?.filters || {});
+    const validatedScheduledFor =
+      status === AUTOMATION_STATUS_ACTIVE && isScheduledAutomationTrigger(triggerType)
+        ? computeAutomationScheduledFor(triggerType, seriesMeta)
+        : null;
+
+    if (
+      status === AUTOMATION_STATUS_ACTIVE &&
+      isScheduledAutomationTrigger(triggerType) &&
+      (
+        !validatedScheduledFor ||
+        Number.isNaN(validatedScheduledFor.getTime()) ||
+        validatedScheduledFor.getTime() <= Date.now()
+      )
+    ) {
+      throw new AppError(
+        'This automation trigger is already in the past for the next series drop',
+        409,
+        'crm_automation_schedule_past'
+      );
+    }
+
+    let automation = null;
+
+    if (req.body.automationId) {
+      automation = await AudienceAutomation.findOne({
+        _id: req.body.automationId,
+        scopeType: 'series',
+        eventId: req.params.seriesId,
+        seriesId: req.params.seriesId,
+        organizerId: seriesMeta.organizerId
+      });
+
+      if (!automation) {
+        throw new AppError('Automation not found', 404, 'crm_automation_not_found');
+      }
+
+      automation.name = name;
+      automation.title = title;
+      automation.body = body;
+      automation.channel = channel;
+      automation.triggerType = triggerType;
+      automation.status = status;
+      automation.segmentId = segment?._id?.toString() || '';
+      automation.segmentName = segment?.name || '';
+      automation.filters = filters;
+      automation.updatedByUserId = req.user.sub;
+    } else {
+      automation = await AudienceAutomation.create({
+        scopeType: 'series',
+        eventId: req.params.seriesId,
+        seriesId: req.params.seriesId,
+        organizerId: seriesMeta.organizerId,
+        createdByUserId: req.user.sub,
+        updatedByUserId: req.user.sub,
+        name,
+        title,
+        body,
+        channel,
+        triggerType,
+        status,
+        segmentId: segment?._id?.toString() || '',
+        segmentName: segment?.name || '',
+        filters
+      });
+    }
+
+    if (
+      automation.status === AUTOMATION_STATUS_ACTIVE &&
+      isScheduledAutomationTrigger(automation.triggerType)
+    ) {
+      automation.scheduledFor = validatedScheduledFor;
+      await automation.save();
+      await scheduleAutomationDispatch({
+        automation,
+        scopeMeta: seriesMeta,
+        queue: req.services.queue
+      });
+    } else {
+      automation.scheduledFor = null;
+      await automation.save();
+      await removeAutomationDispatchJob({
+        automationId: automation._id.toString(),
+        queue: req.services.queue
+      });
+    }
+
+    sendSuccess(res, {
+      automation: serializeAudienceAutomation(automation)
+    }, 201);
+  })
+);
+
+router.delete(
+  '/series/:seriesId/crm/automations/:automationId',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const seriesMeta = await loadCrmSeriesMeta(req, req.params.seriesId);
+    assertOrganizerCrmAccess(seriesMeta, req.user);
+
+    const automation = await AudienceAutomation.findOneAndDelete({
+      _id: req.params.automationId,
+      scopeType: 'series',
+      eventId: req.params.seriesId,
+      seriesId: req.params.seriesId,
+      organizerId: seriesMeta.organizerId
+    });
+
+    if (!automation) {
+      throw new AppError('Automation not found', 404, 'crm_automation_not_found');
+    }
+
+    await removeAutomationDispatchJob({
+      automationId: req.params.automationId,
+      queue: req.services.queue
+    });
+
+    sendSuccess(res, {
+      deleted: true
+    });
   })
 );
 

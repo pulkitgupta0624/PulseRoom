@@ -44,13 +44,31 @@ const {
   syncBookingTickets
 } = require('../services/ticketService');
 const { assertTicketTierAccessible } = require('../services/ticketAccessService');
+const {
+  buildTicketAccessEntitlements,
+  resolveSeriesMembershipBenefit,
+  selectBestDiscount
+} = require('../services/seriesMembershipService');
 const { buildBookingAnalytics, clampWindowDays } = require('../services/analyticsService');
 const { buildReferralAnalytics } = require('../services/referralAnalyticsService');
 const {
   buildEventBookingsCsv,
   buildOrganizerGrowthDashboard
 } = require('../services/organizerGrowthService');
+const {
+  buildCrmAudienceSnapshot
+} = require('../services/crmAudienceService');
 const { buildAgendaState, stripAgendaSessionForStorage } = require('../services/agendaService');
+const {
+  SESSION_AGENDA_ACTIONS,
+  SESSION_REGISTRATION_STATUSES,
+  applySessionAgendaAction,
+  buildSessionDemandByKey,
+  resolveAgendaAction
+} = require('../services/sessionRegistrationService');
+const {
+  promoteNextSessionWaitlistSeat
+} = require('../services/sessionWaitlistPromotionService');
 const {
   roundCurrencyAmount,
   resolveSettlementCurrency,
@@ -355,6 +373,34 @@ const loadEventMeta = async (req, eventId) => {
   }
 };
 
+const loadSeriesMembershipEntitlement = async (req, { seriesId, userId }) => {
+  if (!seriesId || !userId) {
+    return null;
+  }
+
+  try {
+    const response = await req.clients.eventService.get(
+      `/api/events/series/${seriesId}/internal-membership`,
+      {
+        params: {
+          userId
+        }
+      }
+    );
+    return response.data.data;
+  } catch (error) {
+    if (error.response?.status === 404) {
+      return null;
+    }
+
+    throw new AppError(
+      'Unable to verify series membership access right now',
+      502,
+      'series_membership_unavailable'
+    );
+  }
+};
+
 const loadViewableEventMeta = async (req, eventId) => {
   try {
     const response = await req.clients.eventService.get(`/api/events/${eventId}`, {
@@ -389,18 +435,80 @@ const loadConfirmedAgendaBooking = async ({ eventId, userId }) =>
     status: BookingStatus.CONFIRMED
   }).sort({ confirmedAt: -1, createdAt: -1 });
 
-const applyAgendaSync = async ({ booking, eventMeta }) => {
+const loadSessionDemandByKey = async (eventId) => {
+  const demandRows = await Booking.aggregate([
+    {
+      $match: {
+        eventId,
+        status: BookingStatus.CONFIRMED
+      }
+    },
+    {
+      $sort: {
+        userId: 1,
+        confirmedAt: -1,
+        createdAt: -1
+      }
+    },
+    {
+      $group: {
+        _id: '$userId',
+        sessions: { $first: '$savedAgenda.sessions' }
+      }
+    },
+    {
+      $unwind: '$sessions'
+    },
+    {
+      $match: {
+        'sessions.registrationStatus': {
+          $in: ['registered', 'waitlisted']
+        }
+      }
+    },
+    {
+      $group: {
+        _id: '$sessions.sessionKey',
+        registeredCount: {
+          $sum: {
+            $cond: [
+              { $eq: ['$sessions.registrationStatus', 'registered'] },
+              1,
+              0
+            ]
+          }
+        },
+        waitlistedCount: {
+          $sum: {
+            $cond: [
+              { $eq: ['$sessions.registrationStatus', 'waitlisted'] },
+              1,
+              0
+            ]
+          }
+        }
+      }
+    }
+  ]);
+
+  return buildSessionDemandByKey(demandRows);
+};
+
+const applyAgendaSync = async ({ booking, eventMeta, demandBySessionKey = {} }) => {
   if (!booking) {
     return {
       canPersonalize: false,
       bookingId: null,
       sessions: buildAgendaState({
         eventSessions: eventMeta.sessions || [],
-        savedSessions: []
+        savedSessions: [],
+        demandBySessionKey
       }).scheduleSessions,
       savedSessions: [],
       summary: {
         savedCount: 0,
+        registeredCount: 0,
+        waitlistedCount: 0,
         scheduledCount: 0,
         totalMinutes: 0,
         roomCount: 0,
@@ -413,7 +521,8 @@ const applyAgendaSync = async ({ booking, eventMeta }) => {
 
   const agendaState = buildAgendaState({
     eventSessions: eventMeta.sessions || [],
-    savedSessions: booking.savedAgenda?.sessions || []
+    savedSessions: booking.savedAgenda?.sessions || [],
+    demandBySessionKey
   });
   const nextStoredSessions = agendaState.storedSessions.map(stripAgendaSessionForStorage);
   const previousStoredSessions = (booking.savedAgenda?.sessions || []).map(stripAgendaSessionForStorage);
@@ -479,6 +588,17 @@ router.post(
 
     const subtotal = roundCurrencyAmount(Number(tier.price || 0) * Number(req.body.quantity || 0));
     const viewer = decodeOptionalToken(req);
+    const membershipEntitlement =
+      viewer?.sub && event.series?.seriesId
+        ? await loadSeriesMembershipEntitlement(req, {
+            seriesId: event.series.seriesId,
+            userId: viewer.sub
+          })
+        : null;
+    const membershipBenefit = resolveSeriesMembershipBenefit({
+      entitlement: membershipEntitlement,
+      subtotal
+    });
     const referralPreview = req.body.promoCode
       ? {
           applied: false,
@@ -490,6 +610,10 @@ router.post(
           viewerUserId: viewer?.sub,
           subtotal
         });
+    const selectedDiscount = selectBestDiscount({
+      membershipBenefit,
+      referralDiscountBaseAmount: referralPreview.discountBaseAmount
+    });
 
     const { acceptedCurrencies, pricing } = await buildPricingContext({
       req,
@@ -497,16 +621,32 @@ router.post(
       tier,
       quantity: req.body.quantity,
       requestedCurrency: req.body.currency,
-      discountBaseAmount: referralPreview.discountBaseAmount
+      discountBaseAmount: selectedDiscount.discountBaseAmount
     });
 
     sendSuccess(res, {
       pricing,
       acceptedCurrencies,
+      appliedDiscountSource: selectedDiscount.source,
+      memberAccessRequired: Boolean(event.series?.membersOnlyBooking && !membershipBenefit.active),
+      membership: membershipBenefit.active
+        ? {
+            active: true,
+            membershipId: membershipBenefit.membershipId,
+            seriesId: membershipBenefit.seriesId,
+            planName: membershipBenefit.planName,
+            discountPercent: membershipBenefit.discountPercent,
+            earlyAccessHours: membershipBenefit.earlyAccessHours,
+            membersOnlyBooking: membershipBenefit.membersOnlyBooking,
+            applied: selectedDiscount.source === 'membership',
+            discountAmount: selectedDiscount.source === 'membership' ? pricing.discountAmount : 0
+          }
+        : null,
       referral: referralPreview.applied
         ? {
             code: referralPreview.code,
-            discountAmount: pricing.discountAmount
+            applied: selectedDiscount.source === 'referral',
+            discountAmount: selectedDiscount.source === 'referral' ? pricing.discountAmount : 0
           }
         : null
     });
@@ -677,6 +817,25 @@ router.get(
     );
  
     sendSuccess(res, capacityData);
+  })
+);
+
+router.get(
+  '/internal/events/:eventId/audience-crm',
+  asyncHandler(async (req, res) => {
+    assertInternalService(req, ['notification-service']);
+
+    const bookings = await Booking.find({
+      eventId: req.params.eventId,
+      status: BookingStatus.CONFIRMED
+    })
+      .select(
+        'userId attendee tierId tierName quantity confirmedAt checkedInAt createdAt referral savedAgenda tickets'
+      )
+      .sort({ confirmedAt: -1, createdAt: -1 })
+      .lean();
+
+    sendSuccess(res, buildCrmAudienceSnapshot(bookings));
   })
 );
 
@@ -862,7 +1021,27 @@ router.post(
       throw new AppError('Ticket tier not found', 404, 'tier_not_found');
     }
 
+    const membershipEntitlement = event.series?.seriesId
+      ? await loadSeriesMembershipEntitlement(req, {
+          seriesId: event.series.seriesId,
+          userId: req.user.sub
+        })
+      : null;
     const saleStart = tier.saleStart ? new Date(tier.saleStart) : null;
+    const baseSubtotal = roundCurrencyAmount(Number(tier.price || 0) * Number(req.body.quantity || 0));
+    const membershipBenefit = resolveSeriesMembershipBenefit({
+      entitlement: membershipEntitlement,
+      subtotal: baseSubtotal
+    });
+
+    if (event.series?.membersOnlyBooking && !membershipBenefit.active) {
+      throw new AppError(
+        `${event.series?.planName || 'Series membership'} is required before booking this event.`,
+        403,
+        'series_membership_required'
+      );
+    }
+
     let gamificationEntitlements = null;
     if (saleStart && saleStart.getTime() > Date.now()) {
       try {
@@ -881,7 +1060,10 @@ router.post(
 
     assertTicketTierAccessible({
       tier,
-      entitlements: gamificationEntitlements,
+      entitlements: buildTicketAccessEntitlements({
+        gamificationEntitlements,
+        membershipBenefit
+      }),
       now: new Date()
     });
 
@@ -931,6 +1113,10 @@ router.post(
     }
 
     const subtotal = roundCurrencyAmount(Number(tier.price || 0) * Number(quantity || 0));
+    const effectiveMembershipBenefit = resolveSeriesMembershipBenefit({
+      entitlement: membershipEntitlement,
+      subtotal
+    });
     let promoCodeQuote = null;
     if (normalizedPromoCode) {
       try {
@@ -967,14 +1153,21 @@ router.post(
       );
     }
 
-    const discountBaseAmount = referralCode
+    const referralDiscountBaseAmount = referralCode
       ? calculateReferralDiscountAmount({
           subtotal,
           referral: event.referral
         })
-      : promoCodeQuote
-        ? Number(promoCodeQuote.discountAmount || 0)
       : 0;
+    const promoDiscountBaseAmount = promoCodeQuote
+      ? Number(promoCodeQuote.discountAmount || 0)
+      : 0;
+    const selectedDiscount = selectBestDiscount({
+      membershipBenefit: effectiveMembershipBenefit,
+      referralDiscountBaseAmount,
+      promoDiscountBaseAmount
+    });
+    const discountBaseAmount = selectedDiscount.discountBaseAmount;
     const { acceptedCurrencies, pricing } = await buildPricingContext({
       req,
       event,
@@ -993,7 +1186,7 @@ router.post(
       );
     }
 
-    if (referralCode) {
+    if (selectedDiscount.source === 'referral' && referralCode) {
       try {
         await req.clients.eventService.post(`/api/events/${req.body.eventId}/referral/consume`, {
           code: referralCode,
@@ -1027,7 +1220,7 @@ router.post(
         },
         { assignTokens: false }
       ),
-      ...(referralCode
+      ...(selectedDiscount.source === 'referral' && referralCode
         ? {
             referral: {
               code: referralCode,
@@ -1044,7 +1237,7 @@ router.post(
             }
           }
         : {}),
-      ...(promoCodeQuote
+      ...(selectedDiscount.source === 'promo' && promoCodeQuote
         ? {
             promoCode: {
               promoCodeId: promoCodeQuote.promoCodeId,
@@ -1061,6 +1254,25 @@ router.post(
             }
           }
         : {}),
+      ...(selectedDiscount.source === 'membership' && effectiveMembershipBenefit.active
+        ? {
+            membership: {
+              membershipId: effectiveMembershipBenefit.membershipId,
+              seriesId: effectiveMembershipBenefit.seriesId,
+              planName: effectiveMembershipBenefit.planName,
+              discountPercent: effectiveMembershipBenefit.discountPercent,
+              earlyAccessHours: effectiveMembershipBenefit.earlyAccessHours,
+              membersOnlyBooking: effectiveMembershipBenefit.membersOnlyBooking,
+              originalAmount: pricing.subtotal,
+              discountAmount: pricing.discountAmount,
+              finalAmount: pricing.total,
+              baseOriginalAmount: pricing.baseSubtotal,
+              baseDiscountAmount: pricing.baseDiscountAmount,
+              reportingDiscountAmount: pricing.reportingDiscountAmount,
+              appliedAt: new Date()
+            }
+          }
+        : {}),
       reservationExpiresAt: new Date(Date.now() + 15 * 60 * 1000),
       eventSnapshot: {
         title: event.title,
@@ -1070,7 +1282,7 @@ router.post(
       sourceWaitlistEntryId: waitlistOffer?._id
     });
 
-    if (promoCodeQuote) {
+    if (selectedDiscount.source === 'promo' && promoCodeQuote) {
       try {
         await req.clients.eventService.post(`/api/events/${req.body.eventId}/promo-codes/consume`, {
           promoCodeId: promoCodeQuote.promoCodeId,
@@ -1284,10 +1496,12 @@ router.get(
     const eventMeta = booking
       ? await loadEventMeta(req, req.params.eventId)
       : await loadViewableEventMeta(req, req.params.eventId);
+    const demandBySessionKey = await loadSessionDemandByKey(req.params.eventId);
 
     const agendaData = await applyAgendaSync({
       booking,
-      eventMeta
+      eventMeta,
+      demandBySessionKey
     });
 
     sendSuccess(res, {
@@ -1305,6 +1519,7 @@ router.post(
   authenticate(),
   validateSchema(agendaSessionUpdateSchema),
   asyncHandler(async (req, res) => {
+    const resolvedAction = resolveAgendaAction(req.body);
     const [eventMeta, booking] = await Promise.all([
       loadEventMeta(req, req.params.eventId),
       loadConfirmedAgendaBooking({
@@ -1321,9 +1536,11 @@ router.post(
       );
     }
 
+    const demandBySessionKey = await loadSessionDemandByKey(req.params.eventId);
     const agendaState = buildAgendaState({
       eventSessions: eventMeta.sessions || [],
-      savedSessions: booking.savedAgenda?.sessions || []
+      savedSessions: booking.savedAgenda?.sessions || [],
+      demandBySessionKey
     });
     const sessionToSave = agendaState.scheduleSessions.find(
       (session) => session.sessionKey === req.body.sessionKey
@@ -1332,35 +1549,51 @@ router.post(
       (session) => session.sessionKey === req.body.sessionKey
     );
 
-    if (req.body.saved && !sessionToSave) {
-      throw new AppError('Session not found on this event schedule', 404, 'agenda_session_not_found');
-    }
-    if (!req.body.saved && !existingSession) {
-      throw new AppError('Session is not saved in your agenda', 404, 'agenda_session_not_saved');
-    }
-
     const remainingSessions = agendaState.storedSessions.filter(
       (session) => session.sessionKey !== req.body.sessionKey
     );
-    const nextStoredSessions = req.body.saved
+    const mutationTime = new Date();
+    const nextSession = applySessionAgendaAction({
+      action: resolvedAction,
+      scheduleSession: sessionToSave,
+      existingSession,
+      availability: sessionToSave,
+      now: mutationTime
+    });
+    const nextStoredSessions = nextSession
       ? [
           ...remainingSessions,
-          stripAgendaSessionForStorage({
-            ...sessionToSave,
-            savedAt: existingSession?.savedAt || new Date()
-          })
+          stripAgendaSessionForStorage(nextSession)
         ]
       : remainingSessions;
 
     booking.savedAgenda = {
       sessions: nextStoredSessions,
-      updatedAt: new Date()
+      updatedAt: mutationTime
     };
     await booking.save();
 
+    if (
+      resolvedAction === SESSION_AGENDA_ACTIONS.CANCEL_REGISTRATION &&
+      existingSession?.registrationStatus === SESSION_REGISTRATION_STATUSES.REGISTERED &&
+      sessionToSave?.hasCapacity
+    ) {
+      await promoteNextSessionWaitlistSeat({
+        eventId: req.params.eventId,
+        sessionKey: req.body.sessionKey,
+        eventTitle: eventMeta.title,
+        now: mutationTime,
+        eventBus: req.eventBus,
+        logger: req.logger
+      });
+    }
+
+    const refreshedDemandBySessionKey = await loadSessionDemandByKey(req.params.eventId);
+
     const nextAgendaData = await applyAgendaSync({
       booking,
-      eventMeta
+      eventMeta,
+      demandBySessionKey: refreshedDemandBySessionKey
     });
 
     sendSuccess(res, {

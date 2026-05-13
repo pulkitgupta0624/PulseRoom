@@ -11,11 +11,21 @@ const { createApp, logger } = require('./app');
 const config = require('./config');
 const Notification = require('./models/Notification');
 const EventAudience = require('./models/EventAudience');
+const AudienceAutomation = require('./models/AudienceAutomation');
+const AudienceCampaignDelivery = require('./models/AudienceCampaignDelivery');
 const { sendEmail } = require('./services/mailer');
 const {
   buildCertificateFileName,
   generateCertificatePdf
 } = require('./services/certificateService');
+const { dispatchCampaign, loadMergedCrmAudience } = require('./services/campaignService');
+const {
+  AUTOMATION_STATUS_ACTIVE,
+  AUTOMATION_TRIGGER_TYPES,
+  executeAudienceAutomation,
+  syncAutomationsForEvent,
+  syncAutomationsForSeries
+} = require('./services/automationService');
 
 const createNotification = async ({
   userId,
@@ -41,6 +51,10 @@ const createNotification = async ({
 
 const buildReplayCtaUrl = (eventId) =>
   `${config.appOrigin.replace(/\/$/, '')}/events/${eventId}/live?replay=1`;
+const buildEventCtaUrl = (eventId) =>
+  `${config.appOrigin.replace(/\/$/, '')}/events/${eventId}`;
+const buildFeedbackCtaUrl = (eventId) =>
+  `${config.appOrigin.replace(/\/$/, '')}/events/${eventId}?feedback=1`;
 
 const queueEmailHtml = (body) => `<p style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6;">${body}</p>`;
 const escapeHtml = (value = '') =>
@@ -102,9 +116,13 @@ const buildSponsorApprovalEmail = (payload) => {
     ? queueEmailHtml('The organizer will share payment instructions with you shortly. Once payment is confirmed, your sponsor placement will go live.')
     : '';
 
+  const portalBlock = payload.portalUrl
+    ? `<p style="margin:16px 0 0;"><a href="${escapeHtml(payload.portalUrl)}" style="display:inline-block;border:1px solid #d1d5db;color:#111827;text-decoration:none;padding:12px 18px;border-radius:9999px;font-weight:700;">Open sponsor workspace</a></p>`
+    : '';
+
   return `${queueEmailHtml(
     `Great news ${payload.contactName || 'there'}! Your ${payload.packageName} sponsor application for ${payload.eventTitle} has been approved.`
-  )}${amountLine}${paymentLinkBlock}${instructionsBlock}${fallbackBlock}`;
+  )}${amountLine}${paymentLinkBlock}${instructionsBlock}${fallbackBlock}${portalBlock}`;
 };
 
 const loadReplayMeta = async ({ liveServiceClient, eventId }) => {
@@ -186,6 +204,7 @@ const start = async () => {
 
   const userServiceClient = createServiceClient(config.userServiceUrl, 'notification-service');
   const eventServiceClient = createServiceClient(config.eventServiceUrl, 'notification-service');
+  const bookingServiceClient = createServiceClient(config.bookingServiceUrl, 'notification-service');
   const liveServiceClient = createServiceClient(config.liveServiceUrl, 'notification-service');
   const connection = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
   const queue = new Queue('notification-jobs', {
@@ -197,6 +216,60 @@ const start = async () => {
     async (job) => {
       if (job.name === 'send-email') {
         await sendEmail(job.data);
+      }
+
+      if (job.name === 'send-crm-email') {
+        const { deliveryId, ...emailPayload } = job.data;
+
+        try {
+          await sendEmail(emailPayload);
+          if (deliveryId) {
+            await AudienceCampaignDelivery.findByIdAndUpdate(deliveryId, {
+              $set: {
+                deliveredAt: new Date(),
+                failedAt: null,
+                failureReason: ''
+              }
+            });
+          }
+        } catch (error) {
+          if (deliveryId) {
+            await AudienceCampaignDelivery.findByIdAndUpdate(deliveryId, {
+              $set: {
+                failedAt: new Date(),
+                failureReason: error.message
+              }
+            });
+          }
+
+          throw error;
+        }
+      }
+
+      if (job.name === 'dispatch-crm-campaign') {
+        await dispatchCampaign({
+          campaignId: job.data.campaignId,
+          config,
+          createNotification,
+          queue,
+          eventServiceClient,
+          bookingServiceClient,
+          logger
+        });
+      }
+
+      if (job.name === 'dispatch-crm-automation') {
+        await executeAudienceAutomation({
+          automationId: job.data.automationId,
+          config,
+          createNotification,
+          queue,
+          eventServiceClient,
+          bookingServiceClient,
+          loadMergedCrmAudience,
+          logger,
+          triggerKey: job.data.triggerKey || ''
+        });
       }
 
       if (job.name === 'create-reminder') {
@@ -308,7 +381,10 @@ const start = async () => {
       DomainEvents.WAITLIST_JOINED,
       DomainEvents.WAITLIST_SPOT_OFFERED,
       DomainEvents.WAITLIST_SPOT_EXPIRED,
-      DomainEvents.EVENT_COMPLETED
+      DomainEvents.SESSION_WAITLIST_PROMOTED,
+      DomainEvents.EVENT_FEEDBACK_SUBMITTED,
+      DomainEvents.EVENT_COMPLETED,
+      DomainEvents.SERIES_MEMBERSHIP_ACTIVATED
     ],
     async ({ event, payload }) => {
       if (event === DomainEvents.BOOKING_CONFIRMED) {
@@ -419,6 +495,38 @@ const start = async () => {
         });
       }
 
+      if (event === DomainEvents.SESSION_WAITLIST_PROMOTED) {
+        const ctaUrl = buildEventCtaUrl(payload.eventId);
+        const title = `Your seat is ready for ${payload.sessionTitle}`;
+        const body = payload.roomLabel
+          ? `A spot opened up for ${payload.sessionTitle} at ${payload.eventTitle}. Your seat is now reserved in ${payload.roomLabel}.`
+          : `A spot opened up for ${payload.sessionTitle} at ${payload.eventTitle}. Your seat is now reserved.`;
+
+        await createNotification({
+          userId: payload.userId,
+          eventId: payload.eventId,
+          email: payload.attendeeEmail,
+          type: 'agenda.session_waitlist_promoted',
+          title,
+          body,
+          metadata: {
+            ctaUrl,
+            ctaLabel: 'View agenda',
+            sessionKey: payload.sessionKey,
+            sessionStartsAt: payload.sessionStartsAt,
+            roomLabel: payload.roomLabel
+          }
+        });
+
+        if (payload.attendeeEmail) {
+          await queue.add('send-email', {
+            to: payload.attendeeEmail,
+            subject: title,
+            html: `${queueEmailHtml(body)}<p><a href="${ctaUrl}">Open your event agenda</a></p>`
+          });
+        }
+      }
+
       if (event === DomainEvents.SPONSOR_APPLICATION_SUBMITTED) {
         await createNotification({
           userId: payload.organizerId,
@@ -437,7 +545,9 @@ const start = async () => {
             subject: `We received your sponsor application for ${payload.eventTitle}`,
             html: `${queueEmailHtml(
               `Thanks ${payload.contactName || 'there'}, we received your ${payload.packageName} application for ${payload.eventTitle}. The organizer will review it shortly.`
-            )}<p style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6;">Company: <strong>${escapeHtml(payload.companyName || '')}</strong></p>`
+            )}<p style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6;">Company: <strong>${escapeHtml(payload.companyName || '')}</strong></p>${payload.portalUrl
+              ? `<p style="margin:16px 0 0;"><a href="${escapeHtml(payload.portalUrl)}" style="display:inline-block;border:1px solid #d1d5db;color:#111827;text-decoration:none;padding:12px 18px;border-radius:9999px;font-weight:700;">Open sponsor workspace</a></p>`
+              : ''}`
           });
         }
       }
@@ -479,28 +589,103 @@ const start = async () => {
             subject: `Your sponsor placement is live for ${payload.eventTitle}`,
             html: `${queueEmailHtml(
               `Your sponsor placement for ${payload.eventTitle} is now live on PulseRoom. Attendees can discover your booth from the event page and live room.`
-            )}<p><a href="${eventUrl}">View event page</a></p>`
+            )}<p><a href="${eventUrl}">View event page</a></p>${payload.portalUrl
+              ? `<p><a href="${escapeHtml(payload.portalUrl)}">Open sponsor workspace</a></p>`
+              : ''}`
           });
         }
       }
 
       if (event === DomainEvents.EVENT_PUBLISHED) {
-        if (payload.visibility !== 'public') {
-          return;
+        try {
+          await syncAutomationsForEvent({
+            eventId: payload.eventId,
+            queue,
+            eventServiceClient
+          });
+
+          if (payload.seriesId) {
+            await syncAutomationsForSeries({
+              seriesId: payload.seriesId,
+              queue,
+              eventServiceClient
+            });
+          }
+        } catch (error) {
+          logger.warn({
+            message: 'Failed to sync CRM automations after event publish',
+            eventId: payload.eventId,
+            error: error.message
+          });
         }
 
         try {
+          const eventUrl = `${config.appOrigin.replace(/\/$/, '')}/events/${payload.eventId}`;
+          const startsAtLabel = new Date(payload.startsAt).toLocaleString();
+          const alreadyNotifiedUserIds = new Set();
+
+          if (payload.seriesId) {
+            try {
+              const seriesResponse = await eventServiceClient.get(
+                `/api/events/series/${payload.seriesId}/internal-members`
+              );
+              const series = seriesResponse.data.data.series;
+              const members = seriesResponse.data.data.members || [];
+              const title = `New ${payload.seriesName || series.name} drop: ${payload.title}`;
+              const body = `${payload.title} is now live in ${payload.seriesName || series.name} and starts at ${startsAtLabel}.`;
+
+              for (const member of members) {
+                alreadyNotifiedUserIds.add(member.userId);
+                await createNotification({
+                  userId: member.userId,
+                  eventId: payload.eventId,
+                  email: member.email,
+                  type: 'series.new_event',
+                  title,
+                  body,
+                  metadata: {
+                    ctaUrl: eventUrl,
+                    ctaLabel: 'View event',
+                    seriesId: payload.seriesId,
+                    seriesName: payload.seriesName || series.name
+                  }
+                });
+
+                if (member.email) {
+                  await queue.add('send-email', {
+                    to: member.email,
+                    subject: title,
+                    html: `${queueEmailHtml(body)}<p><a href="${eventUrl}">View the new drop</a></p>`
+                  });
+                }
+              }
+            } catch (error) {
+              logger.warn({
+                message: 'Failed to notify series members about new event',
+                seriesId: payload.seriesId,
+                eventId: payload.eventId,
+                error: error.message
+              });
+            }
+          }
+
+          if (payload.visibility !== 'public') {
+            return;
+          }
+
           const response = await userServiceClient.get(
             `/api/users/organizers/${payload.organizerId}/followers`
           );
           const organizer = response.data.data.organizer;
           const followers = response.data.data.followers || [];
-          const eventUrl = `${config.appOrigin.replace(/\/$/, '')}/events/${payload.eventId}`;
           const title = `New event from ${organizer.displayName}: ${payload.title}`;
-          const startsAtLabel = new Date(payload.startsAt).toLocaleString();
           const body = `${payload.title} is now live on PulseRoom and starts at ${startsAtLabel}.`;
 
           for (const follower of followers) {
+            if (alreadyNotifiedUserIds.has(follower.userId)) {
+              continue;
+            }
+
             await createNotification({
               userId: follower.userId,
               eventId: payload.eventId,
@@ -533,7 +718,93 @@ const start = async () => {
         }
       }
 
+      if (event === DomainEvents.SERIES_MEMBERSHIP_ACTIVATED) {
+        const title = `${payload.planName || 'Series pass'} is active`;
+        const body =
+          payload.amount > 0
+            ? `Your access to ${payload.seriesName} is now unlocked. Member pricing and early access are ready to use.`
+            : `You have joined ${payload.seriesName}. Member pricing and early access are ready to use.`;
+        const ctaUrl = `${config.appOrigin.replace(/\/$/, '')}/series/${payload.seriesId}`;
+
+        await createNotification({
+          userId: payload.userId,
+          eventId: null,
+          email: payload.attendeeEmail,
+          type: 'series.membership_activated',
+          title,
+          body,
+          metadata: {
+            ctaUrl,
+            ctaLabel: 'Open series',
+            seriesId: payload.seriesId,
+            planName: payload.planName
+          }
+        });
+
+        if (payload.attendeeEmail) {
+          await queue.add('send-email', {
+            to: payload.attendeeEmail,
+            subject: title,
+            html: `${queueEmailHtml(body)}<p><a href="${ctaUrl}">Open your series hub</a></p>`
+          });
+        }
+
+        try {
+          const membershipAutomations = await AudienceAutomation.find({
+            scopeType: 'series',
+            seriesId: payload.seriesId,
+            triggerType: AUTOMATION_TRIGGER_TYPES.SERIES_MEMBERSHIP_ACTIVATED,
+            status: AUTOMATION_STATUS_ACTIVE
+          }).lean();
+
+          for (const automation of membershipAutomations) {
+            await executeAudienceAutomation({
+              automationId: automation._id.toString(),
+              config,
+              createNotification,
+              queue,
+              eventServiceClient,
+              bookingServiceClient,
+              loadMergedCrmAudience,
+              logger,
+              triggerPayload: payload
+            });
+          }
+        } catch (error) {
+          logger.warn({
+            message: 'Failed to execute series membership CRM automations',
+            seriesId: payload.seriesId,
+            membershipId: payload.membershipId,
+            error: error.message
+          });
+        }
+      }
+
       if (event === DomainEvents.EVENT_UPDATED || event === DomainEvents.ANNOUNCEMENT_POSTED) {
+        if (event === DomainEvents.EVENT_UPDATED) {
+          try {
+            await syncAutomationsForEvent({
+              eventId: payload.eventId,
+              queue,
+              eventServiceClient
+            });
+
+            if (payload.seriesId) {
+              await syncAutomationsForSeries({
+                seriesId: payload.seriesId,
+                queue,
+                eventServiceClient
+              });
+            }
+          } catch (error) {
+            logger.warn({
+              message: 'Failed to sync CRM automations after event update',
+              eventId: payload.eventId,
+              error: error.message
+            });
+          }
+        }
+
         const audience = await EventAudience.find({
           eventId: payload.eventId
         }).lean();
@@ -582,6 +853,68 @@ const start = async () => {
           },
           payload
         });
+
+        try {
+          const replayAutomations = await AudienceAutomation.find({
+            scopeType: {
+              $ne: 'series'
+            },
+            eventId: payload.eventId,
+            triggerType: AUTOMATION_TRIGGER_TYPES.REPLAY_READY,
+            status: AUTOMATION_STATUS_ACTIVE
+          }).lean();
+
+          for (const automation of replayAutomations) {
+            await executeAudienceAutomation({
+              automationId: automation._id.toString(),
+              config,
+              createNotification,
+              queue,
+              eventServiceClient,
+              bookingServiceClient,
+              loadMergedCrmAudience,
+              logger,
+              triggerPayload: payload
+            });
+          }
+        } catch (error) {
+          logger.warn({
+            message: 'Failed to execute replay-ready CRM automations',
+            eventId: payload.eventId,
+            error: error.message
+          });
+        }
+      }
+
+      if (event === DomainEvents.EVENT_FEEDBACK_SUBMITTED) {
+        const organizerTitle = `${payload.attendeeName || 'An attendee'} left feedback for ${payload.eventTitle}`;
+        const organizerBody = `NPS ${payload.npsScore}/10 and overall rating ${payload.overallRating}/5 are ready in your feedback dashboard.`;
+
+        await createNotification({
+          userId: payload.organizerId,
+          eventId: payload.eventId,
+          type: 'event.feedback_submitted',
+          title: organizerTitle,
+          body: organizerBody,
+          metadata: {
+            ctaUrl: `${config.appOrigin.replace(/\/$/, '')}/dashboard`,
+            ctaLabel: 'Open dashboard',
+            feedbackId: payload.feedbackId
+          }
+        });
+
+        await createNotification({
+          userId: payload.userId,
+          eventId: payload.eventId,
+          email: payload.attendeeEmail,
+          type: 'event.feedback_received',
+          title: `Thanks for sharing feedback on ${payload.eventTitle}`,
+          body: 'Your response helps the organizer improve future sessions and follow-up.',
+          metadata: {
+            ctaUrl: buildEventCtaUrl(payload.eventId),
+            ctaLabel: 'Back to event'
+          }
+        });
       }
 
       if (event === DomainEvents.EVENT_COMPLETED) {
@@ -595,6 +928,41 @@ const start = async () => {
         });
 
         for (const attendee of audience) {
+          const feedbackNotification = await Notification.findOne({
+            userId: attendee.userId,
+            eventId: attendee.eventId,
+            type: 'event.feedback_requested'
+          })
+            .select('_id')
+            .lean();
+          const feedbackUrl = buildFeedbackCtaUrl(payload.eventId);
+
+          if (!feedbackNotification) {
+            const feedbackTitle = `How was ${payload.title}?`;
+            const feedbackBody = 'Share your post-event feedback, NPS, and session notes while the experience is still fresh.';
+
+            await createNotification({
+              userId: attendee.userId,
+              eventId: attendee.eventId,
+              email: attendee.email,
+              type: 'event.feedback_requested',
+              title: feedbackTitle,
+              body: feedbackBody,
+              metadata: {
+                ctaUrl: feedbackUrl,
+                ctaLabel: 'Leave feedback'
+              }
+            });
+
+            if (attendee.email) {
+              await queue.add('send-email', {
+                to: attendee.email,
+                subject: feedbackTitle,
+                html: `${queueEmailHtml(feedbackBody)}<p><a href="${feedbackUrl}">Leave feedback</a></p>`
+              });
+            }
+          }
+
           await createNotification({
             userId: attendee.userId,
             eventId: attendee.eventId,
@@ -626,6 +994,37 @@ const start = async () => {
           replayMeta,
           payload
         });
+
+        try {
+          const noShowAutomations = await AudienceAutomation.find({
+            scopeType: {
+              $ne: 'series'
+            },
+            eventId: payload.eventId,
+            triggerType: AUTOMATION_TRIGGER_TYPES.EVENT_COMPLETED_NO_SHOW,
+            status: AUTOMATION_STATUS_ACTIVE
+          }).lean();
+
+          for (const automation of noShowAutomations) {
+            await executeAudienceAutomation({
+              automationId: automation._id.toString(),
+              config,
+              createNotification,
+              queue,
+              eventServiceClient,
+              bookingServiceClient,
+              loadMergedCrmAudience,
+              logger,
+              triggerPayload: payload
+            });
+          }
+        } catch (error) {
+          logger.warn({
+            message: 'Failed to execute no-show CRM automations',
+            eventId: payload.eventId,
+            error: error.message
+          });
+        }
       }
     }
   );

@@ -24,7 +24,7 @@ const StripeCheckoutForm = ({ session, onClose, onComplete }) => {
     setErrorMessage('');
 
     const returnUrl = new URL(window.location.href);
-    returnUrl.searchParams.set('paymentBookingId', session.bookingId);
+    returnUrl.searchParams.set(session.returnParamKey || 'paymentBookingId', session.resourceId || session.bookingId);
 
     const { error, paymentIntent } = await stripe.confirmPayment({
       elements,
@@ -68,11 +68,10 @@ const StripeCheckoutForm = ({ session, onClose, onComplete }) => {
           <div>
             <p className="text-xs uppercase tracking-[0.24em] text-reef">Stripe test mode</p>
             <h2 id="stripe-checkout-title" className="mt-1 font-display text-2xl text-ink">
-              Complete payment
+              {session.checkoutTitle || 'Complete payment'}
             </h2>
             <p className="mt-2 text-sm text-ink/60">
-              {session.eventTitle}
-              {session.tierName ? ` - ${session.tierName}` : ''}
+              {session.checkoutSubtitle || `${session.eventTitle}${session.tierName ? ` - ${session.tierName}` : ''}`}
             </p>
           </div>
           <button
@@ -91,7 +90,9 @@ const StripeCheckoutForm = ({ session, onClose, onComplete }) => {
         <div className="mt-4 flex items-end justify-between gap-3 rounded-2xl bg-white px-4 py-3">
           <div>
             <p className="text-xs uppercase tracking-[0.2em] text-ink/45">Amount due</p>
-            <p className="mt-1 text-sm text-ink/60">Stripe will confirm the booking after payment.</p>
+            <p className="mt-1 text-sm text-ink/60">
+              {session.checkoutDescription || 'Stripe will confirm the booking after payment.'}
+            </p>
           </div>
           <p className="text-lg font-semibold text-ink">
             {formatCurrency(session.amount, session.currency)}

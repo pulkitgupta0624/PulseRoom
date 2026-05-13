@@ -8,8 +8,9 @@ import AddToCalendarButton from '../components/AddToCalendarButton';
 import EventConcierge from '../components/EventConcierge';
 import PersonalAgendaPanel from '../components/PersonalAgendaPanel';
 import EventSponsorSection from '../components/EventSponsorSection';
+import PostEventFeedbackPanel from '../components/PostEventFeedbackPanel';
+import SeriesMembershipPanel from '../components/SeriesMembershipPanel';
 import StripeCheckoutModal from '../components/StripeCheckoutModal';
-import StarRatingInput from '../components/StarRatingInput';
 import { fetchEventById } from '../features/events/eventsSlice';
 import { deriveOrganizerFollowState } from '../features/user/organizerFollowState';
 import { syncFollowState } from '../features/user/userSlice';
@@ -177,9 +178,13 @@ const EventDetailPage = () => {
   const [pricingLoading, setPricingLoading] = useState(false);
   const [stripeCheckoutSession, setStripeCheckoutSession] = useState(null);
   const [stripeCheckoutOpen, setStripeCheckoutOpen] = useState(false);
+  const [seriesCheckoutSession, setSeriesCheckoutSession] = useState(null);
+  const [seriesCheckoutOpen, setSeriesCheckoutOpen] = useState(false);
   const [organizerProfile, setOrganizerProfile] = useState(null);
   const [followLoading, setFollowLoading] = useState(false);
   const [organizerStatus, setOrganizerStatus] = useState(null);
+  const [joiningSeriesMembership, setJoiningSeriesMembership] = useState(false);
+  const [seriesStatus, setSeriesStatus] = useState(null);
   const [reviewsState, setReviewsState] = useState({
     summary: {
       averageRating: 0,
@@ -200,11 +205,13 @@ const EventDetailPage = () => {
   const [replySavingId, setReplySavingId] = useState(null);
   const referralVisitTrackedRef = useRef(false);
   const stripeRedirectHandledRef = useRef('');
+  const seriesStripeRedirectHandledRef = useRef('');
 
   const waitlistOfferToken = searchParams.get('waitlistOfferToken');
   const requestedTierFromLink = searchParams.get('tierId');
   const referralCodeFromLink = searchParams.get('ref');
   const redirectPaymentBookingId = searchParams.get('paymentBookingId');
+  const redirectMembershipPurchaseId = searchParams.get('seriesMembershipPurchaseId');
   const redirectPaymentIntentId = searchParams.get('payment_intent');
   const redirectStatus = searchParams.get('redirect_status');
   const organizerFollowState = deriveOrganizerFollowState({
@@ -430,12 +437,13 @@ const EventDetailPage = () => {
   };
 
   const clearStripeReturnParams = () => {
-    if (!redirectPaymentBookingId && !redirectPaymentIntentId && !redirectStatus) {
+    if (!redirectPaymentBookingId && !redirectMembershipPurchaseId && !redirectPaymentIntentId && !redirectStatus) {
       return;
     }
 
     const nextSearchParams = new URLSearchParams(searchParams);
     nextSearchParams.delete('paymentBookingId');
+    nextSearchParams.delete('seriesMembershipPurchaseId');
     nextSearchParams.delete('payment_intent');
     nextSearchParams.delete('payment_intent_client_secret');
     nextSearchParams.delete('redirect_status');
@@ -474,6 +482,35 @@ const EventDetailPage = () => {
       message:
         result.message ||
         'Stripe is still processing this payment. Your ticket will appear once confirmation arrives.'
+    });
+    await Promise.all([dispatch(fetchEventById(eventId)), refreshCapacity()]);
+    return result;
+  };
+
+  const finalizeSeriesMembershipPayment = async ({ purchaseId, paymentIntentId }) => {
+    const response = await api.post(`/api/events/series/memberships/${purchaseId}/confirm-payment`, {
+      paymentIntentId
+    });
+    const result = response.data.data;
+
+    if (result.membershipActivated) {
+      setSeriesCheckoutSession(null);
+      setSeriesCheckoutOpen(false);
+      await Promise.all([dispatch(fetchEventById(eventId)), refreshCapacity()]);
+      setSeriesStatus({
+        tone: 'success',
+        message: 'Your series pass is active. Member pricing and early access are now unlocked on this event.'
+      });
+      return result;
+    }
+
+    setSeriesCheckoutSession(null);
+    setSeriesCheckoutOpen(false);
+    setSeriesStatus({
+      tone: 'info',
+      message:
+        result.message ||
+        'Stripe is still processing your payment. Your series pass will unlock once confirmation arrives.'
     });
     await Promise.all([dispatch(fetchEventById(eventId)), refreshCapacity()]);
     return result;
@@ -546,6 +583,68 @@ const EventDetailPage = () => {
       cancelled = true;
     };
   }, [redirectPaymentBookingId, redirectPaymentIntentId, redirectStatus]);
+
+  useEffect(() => {
+    if (!redirectMembershipPurchaseId || !redirectStatus) {
+      return;
+    }
+
+    const redirectKey = [
+      redirectMembershipPurchaseId,
+      redirectPaymentIntentId || '',
+      redirectStatus
+    ].join(':');
+
+    if (seriesStripeRedirectHandledRef.current === redirectKey) {
+      return;
+    }
+
+    seriesStripeRedirectHandledRef.current = redirectKey;
+
+    if (redirectStatus !== 'succeeded') {
+      setSeriesStatus({
+        tone: 'error',
+        message: 'Stripe could not verify the series payment. Please retry checkout.'
+      });
+      clearStripeReturnParams();
+      return;
+    }
+
+    let cancelled = false;
+
+    const finalizeRedirectPayment = async () => {
+      setSeriesStatus({
+        tone: 'info',
+        message: 'Stripe returned successfully. Activating your series pass...'
+      });
+
+      try {
+        await finalizeSeriesMembershipPayment({
+          purchaseId: redirectMembershipPurchaseId,
+          paymentIntentId: redirectPaymentIntentId || undefined
+        });
+      } catch (paymentError) {
+        if (!cancelled) {
+          setSeriesStatus({
+            tone: 'error',
+            message:
+              paymentError.response?.data?.message ||
+              'Stripe accepted the payment, but the series pass could not be activated yet.'
+          });
+        }
+      } finally {
+        if (!cancelled) {
+          clearStripeReturnParams();
+        }
+      }
+    };
+
+    finalizeRedirectPayment();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [redirectMembershipPurchaseId, redirectPaymentIntentId, redirectStatus]);
 
   useEffect(() => {
     let cancelled = false;
@@ -711,6 +810,15 @@ const EventDetailPage = () => {
     });
   };
 
+  const handleSeriesCheckoutClose = () => {
+    setSeriesCheckoutOpen(false);
+    setSeriesStatus({
+      tone: 'info',
+      message:
+        'Stripe payment is still pending for this series pass. Reopen checkout below when you are ready to finish.'
+    });
+  };
+
   const handleJoinWaitlist = async () => {
     if (!selectedTier) {
       return;
@@ -786,6 +894,64 @@ const EventDetailPage = () => {
     }
   };
 
+  const handleJoinSeriesMembership = async () => {
+    if (!user || !event?.series?.seriesId) {
+      return;
+    }
+
+    setJoiningSeriesMembership(true);
+    setSeriesStatus(null);
+
+    try {
+      const membershipPrice = Number(event.series?.membershipSettings?.price || 0);
+
+      if (membershipPrice > 0) {
+        const response = await api.post(`/api/events/series/${event.series.seriesId}/memberships/checkout`);
+        const result = response.data.data;
+
+        if (result.payment?.provider === 'stripe' && result.paymentIntent?.clientSecret) {
+          setSeriesCheckoutSession({
+            resourceId: result.purchase._id,
+            returnParamKey: 'seriesMembershipPurchaseId',
+            clientSecret: result.paymentIntent.clientSecret,
+            amount: result.purchase.amount,
+            currency: result.purchase.currency,
+            eventTitle: event.series?.name || 'Series pass',
+            tierName: result.purchase.seriesSnapshot?.planName || event.series?.membershipSettings?.planName,
+            checkoutTitle: 'Activate series pass',
+            checkoutSubtitle: `${event.series?.name || 'Series'} - ${result.purchase.seriesSnapshot?.planName || 'Membership'}`,
+            checkoutDescription: 'Stripe will confirm your membership after payment.'
+          });
+          setSeriesCheckoutOpen(true);
+          setSeriesStatus({
+            tone: 'info',
+            message: 'Series pass reserved. Complete the Stripe payment below to unlock booking.'
+          });
+        } else if (result.membership) {
+          await dispatch(fetchEventById(eventId));
+          setSeriesStatus({
+            tone: 'success',
+            message: 'Your series pass is active. Member pricing and early access are now unlocked on this event.'
+          });
+        }
+      } else {
+        await api.post(`/api/events/series/${event.series.seriesId}/memberships/join`);
+        await dispatch(fetchEventById(eventId));
+        setSeriesStatus({
+          tone: 'success',
+          message: 'Your series pass is active. Member pricing and early access are now unlocked on this event.'
+        });
+      }
+    } catch (joinError) {
+      setSeriesStatus({
+        tone: 'error',
+        message: joinError.response?.data?.message || 'Unable to join this series right now.'
+      });
+    } finally {
+      setJoiningSeriesMembership(false);
+    }
+  };
+
   const handleReviewSubmit = async (formEvent) => {
     formEvent.preventDefault();
     setReviewFeedback(null);
@@ -850,11 +1016,16 @@ const EventDetailPage = () => {
   const minPrice = event.ticketTiers?.reduce((minimum, tier) => Math.min(minimum, tier.price), Infinity) || 0;
   const isPublished = event.status === 'published';
   const canApplyForSponsorship = Boolean(event.sponsorPackages?.length);
+  const viewerSeriesMembership = event.series?.viewerMembership || null;
+  const seriesMembershipRequired = Boolean(
+    event.series?.membershipSettings?.membersOnlyBooking && !viewerSeriesMembership
+  );
   const canBook = Boolean(
     isPublished &&
     user &&
     selectedTier &&
-    (!isSelectedTierSoldOut || waitlistOfferActive)
+    (!isSelectedTierSoldOut || waitlistOfferActive) &&
+    !seriesMembershipRequired
   );
   const canManageReviewReplies = Boolean(
     user &&
@@ -958,6 +1129,27 @@ const EventDetailPage = () => {
               </div>
             )}
 
+            {event.series ? (
+              <div className="space-y-3">
+                <SeriesMembershipPanel
+                  series={event.series}
+                  joining={joiningSeriesMembership}
+                  onJoin={user ? handleJoinSeriesMembership : null}
+                  status={seriesStatus}
+                  compact
+                />
+                {seriesCheckoutSession && !seriesCheckoutOpen ? (
+                  <button
+                    type="button"
+                    onClick={() => setSeriesCheckoutOpen(true)}
+                    className="rounded-full border border-dusk/25 bg-white px-4 py-2 text-sm font-semibold text-dusk transition hover:bg-dusk/5"
+                  >
+                    Resume series checkout
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+
             <div className="flex flex-wrap items-center gap-3 pt-2">
               {isPublished ? (
                 <Link
@@ -1058,6 +1250,13 @@ const EventDetailPage = () => {
             {event.referralOffer?.status && event.referralOffer.status !== 'active' && (
               <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
                 {event.referralOffer.message}
+              </div>
+            )}
+
+            {seriesMembershipRequired && (
+              <div className="rounded-2xl border border-dusk/20 bg-dusk/10 px-4 py-3 text-sm text-dusk">
+                This drop is reserved for {event.series?.membershipSettings?.planName || 'series members'}.{' '}
+                {user ? 'Join the pass above to unlock booking.' : 'Sign in, then join the pass above to unlock booking.'}
               </div>
             )}
 
@@ -1230,6 +1429,19 @@ const EventDetailPage = () => {
                       </p>
                     </div>
                   )}
+                  {pricingQuote?.membership?.applied && !promoCodeActive && (
+                    <div className="flex items-center justify-between text-sm text-dusk">
+                      <p>{pricingQuote.membership.planName || 'Series member'} pricing</p>
+                      <p>
+                        -
+                        {formatCurrency(
+                          pricingQuote.membership.discountAmount,
+                          displayedPricing?.settlementCurrency || selectedCurrency || selectedTier.currency,
+                          viewerLocale
+                        )}
+                      </p>
+                    </div>
+                  )}
                   {displayedPricing?.taxAmount > 0 && (
                     <div className="flex items-center justify-between text-sm text-ink/65">
                       <p>
@@ -1309,6 +1521,10 @@ const EventDetailPage = () => {
                     ? 'Payment pending'
                   : waitlistOfferActive
                     ? 'Claim reserved spot'
+                    : seriesMembershipRequired
+                      ? user
+                        ? 'Join series to book'
+                        : 'Sign in to join series'
                     : canBook
                       ? 'Reserve ticket'
                       : isSelectedTierSoldOut
@@ -1513,6 +1729,12 @@ const EventDetailPage = () => {
         </div>
       </section>
 
+      <PostEventFeedbackPanel
+        event={event}
+        user={user}
+        autoFocus={searchParams.get('feedback') === '1'}
+      />
+
       <div className="flex items-center justify-between rounded-[28px] border border-ink/8 bg-white/60 px-5 py-4 shadow-bloom">
         <p className="text-xs text-ink/40">
           Event ID: <code className="font-mono">{eventId}</code>
@@ -1541,6 +1763,19 @@ const EventDetailPage = () => {
           onComplete={(paymentIntentId) =>
             finalizeStripePayment({
               bookingId: stripeCheckoutSession.bookingId,
+              paymentIntentId
+            })
+          }
+        />
+      )}
+
+      {seriesCheckoutSession && seriesCheckoutOpen && (
+        <StripeCheckoutModal
+          session={seriesCheckoutSession}
+          onClose={handleSeriesCheckoutClose}
+          onComplete={(paymentIntentId) =>
+            finalizeSeriesMembershipPayment({
+              purchaseId: seriesCheckoutSession.resourceId,
               paymentIntentId
             })
           }

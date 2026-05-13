@@ -32,6 +32,22 @@ const downloadEventBookingsCsv = async (eventId, fallbackFileName = 'event-booki
   });
 };
 
+const downloadEventFeedbackCsv = async (eventId, fallbackFileName = 'event-feedback.csv') => {
+  const response = await api.get(`/api/events/${eventId}/feedback/manage/export.csv`, {
+    responseType: 'blob'
+  });
+
+  const fileName =
+    parseContentDispositionFileName(response.headers['content-disposition']) || fallbackFileName;
+
+  triggerBlobDownload({
+    blob: new Blob([response.data], {
+      type: response.headers['content-type'] || 'text/csv;charset=utf-8'
+    }),
+    fileName
+  });
+};
+
 const downloadTextFile = ({
   content,
   fileName,
@@ -111,4 +127,4 @@ const downloadAgendaCalendar = ({ eventTitle, sessions = [], venueName = '' }) =
   });
 };
 
-export { downloadAgendaCalendar, downloadEventBookingsCsv, downloadTextFile };
+export { downloadAgendaCalendar, downloadEventBookingsCsv, downloadEventFeedbackCsv, downloadTextFile };

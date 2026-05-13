@@ -81,6 +81,10 @@ const sponsorApplicationSchema = new mongoose.Schema(
       required: true,
       index: true
     },
+    portalAccessToken: {
+      type: String,
+      index: true
+    },
     notes: String,
     showOnEventPage: {
       type: Boolean,

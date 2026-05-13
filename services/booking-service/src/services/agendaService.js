@@ -1,9 +1,32 @@
+const {
+  SESSION_REGISTRATION_STATUSES,
+  normalizeSessionRegistrationStatus
+} = require('./sessionRegistrationService');
+
 const normalizeString = (value, fallback = '') => String(value || fallback).trim();
 
 const normalizeStringArray = (values = []) =>
   [...new Set((Array.isArray(values) ? values : [])
     .map((value) => normalizeString(value))
     .filter(Boolean))];
+
+const normalizeOptionalDate = (value) => {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const normalizePositiveInteger = (value) => {
+  const normalized = Number(value);
+  if (!Number.isInteger(normalized) || normalized < 1) {
+    return null;
+  }
+
+  return normalized;
+};
 
 const slugSegment = (value, fallback = 'session') =>
   normalizeString(value, fallback)
@@ -31,11 +54,19 @@ const normalizeAgendaSession = (session = {}, index = 0) => ({
   sessionKey: buildSessionKey(session, index),
   title: normalizeString(session.title, `Session ${index + 1}`),
   description: normalizeString(session.description),
-  startsAt: session.startsAt ? new Date(session.startsAt) : null,
-  endsAt: session.endsAt ? new Date(session.endsAt) : null,
+  startsAt: normalizeOptionalDate(session.startsAt),
+  endsAt: normalizeOptionalDate(session.endsAt),
   roomLabel: normalizeString(session.roomLabel),
   speakerNames: normalizeStringArray(session.speakerNames),
-  savedAt: session.savedAt ? new Date(session.savedAt) : null
+  capacity: normalizePositiveInteger(session.capacity)
+});
+
+const normalizeStoredAgendaSession = (session = {}, index = 0) => ({
+  ...normalizeAgendaSession(session, index),
+  savedAt: normalizeOptionalDate(session.savedAt),
+  registrationStatus: normalizeSessionRegistrationStatus(session.registrationStatus),
+  registeredAt: normalizeOptionalDate(session.registeredAt),
+  waitlistedAt: normalizeOptionalDate(session.waitlistedAt)
 });
 
 const sortAgendaSessions = (sessions = []) =>
@@ -54,12 +85,33 @@ const stripAgendaSessionForStorage = (session = {}) => ({
   sessionKey: normalizeString(session.sessionKey),
   title: normalizeString(session.title),
   description: normalizeString(session.description),
-  startsAt: session.startsAt ? new Date(session.startsAt) : null,
-  endsAt: session.endsAt ? new Date(session.endsAt) : null,
+  startsAt: normalizeOptionalDate(session.startsAt),
+  endsAt: normalizeOptionalDate(session.endsAt),
   roomLabel: normalizeString(session.roomLabel),
   speakerNames: normalizeStringArray(session.speakerNames),
-  savedAt: session.savedAt ? new Date(session.savedAt) : null
+  capacity: normalizePositiveInteger(session.capacity),
+  savedAt: normalizeOptionalDate(session.savedAt),
+  registrationStatus: normalizeSessionRegistrationStatus(session.registrationStatus),
+  registeredAt: normalizeOptionalDate(session.registeredAt),
+  waitlistedAt: normalizeOptionalDate(session.waitlistedAt)
 });
+
+const buildSessionAvailability = (session = {}, demand = {}) => {
+  const capacity = normalizePositiveInteger(session.capacity);
+  const registeredCount = Math.max(0, Number(demand?.registeredCount || 0));
+  const waitlistedCount = Math.max(0, Number(demand?.waitlistedCount || 0));
+  const hasCapacity = capacity !== null;
+  const remainingSeats = hasCapacity ? Math.max(0, capacity - registeredCount) : null;
+
+  return {
+    capacity,
+    hasCapacity,
+    registeredCount,
+    waitlistedCount,
+    remainingSeats,
+    isFull: hasCapacity ? remainingSeats === 0 : false
+  };
+};
 
 const annotateConflicts = (savedSessions = []) => {
   const sessions = sortAgendaSessions(savedSessions).map((session) => ({
@@ -99,6 +151,12 @@ const buildAgendaSummary = (savedSessions = []) => {
 
   return {
     savedCount: savedSessions.length,
+    registeredCount: currentScheduleSessions.filter(
+      (session) => session.registrationStatus === SESSION_REGISTRATION_STATUSES.REGISTERED
+    ).length,
+    waitlistedCount: currentScheduleSessions.filter(
+      (session) => session.registrationStatus === SESSION_REGISTRATION_STATUSES.WAITLISTED
+    ).length,
     scheduledCount: currentScheduleSessions.length,
     totalMinutes,
     roomCount: new Set(currentScheduleSessions.map((session) => session.roomLabel).filter(Boolean)).size,
@@ -107,7 +165,39 @@ const buildAgendaSummary = (savedSessions = []) => {
   };
 };
 
-const buildAgendaState = ({ eventSessions = [], savedSessions = [] }) => {
+const decorateAgendaSession = ({
+  session,
+  savedSession,
+  demandBySessionKey = {},
+  isCurrentSchedule = true
+}) => {
+  const availability = buildSessionAvailability(
+    session,
+    demandBySessionKey[session.sessionKey]
+  );
+  const registrationStatus = savedSession
+    ? normalizeSessionRegistrationStatus(savedSession.registrationStatus)
+    : null;
+
+  return {
+    ...session,
+    ...availability,
+    saved: Boolean(savedSession),
+    registrationStatus,
+    isRegistered: registrationStatus === SESSION_REGISTRATION_STATUSES.REGISTERED,
+    isWaitlisted: registrationStatus === SESSION_REGISTRATION_STATUSES.WAITLISTED,
+    savedAt: savedSession?.savedAt || null,
+    registeredAt: savedSession?.registeredAt || null,
+    waitlistedAt: savedSession?.waitlistedAt || null,
+    isCurrentSchedule
+  };
+};
+
+const buildAgendaState = ({
+  eventSessions = [],
+  savedSessions = [],
+  demandBySessionKey = {}
+}) => {
   const normalizedSchedule = sortAgendaSessions(
     (Array.isArray(eventSessions) ? eventSessions : []).map(normalizeAgendaSession)
   );
@@ -116,7 +206,7 @@ const buildAgendaState = ({ eventSessions = [], savedSessions = [] }) => {
   );
 
   const normalizedSavedSessions = sortAgendaSessions(
-    (Array.isArray(savedSessions) ? savedSessions : []).map(normalizeAgendaSession)
+    (Array.isArray(savedSessions) ? savedSessions : []).map(normalizeStoredAgendaSession)
   );
   const dedupedSavedSessions = new Map();
   for (const session of normalizedSavedSessions) {
@@ -131,24 +221,39 @@ const buildAgendaState = ({ eventSessions = [], savedSessions = [] }) => {
 
       return stripAgendaSessionForStorage({
         ...(currentSession || savedSession),
-        savedAt: savedSession.savedAt || new Date()
+        savedAt: savedSession.savedAt || new Date(),
+        registrationStatus: savedSession.registrationStatus,
+        registeredAt: savedSession.registeredAt,
+        waitlistedAt: savedSession.waitlistedAt
       });
     })
   );
 
-  const savedSessionKeySet = new Set(storedSessions.map((session) => session.sessionKey));
+  const storedSessionByKey = new Map(
+    storedSessions.map((session) => [session.sessionKey, session])
+  );
+
   const responseSavedSessions = annotateConflicts(
-    storedSessions.map((session) => ({
-      ...session,
-      isCurrentSchedule: scheduleByKey.has(session.sessionKey)
-    }))
+    storedSessions.map((savedSession) => {
+      const currentSession = scheduleByKey.get(savedSession.sessionKey);
+
+      return decorateAgendaSession({
+        session: currentSession || savedSession,
+        savedSession,
+        demandBySessionKey,
+        isCurrentSchedule: Boolean(currentSession)
+      });
+    })
   );
 
   return {
-    scheduleSessions: normalizedSchedule.map((session) => ({
-      ...session,
-      saved: savedSessionKeySet.has(session.sessionKey)
-    })),
+    scheduleSessions: normalizedSchedule.map((session) =>
+      decorateAgendaSession({
+        session,
+        savedSession: storedSessionByKey.get(session.sessionKey),
+        demandBySessionKey
+      })
+    ),
     savedSessions: responseSavedSessions,
     storedSessions,
     summary: buildAgendaSummary(responseSavedSessions)
@@ -159,6 +264,7 @@ module.exports = {
   annotateConflicts,
   buildAgendaState,
   buildAgendaSummary,
+  buildSessionAvailability,
   buildSessionKey,
   normalizeAgendaSession,
   stripAgendaSessionForStorage

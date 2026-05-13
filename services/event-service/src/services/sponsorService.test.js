@@ -1,8 +1,10 @@
 const {
+  buildSponsorPortalLink,
   buildSponsorRecordFromApplication,
   buildSponsorRevenueSummary,
   calculateSponsorRevenueBreakdown,
   filterSponsorsForViewer,
+  generateSponsorPortalAccessToken,
   syncSponsorPackageSlots
 } = require('./sponsorService');
 
@@ -143,6 +145,26 @@ describe('sponsorService', () => {
     expect(summary.leadsCaptured).toBe(5);
     expect(summary.activeSponsors).toBe(1);
     expect(summary.paidSponsors).toBe(1);
+  });
+
+  test('buildSponsorPortalLink includes the sponsor workspace access token', () => {
+    expect(
+      buildSponsorPortalLink(
+        'event-1',
+        'sponsor-9',
+        'https://app.pulseroom.test/',
+        'portal-token'
+      )
+    ).toBe(
+      'https://app.pulseroom.test/events/event-1/sponsors/sponsor-9/portal?access=portal-token'
+    );
+  });
+
+  test('generateSponsorPortalAccessToken returns a reusable hex token', () => {
+    const token = generateSponsorPortalAccessToken();
+
+    expect(token).toMatch(/^[a-f0-9]+$/);
+    expect(token.length).toBeGreaterThanOrEqual(24);
   });
 
   test('an activated paid sponsor becomes publicly visible as a booth placement', () => {

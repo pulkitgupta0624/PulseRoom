@@ -53,10 +53,21 @@ const sponsorLeadSchema = new mongoose.Schema(
       enum: ['demo', 'pricing', 'partnership', 'content', 'general'],
       default: 'general'
     },
+    status: {
+      type: String,
+      enum: ['new', 'contacted', 'qualified', 'closed'],
+      default: 'new',
+      index: true
+    },
     message: {
       type: String,
       default: ''
     },
+    followUpNotes: {
+      type: String,
+      default: ''
+    },
+    lastContactedAt: Date,
     source: {
       type: String,
       enum: ['booth_page'],

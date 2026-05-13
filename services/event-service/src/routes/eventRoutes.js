@@ -13,7 +13,10 @@ const {
   decodeOptionalToken
 } = require('@pulseroom/common');
 const Event = require('../models/Event');
+const EventFeedback = require('../models/EventFeedback');
+const EventSeries = require('../models/EventSeries');
 const EventReview = require('../models/EventReview');
+const SeriesMembership = require('../models/SeriesMembership');
 const WebhookEndpoint = require('../models/WebhookEndpoint');
 const {
   createEventSchema,
@@ -32,6 +35,7 @@ const {
   promoPreviewSchema,
   promoConsumeSchema,
   promoReleaseSchema,
+  eventFeedbackSchema,
   eventReviewSchema,
   organizerReplySchema
 } = require('../validators/eventSchemas');
@@ -45,6 +49,12 @@ const {
 } = require('../services/postEventSummaryService');
 const { buildPublicEventFilters } = require('../services/publicEventFilters');
 const { buildPriceSummary } = require('../services/searchService');
+const {
+  buildFeedbackInsights,
+  buildSurveySessionCatalog,
+  normalizeSessionFeedbackEntries,
+  serializeEventFeedback
+} = require('../services/feedbackSurveyService');
 const {
   buildReviewSummary,
   buildReviewWindowOpensAt,
@@ -68,6 +78,10 @@ const {
   normalizeEmail
 } = require('../services/speakerPortalService');
 const {
+  normalizeSeriesMembershipSettings,
+  serializeSeriesMembership
+} = require('../services/seriesService');
+const {
   assertPromoCanBeApplied,
   buildPromoCodeRecord,
   calculatePromoDiscountAmount,
@@ -86,6 +100,37 @@ const {
 const router = express.Router();
 
 const canManageEvent = (event, user) => user.role === Roles.ADMIN || event.organizerId === user.sub;
+
+const loadSeriesViewerContext = async ({ event, viewer }) => {
+  if (!event?.series?.seriesId) {
+    return null;
+  }
+
+  const series = await EventSeries.findById(event.series.seriesId).lean();
+  if (!series) {
+    return {
+      ...event.series,
+      viewerMembership: null,
+      publicPath: `/series/${event.series.seriesId}`
+    };
+  }
+
+  const membership = viewer?.sub
+    ? await SeriesMembership.findOne({
+        seriesId: event.series.seriesId,
+        userId: viewer.sub,
+        status: 'active'
+      }).lean()
+    : null;
+
+  return {
+    ...(event.series?.toObject?.() || event.series || {}),
+    status: series.status,
+    membershipSettings: normalizeSeriesMembershipSettings(series.membershipSettings),
+    viewerMembership: serializeSeriesMembership(membership),
+    publicPath: `/series/${event.series.seriesId}`
+  };
+};
 
 const cacheKeyFromQuery = (query) => `events:list:${JSON.stringify(query)}`;
 
@@ -260,6 +305,67 @@ const loadReviewSummary = async (eventId) => {
 
   return buildReviewSummary(aggregate);
 };
+
+const buildFeedbackWindow = (event) => ({
+  opensAt: event?.endsAt || null,
+  isOpen: event?.status === 'completed'
+});
+
+const serializeFeedbackSurveySessions = (event) =>
+  [...buildSurveySessionCatalog(event?.sessions || []).values()].map((session) => ({
+    sessionKey: session.sessionKey,
+    title: session.title,
+    startsAt: session.startsAt,
+    roomLabel: session.roomLabel,
+    speakerNames: session.speakerNames || []
+  }));
+
+const buildFeedbackCsv = (responses = []) => {
+  const headers = [
+    'attendeeName',
+    'attendeeEmail',
+    'overallRating',
+    'npsScore',
+    'npsBucket',
+    'attendAgain',
+    'highlightText',
+    'improvementText',
+    'sessionRatings',
+    'createdAt',
+    'updatedAt'
+  ];
+
+  const escapeCsvCell = (value = '') =>
+    `"${String(value ?? '').replace(/"/g, '""')}"`;
+
+  return [
+    headers,
+    ...responses.map((response) => [
+      response.attendeeName,
+      response.attendeeEmail,
+      response.overallRating,
+      response.npsScore,
+      response.npsBucket,
+      response.attendAgain ? 'yes' : 'no',
+      response.highlightText,
+      response.improvementText,
+      response.sessionFeedback
+        .map((entry) => `${entry.title} (${entry.rating}/5${entry.comment ? ` - ${entry.comment}` : ''})`)
+        .join('; '),
+      response.createdAt ? new Date(response.createdAt).toISOString() : '',
+      response.updatedAt ? new Date(response.updatedAt).toISOString() : ''
+    ])
+  ]
+    .map((row) => row.map((cell) => escapeCsvCell(cell)).join(','))
+    .join('\r\n');
+};
+
+const buildFeedbackExportFileName = (event) =>
+  `${String(event?.title || 'event')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'event'}-feedback.csv`;
 
 const ensurePromoCodeUnique = (event, code, excludePromoCodeId = null) => {
   const normalizedCode = normalizePromoCode(code);
@@ -1301,7 +1407,7 @@ router.get(
     assertInternalService(req, ['live-service', 'notification-service', 'booking-service', 'chat-service']);
 
     const event = await Event.findById(req.params.eventId)
-      .select('organizerId title startsAt endsAt timezone venueName visibility status networking speakers teamMembers sessions')
+      .select('organizerId title startsAt endsAt timezone venueName visibility status networking speakers teamMembers sessions series')
       .lean();
 
     if (!event) {
@@ -1318,6 +1424,7 @@ router.get(
       venueName: event.venueName || '',
       visibility: event.visibility,
       status: event.status,
+      series: event.series || null,
       speakers: (event.speakers || []).map((speaker) => ({
         userId: speaker.userId || '',
         email: speaker.email || '',
@@ -1338,6 +1445,7 @@ router.get(
         startsAt: session.startsAt,
         endsAt: session.endsAt,
         roomLabel: session.roomLabel || '',
+        capacity: session.capacity || null,
         speakerNames: session.speakerNames || []
       })),
       networking: {
@@ -1347,6 +1455,214 @@ router.get(
         lastMatchedCount: Number(event.networking?.lastMatchedCount || 0)
       }
     });
+  })
+);
+
+router.get(
+  '/:eventId/feedback/manage',
+  authenticate(),
+  authorize(Roles.ORGANIZER, Roles.ADMIN),
+  asyncHandler(async (req, res) => {
+    const event = await Event.findById(req.params.eventId)
+      .select('organizerId title startsAt endsAt status attendeesCount sessions');
+    if (!event) {
+      throw new AppError('Event not found', 404, 'event_not_found');
+    }
+    if (!canManageEvent(event, req.user)) {
+      throw new AppError('Forbidden', 403, 'forbidden');
+    }
+
+    const feedbackResponses = await EventFeedback.find({
+      eventId: req.params.eventId
+    })
+      .sort({ updatedAt: -1, createdAt: -1 })
+      .lean();
+    const insights = buildFeedbackInsights({
+      responses: feedbackResponses,
+      attendeeTarget: event.attendeesCount
+    });
+
+    sendSuccess(res, {
+      event: {
+        eventId: event._id.toString(),
+        title: event.title,
+        startsAt: event.startsAt,
+        endsAt: event.endsAt,
+        attendeesCount: Number(event.attendeesCount || 0),
+        surveyWindow: buildFeedbackWindow(event)
+      },
+      summary: insights.summary,
+      sessions: insights.sessions,
+      responses: insights.responses
+    });
+  })
+);
+
+router.get(
+  '/:eventId/feedback/manage/export.csv',
+  authenticate(),
+  authorize(Roles.ORGANIZER, Roles.ADMIN),
+  asyncHandler(async (req, res) => {
+    const event = await Event.findById(req.params.eventId)
+      .select('organizerId title');
+    if (!event) {
+      throw new AppError('Event not found', 404, 'event_not_found');
+    }
+    if (!canManageEvent(event, req.user)) {
+      throw new AppError('Forbidden', 403, 'forbidden');
+    }
+
+    const feedbackResponses = await EventFeedback.find({
+      eventId: req.params.eventId
+    })
+      .sort({ updatedAt: -1, createdAt: -1 })
+      .lean();
+    const csv = buildFeedbackCsv(
+      feedbackResponses.map((response) => serializeEventFeedback(response))
+    );
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${buildFeedbackExportFileName(event)}"`
+    );
+    res.status(200).send(csv);
+  })
+);
+
+router.get(
+  '/:eventId/feedback/me',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const event = await Event.findById(req.params.eventId)
+      .select('organizerId visibility status endsAt sessions title attendeesCount')
+      .lean();
+    if (!event) {
+      throw new AppError('Event not found', 404, 'event_not_found');
+    }
+
+    assertCanViewEvent(event, req.user);
+
+    const surveyWindow = buildFeedbackWindow(event);
+    if (req.user.sub === event.organizerId) {
+      return sendSuccess(res, {
+        eligible: false,
+        canSubmit: false,
+        reason: 'Organizers cannot submit attendee feedback for their own events.',
+        booking: null,
+        surveyWindow,
+        sessions: serializeFeedbackSurveySessions(event),
+        feedback: null
+      });
+    }
+
+    const eligibility = await loadReviewEligibility(req, req.params.eventId, req.user.sub);
+    const feedback = await EventFeedback.findOne({
+      eventId: req.params.eventId,
+      userId: req.user.sub
+    }).lean();
+
+    let reason = null;
+    if (!surveyWindow.isOpen) {
+      reason = surveyWindow.opensAt
+        ? `Feedback opens once the event ends on ${new Date(surveyWindow.opensAt).toLocaleString()}.`
+        : 'Feedback opens after the event is completed.';
+    } else if (!eligibility.eligible) {
+      reason = 'Only confirmed attendees can submit post-event feedback.';
+    }
+
+    sendSuccess(res, {
+      eligible: Boolean(eligibility.eligible),
+      canSubmit: Boolean(eligibility.eligible && surveyWindow.isOpen),
+      reason,
+      booking: eligibility.booking,
+      surveyWindow,
+      sessions: serializeFeedbackSurveySessions(event),
+      feedback: serializeEventFeedback(feedback)
+    });
+  })
+);
+
+router.post(
+  '/:eventId/feedback',
+  authenticate(),
+  validateSchema(eventFeedbackSchema),
+  asyncHandler(async (req, res) => {
+    const event = await Event.findById(req.params.eventId)
+      .select('organizerId visibility status endsAt sessions title attendeesCount');
+    if (!event) {
+      throw new AppError('Event not found', 404, 'event_not_found');
+    }
+
+    assertCanViewEvent(event, req.user);
+
+    if (req.user.sub === event.organizerId) {
+      throw new AppError('Organizers cannot submit attendee feedback', 403, 'feedback_forbidden');
+    }
+
+    const surveyWindow = buildFeedbackWindow(event);
+    if (!surveyWindow.isOpen) {
+      throw new AppError('Post-event feedback opens once the event is completed', 409, 'feedback_window_closed');
+    }
+
+    const eligibility = await loadReviewEligibility(req, req.params.eventId, req.user.sub);
+    if (!eligibility.eligible) {
+      throw new AppError('Only confirmed attendees can submit feedback for this event', 403, 'feedback_not_eligible');
+    }
+
+    const existingFeedback = await EventFeedback.findOne({
+      eventId: req.params.eventId,
+      userId: req.user.sub
+    });
+
+    const feedback = existingFeedback || new EventFeedback({
+      eventId: req.params.eventId,
+      organizerId: event.organizerId,
+      userId: req.user.sub
+    });
+
+    feedback.attendeeName =
+      eligibility.booking?.attendee?.name?.trim() ||
+      getViewerDisplayName(req.user);
+    feedback.attendeeEmail =
+      eligibility.booking?.attendee?.email?.trim() ||
+      req.user.email ||
+      '';
+    feedback.overallRating = Number(req.body.overallRating);
+    feedback.npsScore = Number(req.body.npsScore);
+    feedback.attendAgain = Boolean(req.body.attendAgain);
+    feedback.highlightText = req.body.highlightText?.trim() || '';
+    feedback.improvementText = req.body.improvementText?.trim() || '';
+    feedback.sessionFeedback = normalizeSessionFeedbackEntries({
+      eventSessions: event.sessions || [],
+      sessionFeedback: req.body.sessionFeedback
+    });
+
+    await feedback.save();
+
+    if (!existingFeedback) {
+      await req.eventBus.publish(DomainEvents.EVENT_FEEDBACK_SUBMITTED, {
+        feedbackId: feedback._id.toString(),
+        eventId: req.params.eventId,
+        eventTitle: event.title,
+        organizerId: event.organizerId,
+        userId: req.user.sub,
+        attendeeName: feedback.attendeeName,
+        attendeeEmail: feedback.attendeeEmail,
+        overallRating: feedback.overallRating,
+        npsScore: feedback.npsScore,
+        createdAt: feedback.createdAt
+      });
+    }
+
+    sendSuccess(
+      res,
+      {
+        feedback: serializeEventFeedback(feedback),
+        surveyWindow
+      },
+      existingFeedback ? 200 : 201
+    );
   })
 );
 
@@ -1614,16 +1930,19 @@ router.get(
       };
     }
 
-    sendSuccess(
-      res,
-      serializeEventForViewer({
-        event,
-        viewer,
-        appOrigin: req.config.appOrigin,
-        includeReferral: req.headers['x-service-name'] === 'booking-service',
-        referralCode: req.query.ref
-      })
-    );
+    const serializedEvent = serializeEventForViewer({
+      event,
+      viewer,
+      appOrigin: req.config.appOrigin,
+      includeReferral: req.headers['x-service-name'] === 'booking-service',
+      referralCode: req.query.ref
+    });
+    const seriesContext = await loadSeriesViewerContext({ event, viewer });
+    if (seriesContext) {
+      serializedEvent.series = seriesContext;
+    }
+
+    sendSuccess(res, serializedEvent);
   })
 );
 
@@ -1664,7 +1983,9 @@ router.patch(
       eventId: event._id.toString(),
       title: event.title,
       organizerId: event.organizerId,
-      startsAt: event.startsAt
+      startsAt: event.startsAt,
+      seriesId: event.series?.seriesId || null,
+      seriesName: event.series?.name || null
     });
 
     sendSuccess(
@@ -1717,7 +2038,9 @@ router.post(
       title: event.title,
       organizerId: event.organizerId,
       startsAt: event.startsAt,
-      visibility: event.visibility
+      visibility: event.visibility,
+      seriesId: event.series?.seriesId || null,
+      seriesName: event.series?.name || null
     });
 
     sendSuccess(
@@ -1770,7 +2093,9 @@ router.post(
       title: event.title,
       organizerId: event.organizerId,
       startsAt: event.startsAt,
-      status: event.status
+      status: event.status,
+      seriesId: event.series?.seriesId || null,
+      seriesName: event.series?.name || null
     });
 
     if (previousStatus !== 'published' && event.status === 'published') {
@@ -1780,7 +2105,9 @@ router.post(
         title: event.title,
         organizerId: event.organizerId,
         startsAt: event.startsAt,
-        visibility: event.visibility
+        visibility: event.visibility,
+        seriesId: event.series?.seriesId || null,
+        seriesName: event.series?.name || null
       });
     }
 

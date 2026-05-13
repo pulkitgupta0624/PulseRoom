@@ -46,8 +46,17 @@ const updateTicketSchema = Joi.object({
 
 const agendaSessionUpdateSchema = Joi.object({
   sessionKey: Joi.string().min(3).max(200).required(),
-  saved: Joi.boolean().required()
-});
+  saved: Joi.boolean(),
+  action: Joi.string()
+    .valid(
+      'save',
+      'remove',
+      'register',
+      'cancel-registration',
+      'join-waitlist',
+      'leave-waitlist'
+    )
+}).xor('saved', 'action');
 
 module.exports = {
   checkoutSchema,

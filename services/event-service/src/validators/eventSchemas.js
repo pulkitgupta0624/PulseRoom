@@ -107,6 +107,42 @@ const sponsorLeadSchema = Joi.object({
   message: Joi.string().trim().max(600).allow('')
 });
 
+const sponsorPortalUpdateSchema = Joi.object({
+  companyName: Joi.string().min(2).max(160).optional(),
+  logoUrl: Joi.string().uri().allow('').optional(),
+  description: Joi.string().max(240).allow('').optional(),
+  boothUrl: Joi.string().uri().allow('').optional(),
+  websiteUrl: Joi.string().uri().allow('').optional(),
+  contactName: Joi.string().min(2).max(120).optional(),
+  contactEmail: Joi.string().email().optional(),
+  notes: Joi.string().max(500).allow('').optional(),
+  showOnEventPage: Joi.boolean().optional(),
+  showInLiveRoom: Joi.boolean().optional(),
+  showInEmails: Joi.boolean().optional(),
+  featuredCallout: Joi.boolean().optional()
+}).min(1);
+
+const sponsorLeadManageSchema = Joi.object({
+  status: Joi.string().valid('new', 'contacted', 'qualified', 'closed').optional(),
+  followUpNotes: Joi.string().trim().max(1000).allow('').optional(),
+  lastContactedAt: Joi.date().optional()
+}).min(1);
+
+const eventFeedbackSessionSchema = Joi.object({
+  sessionKey: Joi.string().trim().min(3).max(200).required(),
+  rating: Joi.number().integer().min(1).max(5).required(),
+  comment: Joi.string().trim().max(600).allow('')
+});
+
+const eventFeedbackSchema = Joi.object({
+  overallRating: Joi.number().integer().min(1).max(5).required(),
+  npsScore: Joi.number().integer().min(0).max(10).required(),
+  attendAgain: Joi.boolean().required(),
+  highlightText: Joi.string().trim().max(1200).allow('').default(''),
+  improvementText: Joi.string().trim().max(1200).allow('').default(''),
+  sessionFeedback: Joi.array().items(eventFeedbackSessionSchema).max(24).default([])
+});
+
 const promoCodeSchema = Joi.object({
   code: Joi.string().trim().min(3).max(32).pattern(/^[A-Za-z0-9_-]+$/).required(),
   discountType: Joi.string().valid('percentage', 'fixed').default('percentage'),
@@ -194,6 +230,47 @@ const pageThemeSchema = Joi.object({
   fontPairing: Joi.string().valid(...Object.keys(FONT_PAIRINGS)).required()
 });
 
+const seriesMembershipSettingsSchema = Joi.object({
+  enabled: Joi.boolean().default(true),
+  allowSelfJoin: Joi.boolean().default(true),
+  planName: Joi.string().trim().min(2).max(120).default('Series Pass'),
+  price: Joi.number().min(0).default(0),
+  currency: Joi.string().length(3).uppercase().default('INR'),
+  discountPercent: Joi.number().min(0).max(100).default(0),
+  earlyAccessHours: Joi.number().integer().min(0).max(168).default(24),
+  includesReplayLibrary: Joi.boolean().default(true),
+  vipNetworking: Joi.boolean().default(false),
+  membersOnlyBooking: Joi.boolean().default(false),
+  perks: Joi.array().items(Joi.string().trim().max(120)).max(12).default([])
+});
+
+const createEventSeriesSchema = Joi.object({
+  name: Joi.string().trim().min(3).max(160).required(),
+  summary: Joi.string().trim().min(12).max(300).required(),
+  description: Joi.string().trim().max(2000).allow('').default(''),
+  cadenceLabel: Joi.string().trim().max(120).allow('').default(''),
+  categories: Joi.array().items(Joi.string().trim().max(60)).default([]),
+  tags: Joi.array().items(Joi.string().trim().max(40)).default([]),
+  status: Joi.string().valid('active', 'archived').default('active'),
+  membershipSettings: seriesMembershipSettingsSchema.default(),
+  theme: Joi.object({
+    accentColor: Joi.string().pattern(/^#?[0-9A-Fa-f]{6}$|^#?[0-9A-Fa-f]{3}$/).default('#1D7A85'),
+    coverImageUrl: Joi.string().uri().allow('').default('')
+  }).default()
+});
+
+const updateEventSeriesSchema = createEventSeriesSchema.fork(
+  ['name', 'summary'],
+  (schema) => schema.optional()
+).min(1);
+
+const seriesCloneEventSchema = Joi.object({
+  sourceEventId: Joi.string().optional(),
+  title: Joi.string().trim().min(3).max(160).optional(),
+  startsAt: Joi.date().required(),
+  endsAt: Joi.date().greater(Joi.ref('startsAt')).optional()
+});
+
 const createEventSchema = Joi.object({
   title: Joi.string().min(3).max(160).required(),
   summary: Joi.string().min(10).max(300).required(),
@@ -270,6 +347,9 @@ module.exports = {
   sponsorApplicationSchema,
   sponsorDecisionSchema,
   sponsorLeadSchema,
+  sponsorPortalUpdateSchema,
+  sponsorLeadManageSchema,
+  eventFeedbackSchema,
   promoCodeSchema,
   updatePromoCodeSchema,
   webhookEndpointSchema,
@@ -282,5 +362,8 @@ module.exports = {
   promoConsumeSchema,
   promoReleaseSchema,
   eventReviewSchema,
-  organizerReplySchema
+  organizerReplySchema,
+  createEventSeriesSchema,
+  updateEventSeriesSchema,
+  seriesCloneEventSchema
 };

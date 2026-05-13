@@ -34,6 +34,11 @@ const EventCard = ({ event, compact = false }) => {
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-xs uppercase tracking-[0.25em] text-sand/70">{event.type}</p>
+            {event.series?.name ? (
+              <p className="mt-2 text-xs uppercase tracking-[0.22em] text-sand/70">
+                {event.series.name}
+              </p>
+            ) : null}
             <h3 className="mt-3 font-display text-2xl leading-tight">{event.title}</h3>
           </div>
           <span className="rounded-full border border-sand/20 px-3 py-1 text-xs uppercase tracking-[0.25em]">

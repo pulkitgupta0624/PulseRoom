@@ -353,6 +353,37 @@ const pageThemeSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const seriesSnapshotSchema = new mongoose.Schema(
+  {
+    seriesId: {
+      type: String,
+      index: true
+    },
+    slug: String,
+    name: String,
+    summary: String,
+    cadenceLabel: String,
+    accentColor: String,
+    coverImageUrl: String,
+    planName: String,
+    discountPercent: {
+      type: Number,
+      default: 0
+    },
+    earlyAccessHours: {
+      type: Number,
+      default: 0
+    },
+    membersOnlyBooking: {
+      type: Boolean,
+      default: false
+    },
+    position: Number,
+    seasonLabel: String
+  },
+  { _id: false }
+);
+
 const postEventSummarySchema = new mongoose.Schema(
   {
     generatedAt: Date,
@@ -511,6 +542,10 @@ const eventSchema = new mongoose.Schema(
       type: [String],
       default: [],
       index: true
+    },
+    series: {
+      type: seriesSnapshotSchema,
+      default: null
     },
     speakers: {
       type: [speakerSchema],

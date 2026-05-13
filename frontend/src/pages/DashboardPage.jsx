@@ -11,6 +11,9 @@ import WebhookManagerModal from '../components/WebhookManagerModal';
 import NetworkingManagerModal from '../components/NetworkingManagerModal';
 import EngagementHeatmapModal from '../components/EngagementHeatmapModal';
 import EventRecapStudioModal from '../components/EventRecapStudioModal';
+import EventFeedbackInsightsModal from '../components/EventFeedbackInsightsModal';
+import AudienceCrmModal from '../components/AudienceCrmModal';
+import SeriesManagerModal from '../components/SeriesManagerModal';
 import AnalyticsCharts from '../components/AnalyticsCharts';
 import OrganizerGrowthDashboard from '../components/OrganizerGrowthDashboard';
 import ModalShell from '../components/ModalShell';
@@ -275,6 +278,9 @@ const DashboardPage = () => {
   const [networkingEvent, setNetworkingEvent] = useState(null);
   const [engagementEvent, setEngagementEvent] = useState(null);
   const [recapEvent, setRecapEvent] = useState(null);
+  const [feedbackEvent, setFeedbackEvent] = useState(null);
+  const [crmEvent, setCrmEvent] = useState(null);
+  const [seriesManagerOpen, setSeriesManagerOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [uploadingCover, setUploadingCover] = useState(false);
   const [createSuccess, setCreateSuccess] = useState(false);
@@ -671,6 +677,15 @@ const DashboardPage = () => {
         eyebrow="Organizer"
         title="Command center"
         description="Create and publish events, manage ticket check-ins, sell sponsor placements, and track demand with real analytics."
+        actions={
+          <button
+            type="button"
+            onClick={() => setSeriesManagerOpen(true)}
+            className="rounded-full border border-ink/12 bg-white px-4 py-2.5 text-sm font-semibold text-ink transition hover:bg-sand"
+          >
+            Open Series Studio
+          </button>
+        }
       />
 
       <section className="grid gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
@@ -1253,6 +1268,11 @@ const DashboardPage = () => {
                             {event.type}
                           </span>
                         )}
+                        {event.series?.name && (
+                          <span className="rounded-full border border-dusk/20 bg-dusk/5 px-2 py-0.5 text-xs text-dusk">
+                            {event.series.name}
+                          </span>
+                        )}
                       </div>
                       <p className="mt-1 text-sm text-ink/65">{formatDate(event.startsAt)}</p>
                       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-sm text-ink/55">
@@ -1330,11 +1350,27 @@ const DashboardPage = () => {
                       </button>
                       <button
                         type="button"
+                        onClick={() => setCrmEvent(event)}
+                        className="rounded-full border border-ink/15 bg-white px-3 py-2 text-xs font-medium text-ink hover:bg-sand"
+                      >
+                        Audience CRM
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => setEngagementEvent(event)}
                         className="rounded-full border border-ember/20 bg-ember/5 px-3 py-2 text-xs font-medium text-ember hover:bg-ember/10"
                       >
                         Engagement
                       </button>
+                      {event.status === 'completed' && (
+                        <button
+                          type="button"
+                          onClick={() => setFeedbackEvent(event)}
+                          className="rounded-full border border-dusk/20 bg-dusk/5 px-3 py-2 text-xs font-medium text-dusk hover:bg-dusk/10"
+                        >
+                          Feedback + NPS
+                        </button>
+                      )}
                       {event.status === 'completed' && (
                         <button
                           type="button"
@@ -1414,8 +1450,21 @@ const DashboardPage = () => {
       {networkingEvent && (
         <NetworkingManagerModal event={networkingEvent} onClose={() => setNetworkingEvent(null)} />
       )}
+      {crmEvent && (
+        <AudienceCrmModal event={crmEvent} onClose={() => setCrmEvent(null)} />
+      )}
+      {seriesManagerOpen && (
+        <SeriesManagerModal
+          events={dashboard?.events || []}
+          onUpdated={refreshDashboard}
+          onClose={() => setSeriesManagerOpen(false)}
+        />
+      )}
       {engagementEvent && (
         <EngagementHeatmapModal event={engagementEvent} onClose={() => setEngagementEvent(null)} />
+      )}
+      {feedbackEvent && (
+        <EventFeedbackInsightsModal event={feedbackEvent} onClose={() => setFeedbackEvent(null)} />
       )}
       {recapEvent && (
         <EventRecapStudioModal event={recapEvent} onClose={() => setRecapEvent(null)} />

@@ -20,21 +20,26 @@ const {
   updateSponsorPackageSchema,
   sponsorApplicationSchema,
   sponsorDecisionSchema,
-  sponsorLeadSchema
+  sponsorLeadSchema,
+  sponsorPortalUpdateSchema,
+  sponsorLeadManageSchema
 } = require('../validators/eventSchemas');
 const {
   ACTIVE_SLOT_STATUSES,
   buildSponsorApplicationLink,
+  buildSponsorPortalLink,
   buildSponsorRecordFromApplication,
   buildSponsorRevenueSummary,
   calculateSponsorRevenueBreakdown,
   filterSponsorPackagesForViewer,
   filterSponsorsForViewer,
+  generateSponsorPortalAccessToken,
   syncSponsorPackageSlots
 } = require('../services/sponsorService');
 
 const router = express.Router();
 const SPONSOR_LEAD_INTEREST_OPTIONS = ['demo', 'pricing', 'partnership', 'content', 'general'];
+const SPONSOR_LEAD_STATUS_OPTIONS = ['new', 'contacted', 'qualified', 'closed'];
 
 const canManageEvent = (event, user) => user.role === Roles.ADMIN || event.organizerId === user.sub;
 const isViewerOwner = (event, viewer) =>
@@ -106,11 +111,138 @@ const serializeLead = (lead, sponsorRecordsById = {}) => {
     companyName: raw.companyName || '',
     roleTitle: raw.roleTitle || '',
     interestType: raw.interestType || 'general',
+    status: raw.status || 'new',
     message: raw.message || '',
+    followUpNotes: raw.followUpNotes || '',
+    lastContactedAt: raw.lastContactedAt || null,
     source: raw.source || 'booth_page',
-    createdAt: raw.createdAt
+    createdAt: raw.createdAt,
+    updatedAt: raw.updatedAt
   };
 };
+
+const getSponsorPortalAccessToken = (req) =>
+  String(req.query.access || req.get('x-sponsor-access') || '').trim();
+
+const ensureSponsorPortalAccessToken = async (application) => {
+  if (application.portalAccessToken) {
+    return application.portalAccessToken;
+  }
+
+  application.portalAccessToken = generateSponsorPortalAccessToken();
+  await application.save();
+  return application.portalAccessToken;
+};
+
+const buildPortalUrlForApplication = async (req, eventId, application) => {
+  const accessToken = await ensureSponsorPortalAccessToken(application);
+  return buildSponsorPortalLink(
+    eventId,
+    application.sponsorId,
+    req.config.appOrigin,
+    accessToken
+  );
+};
+
+const loadSponsorApplicationOrThrow = async (eventId, sponsorId) => {
+  const application = await SponsorApplication.findOne({
+    eventId,
+    sponsorId
+  });
+
+  if (!application) {
+    throw new AppError('Sponsor application not found', 404, 'sponsor_application_not_found');
+  }
+
+  return application;
+};
+
+const authorizeSponsorPortalAccess = ({ req, event, application }) => {
+  const viewer = decodeOptionalToken(req);
+  const viewerIsOwner = Boolean(viewer && canManageEvent(event, viewer));
+  if (viewerIsOwner) {
+    return {
+      viewer,
+      viewerIsOwner
+    };
+  }
+
+  const accessToken = getSponsorPortalAccessToken(req);
+  if (!accessToken || !application.portalAccessToken || accessToken !== application.portalAccessToken) {
+    throw new AppError('Sponsor workspace unavailable', 403, 'sponsor_portal_forbidden');
+  }
+
+  return {
+    viewer,
+    viewerIsOwner
+  };
+};
+
+const buildLeadPipelineSummary = (leads = []) => {
+  const counts = SPONSOR_LEAD_STATUS_OPTIONS.reduce((accumulator, status) => {
+    accumulator[status] = 0;
+    return accumulator;
+  }, {});
+
+  leads.forEach((lead) => {
+    const status = SPONSOR_LEAD_STATUS_OPTIONS.includes(lead.status) ? lead.status : 'new';
+    counts[status] += 1;
+  });
+
+  return {
+    total: leads.length,
+    counts
+  };
+};
+
+const escapeCsvCell = (value = '') => {
+  const normalized = value instanceof Date ? value.toISOString() : String(value ?? '');
+  return `"${normalized.replace(/"/g, '""')}"`;
+};
+
+const buildSponsorLeadCsv = (leads = []) => {
+  const rows = [
+    [
+      'leadId',
+      'fullName',
+      'workEmail',
+      'companyName',
+      'roleTitle',
+      'interestType',
+      'status',
+      'message',
+      'followUpNotes',
+      'source',
+      'createdAt',
+      'lastContactedAt'
+    ],
+    ...leads.map((lead) => [
+      lead.leadId,
+      lead.fullName,
+      lead.workEmail,
+      lead.companyName,
+      lead.roleTitle,
+      lead.interestType,
+      lead.status,
+      lead.message,
+      lead.followUpNotes,
+      lead.source,
+      lead.createdAt,
+      lead.lastContactedAt || ''
+    ])
+  ];
+
+  return rows
+    .map((row) => row.map((cell) => escapeCsvCell(cell)).join(','))
+    .join('\r\n');
+};
+
+const buildDownloadFileName = (companyName = 'sponsor') =>
+  `${String(companyName || 'sponsor')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'sponsor'}-leads.csv`;
 
 const buildManageResponse = async (req, event) => {
   syncSponsorPackageSlots(event);
@@ -164,21 +296,25 @@ const buildManageResponse = async (req, event) => {
     accumulator[sponsor.sponsorId] = sponsor;
     return accumulator;
   }, {});
+  const applicationsWithPortalLinks = await Promise.all(
+    applications.map(async (application) => {
+      const raw = typeof application.toObject === 'function' ? application.toObject() : application;
+      const leadSummary = leadSummaryBySponsorId[raw.sponsorId];
+      return {
+        ...raw,
+        leadsCaptured: Number(leadSummary?.leadsCaptured || 0),
+        lastLeadCapturedAt: leadSummary?.lastLeadCapturedAt || null,
+        portalLink: await buildPortalUrlForApplication(req, eventId, application)
+      };
+    })
+  );
 
   return {
     sponsorPackages: filterSponsorPackagesForViewer(event.sponsorPackages || [], {
       viewerIsOwner: true
     }),
     sponsors,
-    applications: applications.map((application) => {
-      const raw = typeof application.toObject === 'function' ? application.toObject() : application;
-      const leadSummary = leadSummaryBySponsorId[raw.sponsorId];
-      return {
-        ...raw,
-        leadsCaptured: Number(leadSummary?.leadsCaptured || 0),
-        lastLeadCapturedAt: leadSummary?.lastLeadCapturedAt || null
-      };
-    }),
+    applications: applicationsWithPortalLinks,
     leads: recentLeads.map((lead) => serializeLead(lead, sponsorRecordsById)),
     totals: {
       totalApplications: applications.length,
@@ -367,6 +503,7 @@ router.post(
     }
 
     const sponsorId = `sponsor_${crypto.randomBytes(6).toString('hex')}`;
+    const portalAccessToken = generateSponsorPortalAccessToken();
     const payout = calculateSponsorRevenueBreakdown({
       price: sponsorPackage.price,
       platformFeePercent: req.config.sponsorPlatformFeePercent
@@ -389,6 +526,7 @@ router.post(
       websiteUrl: req.body.websiteUrl,
       contactName: req.body.contactName,
       contactEmail: req.body.contactEmail,
+      portalAccessToken,
       notes: req.body.notes,
       showOnEventPage:
         req.body.showOnEventPage ?? sponsorPackage.showOnEventPage ?? true,
@@ -400,6 +538,12 @@ router.post(
         req.body.featuredCallout ?? sponsorPackage.featuredCallout ?? false,
       payout
     });
+    const portalUrl = buildSponsorPortalLink(
+      event._id,
+      sponsorId,
+      req.config.appOrigin,
+      portalAccessToken
+    );
 
     await req.eventBus.publish(DomainEvents.SPONSOR_APPLICATION_SUBMITTED, {
       sponsorId,
@@ -409,7 +553,8 @@ router.post(
       packageName: sponsorPackage.name,
       companyName: application.companyName,
       contactName: application.contactName,
-      contactEmail: application.contactEmail
+      contactEmail: application.contactEmail,
+      portalUrl
     });
 
     sendSuccess(
@@ -418,10 +563,256 @@ router.post(
         sponsorId,
         applicationId: application._id,
         status: application.status,
-        paymentStatus: application.paymentStatus
+        paymentStatus: application.paymentStatus,
+        portalUrl
       },
       201
     );
+  })
+);
+
+router.get(
+  '/:eventId/sponsors/:sponsorId/portal',
+  asyncHandler(async (req, res) => {
+    const event = await loadEventOrThrow(req.params.eventId);
+    syncSponsorPackageSlots(event);
+
+    const application = await loadSponsorApplicationOrThrow(
+      event._id.toString(),
+      req.params.sponsorId
+    );
+    authorizeSponsorPortalAccess({
+      req,
+      event,
+      application
+    });
+
+    const sponsorPackage = (event.sponsorPackages || []).find(
+      (item) => item.packageId === application.packageId
+    );
+    const sponsor = (event.sponsors || []).find(
+      (item) => item.sponsorId === req.params.sponsorId
+    );
+    const leads = await SponsorLead.find({
+      eventId: event._id.toString(),
+      sponsorId: req.params.sponsorId
+    }).sort({ createdAt: -1 });
+    const serializedLeads = leads.map((lead) => serializeLead(lead));
+    const leadPipeline = buildLeadPipelineSummary(serializedLeads);
+    const portalUrl = await buildPortalUrlForApplication(
+      req,
+      event._id.toString(),
+      application
+    );
+
+    sendSuccess(res, {
+      event: {
+        eventId: event._id.toString(),
+        title: event.title,
+        summary: event.summary,
+        startsAt: event.startsAt,
+        endsAt: event.endsAt,
+        type: event.type,
+        status: event.status,
+        coverImageUrl: event.coverImageUrl || '',
+        city: event.city || '',
+        country: event.country || '',
+        attendeesCount: Number(event.attendeesCount || 0)
+      },
+      sponsor: {
+        sponsorId: application.sponsorId,
+        companyName: application.companyName,
+        logoUrl: application.logoUrl || '',
+        description: application.description || '',
+        boothUrl: application.boothUrl || '',
+        websiteUrl: application.websiteUrl || '',
+        contactName: application.contactName,
+        contactEmail: application.contactEmail,
+        notes: application.notes || '',
+        status: application.status,
+        paymentStatus: application.paymentStatus,
+        packageName: application.packageName,
+        tier: application.tier,
+        price: application.price,
+        currency: application.currency || 'INR',
+        featuredCallout: Boolean(application.featuredCallout),
+        showOnEventPage: Boolean(application.showOnEventPage),
+        showInLiveRoom: Boolean(application.showInLiveRoom),
+        showInEmails: Boolean(application.showInEmails),
+        approvedAt: application.approvedAt || null,
+        activatedAt: application.activatedAt || null,
+        payout: application.payout || null,
+        metrics: {
+          boothViews: Number(sponsor?.metrics?.boothViews || 0),
+          boothClicks: Number(sponsor?.metrics?.boothClicks || 0),
+          leadsCaptured: Number(sponsor?.metrics?.leadsCaptured || leads.length || 0)
+        },
+        portalLink: portalUrl
+      },
+      package: sponsorPackage
+        ? {
+            packageId: sponsorPackage.packageId,
+            name: sponsorPackage.name,
+            tier: sponsorPackage.tier,
+            description: sponsorPackage.description || '',
+            price: sponsorPackage.price,
+            currency: sponsorPackage.currency || 'INR',
+            perks: sponsorPackage.perks || [],
+            paymentLinkUrl: sponsorPackage.paymentLinkUrl || '',
+            paymentInstructions: sponsorPackage.paymentInstructions || '',
+            isActive: Boolean(sponsorPackage.isActive)
+          }
+        : null,
+      links: {
+        eventUrl: `${req.config.appOrigin.replace(/\/$/, '')}/events/${event._id.toString()}`,
+        boothPageUrl: sponsor
+          ? `${req.config.appOrigin.replace(/\/$/, '')}/events/${event._id.toString()}/sponsors/${req.params.sponsorId}`
+          : '',
+        portalUrl
+      },
+      leadPipeline,
+      leads: serializedLeads
+    });
+  })
+);
+
+router.patch(
+  '/:eventId/sponsors/:sponsorId/portal',
+  validateSchema(sponsorPortalUpdateSchema),
+  asyncHandler(async (req, res) => {
+    const event = await loadEventOrThrow(req.params.eventId);
+    syncSponsorPackageSlots(event);
+
+    const application = await loadSponsorApplicationOrThrow(
+      event._id.toString(),
+      req.params.sponsorId
+    );
+    authorizeSponsorPortalAccess({
+      req,
+      event,
+      application
+    });
+
+    const sponsorPackage = (event.sponsorPackages || []).find(
+      (item) => item.packageId === application.packageId
+    );
+    const existingSponsor = (event.sponsors || []).find(
+      (item) => item.sponsorId === req.params.sponsorId
+    );
+
+    application.companyName = req.body.companyName ?? application.companyName;
+    application.logoUrl = req.body.logoUrl ?? application.logoUrl;
+    application.description = req.body.description ?? application.description;
+    application.boothUrl = req.body.boothUrl ?? application.boothUrl;
+    application.websiteUrl = req.body.websiteUrl ?? application.websiteUrl;
+    application.contactName = req.body.contactName ?? application.contactName;
+    application.contactEmail = req.body.contactEmail ?? application.contactEmail;
+    application.notes = req.body.notes ?? application.notes;
+    application.showOnEventPage = req.body.showOnEventPage ?? application.showOnEventPage;
+    application.showInLiveRoom = req.body.showInLiveRoom ?? application.showInLiveRoom;
+    application.showInEmails = req.body.showInEmails ?? application.showInEmails;
+    application.featuredCallout = req.body.featuredCallout ?? application.featuredCallout;
+
+    if (existingSponsor) {
+      const nextSponsorRecord = buildSponsorRecordFromApplication({
+        application,
+        sponsorPackage,
+        existingSponsor,
+        overrides: {
+          ...req.body,
+          status: existingSponsor.status,
+          paymentStatus: existingSponsor.paymentStatus,
+          paymentId: existingSponsor.paymentId,
+          approvedAt: existingSponsor.approvedAt,
+          activatedAt: existingSponsor.activatedAt
+        },
+        platformFeePercent: req.config.sponsorPlatformFeePercent
+      });
+
+      event.sponsors = (event.sponsors || []).map((item) =>
+        item.sponsorId === req.params.sponsorId ? nextSponsorRecord : item
+      );
+      await event.save();
+    }
+
+    await application.save();
+
+    sendSuccess(res, {
+      sponsorId: application.sponsorId,
+      portalLink: await buildPortalUrlForApplication(req, event._id.toString(), application),
+      updated: true
+    });
+  })
+);
+
+router.patch(
+  '/:eventId/sponsors/:sponsorId/portal/leads/:leadId',
+  validateSchema(sponsorLeadManageSchema),
+  asyncHandler(async (req, res) => {
+    const event = await loadEventOrThrow(req.params.eventId);
+    const application = await loadSponsorApplicationOrThrow(
+      event._id.toString(),
+      req.params.sponsorId
+    );
+    authorizeSponsorPortalAccess({
+      req,
+      event,
+      application
+    });
+
+    const lead = await SponsorLead.findOne({
+      _id: req.params.leadId,
+      eventId: event._id.toString(),
+      sponsorId: req.params.sponsorId
+    });
+    if (!lead) {
+      throw new AppError('Lead not found', 404, 'sponsor_lead_not_found');
+    }
+
+    if (req.body.status !== undefined) {
+      lead.status = req.body.status;
+      if (req.body.status === 'contacted' && !req.body.lastContactedAt) {
+        lead.lastContactedAt = new Date();
+      }
+    }
+    if (req.body.followUpNotes !== undefined) {
+      lead.followUpNotes = req.body.followUpNotes;
+    }
+    if (req.body.lastContactedAt !== undefined) {
+      lead.lastContactedAt = req.body.lastContactedAt;
+    }
+
+    await lead.save();
+    sendSuccess(res, serializeLead(lead));
+  })
+);
+
+router.get(
+  '/:eventId/sponsors/:sponsorId/portal/leads.csv',
+  asyncHandler(async (req, res) => {
+    const event = await loadEventOrThrow(req.params.eventId);
+    const application = await loadSponsorApplicationOrThrow(
+      event._id.toString(),
+      req.params.sponsorId
+    );
+    authorizeSponsorPortalAccess({
+      req,
+      event,
+      application
+    });
+
+    const leads = await SponsorLead.find({
+      eventId: event._id.toString(),
+      sponsorId: req.params.sponsorId
+    }).sort({ createdAt: -1 });
+    const csv = buildSponsorLeadCsv(leads.map((lead) => serializeLead(lead)));
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=\"${buildDownloadFileName(application.companyName)}\"`
+    );
+    res.send(csv);
   })
 );
 
@@ -635,13 +1026,15 @@ router.patch(
 
     syncSponsorPackageSlots(event);
 
-    const application = await SponsorApplication.findOne({
-      eventId: event._id.toString(),
-      sponsorId: req.params.sponsorId
-    });
-    if (!application) {
-      throw new AppError('Sponsor application not found', 404, 'sponsor_application_not_found');
-    }
+    const application = await loadSponsorApplicationOrThrow(
+      event._id.toString(),
+      req.params.sponsorId
+    );
+    const portalUrl = await buildPortalUrlForApplication(
+      req,
+      event._id.toString(),
+      application
+    );
 
     const sponsorPackage = findPackageOrThrow(event, application.packageId);
     const existingSponsor = (event.sponsors || []).find(
@@ -722,33 +1115,35 @@ router.patch(
     await Promise.all([event.save(), application.save()]);
 
     if (nextStatus === 'active' && previousStatus !== 'active') {
-    await req.eventBus.publish(DomainEvents.SPONSOR_ACTIVATED, {
-      sponsorId: application.sponsorId,
-      eventId: application.eventId,
-      eventTitle: application.eventTitle,
-      organizerId: application.organizerId,
-      packageName: application.packageName,
-      amount: application.price,
-      currency: application.currency,
-      companyName: application.companyName,
-      contactName: application.contactName,
-      contactEmail: application.contactEmail
-    });
-  } else if (nextStatus === 'approved' && previousStatus !== 'approved') {
-    await req.eventBus.publish(DomainEvents.SPONSOR_APPLICATION_APPROVED, {
-      sponsorId: application.sponsorId,
-      eventId: application.eventId,
-      eventTitle: application.eventTitle,
-      organizerId: application.organizerId,
-      packageName: application.packageName,
-      amount: application.price,
-      currency: application.currency,
-      paymentLinkUrl: sponsorPackage.paymentLinkUrl,
-      paymentInstructions: sponsorPackage.paymentInstructions,
-      companyName: application.companyName,
-      contactName: application.contactName,
-      contactEmail: application.contactEmail
-    });
+      await req.eventBus.publish(DomainEvents.SPONSOR_ACTIVATED, {
+        sponsorId: application.sponsorId,
+        eventId: application.eventId,
+        eventTitle: application.eventTitle,
+        organizerId: application.organizerId,
+        packageName: application.packageName,
+        amount: application.price,
+        currency: application.currency,
+        companyName: application.companyName,
+        contactName: application.contactName,
+        contactEmail: application.contactEmail,
+        portalUrl
+      });
+    } else if (nextStatus === 'approved' && previousStatus !== 'approved') {
+      await req.eventBus.publish(DomainEvents.SPONSOR_APPLICATION_APPROVED, {
+        sponsorId: application.sponsorId,
+        eventId: application.eventId,
+        eventTitle: application.eventTitle,
+        organizerId: application.organizerId,
+        packageName: application.packageName,
+        amount: application.price,
+        currency: application.currency,
+        paymentLinkUrl: sponsorPackage.paymentLinkUrl,
+        paymentInstructions: sponsorPackage.paymentInstructions,
+        companyName: application.companyName,
+        contactName: application.contactName,
+        contactEmail: application.contactEmail,
+        portalUrl
+      });
     } else if (nextStatus === 'rejected' && previousStatus !== 'rejected') {
       await req.eventBus.publish(DomainEvents.SPONSOR_APPLICATION_REJECTED, {
         sponsorId: application.sponsorId,

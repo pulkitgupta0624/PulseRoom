@@ -1,3 +1,5 @@
+const crypto = require('crypto');
+
 const SPONSOR_TIERS = ['gold', 'silver', 'bronze', 'custom'];
 const ACTIVE_SLOT_STATUSES = new Set(['approved', 'active']);
 const PUBLIC_SPONSOR_STATUSES = new Set(['active']);
@@ -145,6 +147,17 @@ const syncSponsorPackageSlots = (event) => {
 
 const buildSponsorApplicationLink = (eventId, appOrigin) =>
   `${(appOrigin || '').replace(/\/$/, '')}/events/${eventId.toString()}/sponsor`;
+
+const buildSponsorPortalLink = (eventId, sponsorId, appOrigin, accessToken = '') => {
+  const basePath = `${(appOrigin || '').replace(/\/$/, '')}/events/${eventId.toString()}/sponsors/${sponsorId}/portal`;
+  if (!accessToken) {
+    return basePath;
+  }
+
+  return `${basePath}?access=${encodeURIComponent(accessToken)}`;
+};
+
+const generateSponsorPortalAccessToken = () => crypto.randomBytes(18).toString('hex');
 
 const buildSponsorRecordFromApplication = ({
   application,
@@ -330,10 +343,12 @@ module.exports = {
   ACTIVE_SLOT_STATUSES,
   calculateSponsorRevenueBreakdown,
   buildSponsorApplicationLink,
+  buildSponsorPortalLink,
   buildSponsorRecordFromApplication,
   buildSponsorRevenueSummary,
   filterSponsorPackagesForViewer,
   filterSponsorsForViewer,
+  generateSponsorPortalAccessToken,
   normalizeSponsorTier,
   sanitizeSponsorForViewer,
   sortSponsors,

@@ -47,9 +47,9 @@ const NotificationPanel = () => {
               <p className="mt-2 text-xs uppercase tracking-[0.2em] text-ink/45">{formatDate(item.createdAt)}</p>
             </button>
 
-            {(item.metadata?.claimUrl || item.metadata?.ctaUrl) && (
+            {(item.metadata?.trackingUrl || item.metadata?.claimUrl || item.metadata?.ctaUrl) && (
               <a
-                href={item.metadata.claimUrl || item.metadata.ctaUrl}
+                href={item.metadata.trackingUrl || item.metadata.claimUrl || item.metadata.ctaUrl}
                 onClick={() => dispatch(markNotificationRead(item._id))}
                 className="mt-3 inline-flex rounded-full border border-ink/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink transition hover:bg-sand"
               >

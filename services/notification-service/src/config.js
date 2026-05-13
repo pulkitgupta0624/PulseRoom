@@ -10,8 +10,13 @@ module.exports = {
   redisUrl: process.env.REDIS_URL,
   corsOrigin: process.env.APP_ORIGIN || 'http://localhost:5173',
   appOrigin: process.env.APP_ORIGIN || 'http://localhost:5173',
+  apiGatewayUrl:
+    process.env.API_GATEWAY_URL ||
+    process.env.APP_ORIGIN ||
+    'http://localhost:8080',
   userServiceUrl: process.env.USER_SERVICE_URL,
   eventServiceUrl: process.env.EVENT_SERVICE_URL,
+  bookingServiceUrl: process.env.BOOKING_SERVICE_URL,
   liveServiceUrl: process.env.LIVE_SERVICE_URL,
   mailFrom: process.env.MAIL_FROM || 'noreply@pulseroom.dev',
   smtpHost: process.env.SMTP_HOST || 'localhost',
