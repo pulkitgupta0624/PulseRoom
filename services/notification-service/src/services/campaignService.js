@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const AudienceAutomation = require('../models/AudienceAutomation');
 const AudienceCampaign = require('../models/AudienceCampaign');
 const AudienceCampaignDelivery = require('../models/AudienceCampaignDelivery');
 const EventAudience = require('../models/EventAudience');
@@ -57,6 +58,242 @@ const buildScopeContextUrl = (config, campaign) =>
 
 const buildScopeCtaLabel = (campaign) =>
   getCampaignScopeType(campaign) === 'series' ? 'Open series' : 'Open event';
+
+const getRecipientOverrides = (campaign = {}) =>
+  (Array.isArray(campaign.recipientOverrides) ? campaign.recipientOverrides : []).filter(
+    (recipient) => recipient?.userId
+  );
+
+const JOURNEY_SKIP_REASON_LABELS = Object.freeze({
+  cooldown: 'Suppressed by cooldown',
+  goal_already_met: 'Already hit the journey goal'
+});
+
+const buildJourneySkippedRecipient = ({
+  recipient = {},
+  reason = '',
+  touchIndex = 0,
+  campaignId = '',
+  skippedAt = new Date()
+}) => ({
+  userId: String(recipient?.userId || '').trim(),
+  attendeeName: String(recipient?.attendeeName || '').trim(),
+  email: String(recipient?.email || '').trim(),
+  reason,
+  reasonLabel: JOURNEY_SKIP_REASON_LABELS[reason] || 'Skipped',
+  touchIndex: Number(touchIndex || 0),
+  campaignId: String(campaignId || '').trim(),
+  skippedAt
+});
+
+const mergeJourneySkippedRecipients = (existing = [], additions = []) => {
+  const merged = new Map();
+
+  for (const item of [...(Array.isArray(existing) ? existing : []), ...(Array.isArray(additions) ? additions : [])]) {
+    const userId = String(item?.userId || '').trim();
+    const reason = String(item?.reason || '').trim();
+    if (!userId || !reason) {
+      continue;
+    }
+
+    const touchIndex = Number(item?.touchIndex || 0);
+    const campaignId = String(item?.campaignId || '').trim();
+    merged.set(`${userId}:${reason}:${touchIndex}:${campaignId}`, {
+      userId,
+      attendeeName: String(item?.attendeeName || '').trim(),
+      email: String(item?.email || '').trim(),
+      reason,
+      reasonLabel:
+        String(item?.reasonLabel || '').trim() || JOURNEY_SKIP_REASON_LABELS[reason] || 'Skipped',
+      touchIndex,
+      campaignId,
+      skippedAt: item?.skippedAt || null
+    });
+  }
+
+  return [...merged.values()];
+};
+
+const buildCampaignDispatchContext = ({
+  config,
+  campaign,
+  scopeMeta = {}
+}) => {
+  if (campaign.triggerType === 'event_completed_next_drop' && campaign?.journeyMeta?.targetEventId) {
+    return {
+      ctaUrl: buildEventUrl(config.appOrigin, campaign.journeyMeta.targetEventId),
+      ctaLabel: 'View next drop',
+      contextTitle:
+        campaign.journeyMeta.targetEventTitle || scopeMeta.title || 'event',
+      journeyMeta: {
+        goalType: campaign.journeyMeta.goalType || 'book_next_event',
+        targetEventId: campaign.journeyMeta.targetEventId,
+        targetEventTitle: campaign.journeyMeta.targetEventTitle || '',
+        targetEventStartsAt: campaign.journeyMeta.targetEventStartsAt || null
+      }
+    };
+  }
+
+  if (campaign.triggerType === 'event_completed_next_drop') {
+    if (!scopeMeta?.nextOrganizerEvent?.eventId) {
+      return {
+        error: 'No published upcoming organizer event is available for this journey.'
+      };
+    }
+
+    return {
+      ctaUrl: buildEventUrl(config.appOrigin, scopeMeta.nextOrganizerEvent.eventId),
+      ctaLabel: 'View next drop',
+      contextTitle: scopeMeta.nextOrganizerEvent.title || scopeMeta.title || 'event',
+      journeyMeta: {
+        goalType: 'book_next_event',
+        targetEventId: scopeMeta.nextOrganizerEvent.eventId,
+        targetEventTitle: scopeMeta.nextOrganizerEvent.title || '',
+        targetEventStartsAt: scopeMeta.nextOrganizerEvent.startsAt || null
+      }
+      };
+  }
+
+  if (campaign.triggerType === 'booking_abandoned' && campaign?.journeyMeta?.targetEventId) {
+    return {
+      ctaUrl: buildScopeContextUrl(config, campaign),
+      ctaLabel: 'Complete booking',
+      contextTitle: campaign.journeyMeta.targetEventTitle || scopeMeta.title || 'event',
+      journeyMeta: {
+        goalType: campaign.journeyMeta.goalType || 'confirmed_booking',
+        targetEventId: campaign.journeyMeta.targetEventId,
+        targetEventTitle: campaign.journeyMeta.targetEventTitle || '',
+        targetEventStartsAt: campaign.journeyMeta.targetEventStartsAt || null
+      }
+    };
+  }
+
+  if (campaign.triggerType === 'booking_abandoned') {
+    return {
+      ctaUrl: buildScopeContextUrl(config, campaign),
+      ctaLabel: 'Complete booking',
+      contextTitle: scopeMeta.title || 'event',
+      journeyMeta: {
+        goalType: 'confirmed_booking',
+        targetEventId: campaign.eventId,
+        targetEventTitle: scopeMeta.title || '',
+        targetEventStartsAt: scopeMeta.startsAt || null
+      }
+    };
+  }
+
+  return {
+    ctaUrl: buildScopeContextUrl(config, campaign),
+    ctaLabel: buildScopeCtaLabel(campaign),
+    contextTitle:
+      getCampaignScopeType(campaign) === 'series'
+        ? (scopeMeta.name || 'series')
+        : (scopeMeta.title || 'event')
+  };
+};
+
+const splitJourneyRecipientsByGoal = async ({
+  campaign,
+  recipients = []
+}) => {
+  if (!Array.isArray(recipients) || !recipients.length) {
+    return {
+      deliverableRecipients: [],
+      skippedRecipients: []
+    };
+  }
+
+  const targetEventId = String(campaign?.journeyMeta?.targetEventId || '').trim();
+  if (!targetEventId || campaign?.journeyMeta?.stopOnGoal === false) {
+    return {
+      deliverableRecipients: recipients,
+      skippedRecipients: []
+    };
+  }
+
+  const userIds = [...new Set(
+    recipients
+      .map((recipient) => String(recipient?.userId || '').trim())
+      .filter(Boolean)
+  )];
+
+  if (!userIds.length) {
+    return {
+      deliverableRecipients: [],
+      skippedRecipients: []
+    };
+  }
+
+  const convertedAudience = await EventAudience.find({
+    eventId: targetEventId,
+    userId: {
+      $in: userIds
+    }
+  })
+    .select('userId')
+    .lean();
+  const convertedUserIds = new Set(
+    convertedAudience.map((entry) => String(entry.userId || '').trim()).filter(Boolean)
+  );
+
+  if (!convertedUserIds.size) {
+    return {
+      deliverableRecipients: recipients,
+      skippedRecipients: []
+    };
+  }
+
+  const touchIndex = Number(campaign?.journeyMeta?.touchIndex || 0);
+  const campaignId = campaign?._id?.toString?.() || campaign?._id || '';
+  const deliverableRecipients = [];
+  const skippedRecipients = [];
+
+  for (const recipient of recipients) {
+    const userId = String(recipient?.userId || '').trim();
+    if (!userId) {
+      continue;
+    }
+
+    if (convertedUserIds.has(userId)) {
+      skippedRecipients.push(
+        buildJourneySkippedRecipient({
+          recipient,
+          reason: 'goal_already_met',
+          touchIndex,
+          campaignId,
+          skippedAt: new Date()
+        })
+      );
+      continue;
+    }
+
+    deliverableRecipients.push(recipient);
+  }
+
+  return {
+    deliverableRecipients,
+    skippedRecipients
+  };
+};
+
+const syncAutomationDispatchState = async ({
+  campaign,
+  status,
+  dispatchError = ''
+}) => {
+  const automationId = String(campaign?.automationId || '').trim();
+  if (!automationId || campaign?.sourceType !== 'automation') {
+    return;
+  }
+
+  await AudienceAutomation.findByIdAndUpdate(automationId, {
+    $set: {
+      lastCampaignId: campaign._id?.toString?.() || campaign._id || '',
+      lastDispatchStatus: status,
+      lastDispatchError: dispatchError || ''
+    }
+  });
+};
 
 const buildCampaignRecipientCounts = ({ recipients = [], channel = 'both' }) => ({
   recipientCount: recipients.length,
@@ -282,6 +519,8 @@ const serializeAudienceCampaign = (campaign, analytics = null) => ({
   sentAt: campaign.sentAt || null,
   dispatchError: campaign.dispatchError || '',
   createdAt: campaign.createdAt,
+  journeyMeta: campaign.journeyMeta || null,
+  variantMeta: campaign.variantMeta || null,
   analytics: buildAnalyticsPayload(campaign, analytics || {})
 });
 
@@ -327,36 +566,118 @@ const dispatchCampaign = async ({
           eventServiceClient,
           eventId: campaign.eventId
         });
-    const audience = scopeType === 'series'
-      ? await loadSeriesCrmAudience({
-          eventServiceClient,
-          seriesId: campaign.seriesId || campaign.eventId
-        })
-      : await loadMergedCrmAudience({
-          bookingServiceClient,
-          eventId: campaign.eventId,
-          eventMeta: scopeMeta
-        });
-    const recipients = applyScopeFilters(scopeType, audience, campaign.filters || {});
+    const dispatchContext = buildCampaignDispatchContext({
+      config,
+      campaign,
+      scopeMeta
+    });
 
-    if (!recipients.length) {
+    if (dispatchContext.error) {
       campaign.status = CAMPAIGN_STATUS_FAILED;
-      campaign.dispatchError =
-        getCampaignScopeType(campaign) === 'series'
+      campaign.dispatchError = dispatchContext.error;
+      campaign.sentAt = null;
+      await campaign.save();
+      await syncAutomationDispatchState({
+        campaign,
+        status: CAMPAIGN_STATUS_FAILED,
+        dispatchError: campaign.dispatchError
+      });
+      return campaign;
+    }
+
+    campaign.journeyMeta = dispatchContext.journeyMeta
+      ? {
+          ...(campaign.journeyMeta || {}),
+          ...dispatchContext.journeyMeta
+        }
+      : (campaign.journeyMeta || null);
+
+    const recipientOverrides = getRecipientOverrides(campaign);
+    const audience = recipientOverrides.length
+      ? []
+      : scopeType === 'series'
+        ? await loadSeriesCrmAudience({
+            eventServiceClient,
+            seriesId: campaign.seriesId || campaign.eventId
+          })
+        : await loadMergedCrmAudience({
+            bookingServiceClient,
+            eventId: campaign.eventId,
+            eventMeta: scopeMeta
+          });
+    const recipients = recipientOverrides.length
+      ? recipientOverrides
+      : applyScopeFilters(scopeType, audience, campaign.filters || {});
+    const existingMatchedRecipients = Array.isArray(campaign?.journeyRecipients?.matchedRecipients)
+      ? campaign.journeyRecipients.matchedRecipients.filter((recipient) => recipient?.userId)
+      : recipientOverrides;
+    const existingSkippedRecipients = Array.isArray(campaign?.journeyRecipients?.skippedRecipients)
+      ? campaign.journeyRecipients.skippedRecipients
+      : [];
+    const {
+      deliverableRecipients,
+      skippedRecipients: goalSkippedRecipients
+    } = campaign?.journeyMeta?.goalType
+      ? await splitJourneyRecipientsByGoal({
+          campaign,
+          recipients
+        })
+      : {
+          deliverableRecipients: recipients,
+          skippedRecipients: []
+        };
+
+    if (existingMatchedRecipients.length || existingSkippedRecipients.length || goalSkippedRecipients.length) {
+      campaign.journeyRecipients = {
+        matchedRecipients: existingMatchedRecipients,
+        skippedRecipients: mergeJourneySkippedRecipients(
+          existingSkippedRecipients,
+          goalSkippedRecipients
+        )
+      };
+    }
+
+    if (!deliverableRecipients.length) {
+      if (campaign?.journeyMeta?.goalType) {
+        campaign.recipientCount = 0;
+        campaign.inAppRecipientCount = 0;
+        campaign.emailRecipientCount = 0;
+        campaign.status = CAMPAIGN_STATUS_SENT;
+        campaign.dispatchError = 'All targeted attendees already reached the journey goal before this touch was sent.';
+        campaign.sentAt = new Date();
+        await campaign.save();
+        await syncAutomationDispatchState({
+          campaign,
+          status: CAMPAIGN_STATUS_SENT,
+          dispatchError: campaign.dispatchError
+        });
+        return campaign;
+      }
+
+      campaign.status = CAMPAIGN_STATUS_FAILED;
+      campaign.dispatchError = recipientOverrides.length
+        ? 'No recipients were available for this journey when it was ready to send.'
+        : getCampaignScopeType(campaign) === 'series'
           ? 'No series members matched this segment when the campaign was ready to send.'
           : 'No attendees matched this segment when the campaign was ready to send.';
       campaign.sentAt = null;
       await campaign.save();
+      await syncAutomationDispatchState({
+        campaign,
+        status: CAMPAIGN_STATUS_FAILED,
+        dispatchError: campaign.dispatchError
+      });
       return campaign;
     }
 
-    const ctaUrl = buildScopeContextUrl(config, campaign);
-    const ctaLabel = buildScopeCtaLabel(campaign);
     let inAppRecipientCount = 0;
     let emailRecipientCount = 0;
     let dispatchFailures = 0;
 
-    for (const recipient of recipients) {
+    for (const recipient of deliverableRecipients) {
+      const ctaUrl = recipient.ctaUrl || dispatchContext.ctaUrl;
+      const ctaLabel = recipient.ctaLabel || dispatchContext.ctaLabel;
+
       if (campaign.channel !== 'email') {
         try {
           const delivery = await createTrackingDelivery({
@@ -416,10 +737,7 @@ const dispatchCampaign = async ({
             subject: campaign.title,
             html: buildCampaignEmailHtml({
               attendeeName: recipient.attendeeName,
-              contextTitle:
-                scopeType === 'series'
-                  ? (scopeMeta.name || 'series')
-                  : (scopeMeta.title || 'event'),
+              contextTitle: dispatchContext.contextTitle,
               title: campaign.title,
               body: campaign.body,
               clickUrl,
@@ -440,7 +758,7 @@ const dispatchCampaign = async ({
       }
     }
 
-    campaign.recipientCount = recipients.length;
+    campaign.recipientCount = deliverableRecipients.length;
     campaign.inAppRecipientCount = inAppRecipientCount;
     campaign.emailRecipientCount = emailRecipientCount;
     campaign.sentAt = new Date();
@@ -457,12 +775,78 @@ const dispatchCampaign = async ({
     }
 
     await campaign.save();
+
+    if (
+      campaign.status === CAMPAIGN_STATUS_SENT &&
+      campaign?.journeyMeta?.resendEnabled &&
+      Number(campaign?.journeyMeta?.touchIndex || 0) === 0 &&
+      Number(campaign?.journeyMeta?.resendDelayHours || 0) > 0 &&
+      deliverableRecipients.length
+    ) {
+      const resendScheduledFor = new Date(
+        Date.now() + Number(campaign.journeyMeta.resendDelayHours || 0) * 60 * 60 * 1000
+      );
+      const resendRecipientCounts = buildCampaignRecipientCounts({
+        recipients: deliverableRecipients,
+        channel: campaign.channel
+      });
+      const resendCampaign = await AudienceCampaign.create({
+        scopeType: campaign.scopeType || 'event',
+        eventId: campaign.eventId,
+        seriesId: campaign.seriesId || '',
+        organizerId: campaign.organizerId,
+        createdByUserId: campaign.createdByUserId,
+        sourceType: campaign.sourceType || 'automation',
+        automationId: campaign.automationId || '',
+        automationName: campaign.automationName || '',
+        triggerType: campaign.triggerType || '',
+        segmentId: campaign.segmentId || '',
+        segmentName: campaign.segmentName || '',
+        title: campaign.title,
+        body: campaign.body,
+        channel: campaign.channel,
+        filters: campaign.filters || {},
+        status: CAMPAIGN_STATUS_SCHEDULED,
+        scheduledFor: resendScheduledFor,
+        recipientOverrides: deliverableRecipients,
+        journeyMeta: {
+          ...(campaign.journeyMeta || {}),
+          resendEnabled: false,
+          touchIndex: 1,
+          parentCampaignId: campaign._id.toString()
+        },
+        journeyRecipients: {
+          matchedRecipients: deliverableRecipients,
+          skippedRecipients: []
+        },
+        variantMeta: campaign.variantMeta || null,
+        ...resendRecipientCounts
+      });
+
+      await scheduleCampaignDispatch({
+        campaignId: resendCampaign._id.toString(),
+        queue,
+        scheduledFor: resendScheduledFor
+      });
+    }
+
+    await syncAutomationDispatchState({
+      campaign,
+      status: campaign.status,
+      dispatchError: campaign.dispatchError
+    });
+
     return campaign;
   } catch (error) {
     campaign.status = CAMPAIGN_STATUS_FAILED;
     campaign.dispatchError = error.message;
     campaign.sentAt = null;
     await campaign.save();
+    await syncAutomationDispatchState({
+      campaign,
+      status: CAMPAIGN_STATUS_FAILED,
+      dispatchError: campaign.dispatchError
+    });
     throw error;
   }
 };
@@ -490,6 +874,7 @@ module.exports = {
   CAMPAIGN_STATUS_SENDING,
   CAMPAIGN_STATUS_SENT,
   TRACKING_PIXEL_GIF,
+  buildCampaignDispatchContext,
   buildCampaignRecipientCounts,
   buildCampaignEmailHtml,
   buildTrackingUrl,

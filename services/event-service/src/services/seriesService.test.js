@@ -69,6 +69,17 @@ describe('seriesService', () => {
       endsAt: '2026-04-10T12:00:00.000Z',
       categories: ['business'],
       tags: ['founders'],
+      speakerWorkspace: {
+        greenRoomNotes: 'Use the backstage entrance.',
+        briefingTimeline: [
+          {
+            itemId: 'brief_1',
+            title: 'Rehearsal',
+            startsAt: '2026-04-10T09:30:00.000Z',
+            owner: 'organizer'
+          }
+        ]
+      },
       sessions: [
         {
           title: 'Roundtable',
@@ -100,6 +111,7 @@ describe('seriesService', () => {
     expect(clone.startsAt.toISOString()).toBe('2026-05-10T10:00:00.000Z');
     expect(clone.endsAt.toISOString()).toBe('2026-05-10T12:00:00.000Z');
     expect(clone.sessions[0].startsAt.toISOString()).toBe('2026-05-10T10:30:00.000Z');
+    expect(clone.speakerWorkspace.briefingTimeline[0].startsAt.toISOString()).toBe('2026-05-10T09:30:00.000Z');
     expect(clone.ticketTiers[0].saleStart.toISOString()).toBe('2026-05-01T10:00:00.000Z');
     expect(clone.series.position).toBe(2);
   });

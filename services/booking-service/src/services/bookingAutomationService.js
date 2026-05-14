@@ -33,6 +33,8 @@ const createBookingAutomationService = ({
 
   const buildClaimUrl = (entry) =>
     `${appOrigin.replace(/\/$/, '')}/events/${entry.eventId}?waitlistOfferToken=${entry.offerToken}&tierId=${entry.tierId}`;
+  const buildAbandonedCheckoutUrl = (booking) =>
+    `${appOrigin.replace(/\/$/, '')}/events/${booking.eventId}${booking.tierId ? `?tierId=${booking.tierId}` : ''}`;
 
   const removeJobIfExists = async (jobId) => {
     const job = await queue.getJob(jobId);
@@ -151,6 +153,26 @@ const createBookingAutomationService = ({
         }
       );
     }
+
+    await eventBus.publish(DomainEvents.BOOKING_ABANDONED, {
+      bookingId: booking._id.toString(),
+      eventId: booking.eventId,
+      organizerId: booking.eventSnapshot?.organizerId || '',
+      userId: booking.userId,
+      attendeeEmail: booking.attendee?.email || '',
+      attendeeName: booking.attendee?.name || '',
+      eventTitle: booking.eventSnapshot?.title || '',
+      eventStartsAt: booking.eventSnapshot?.startsAt || null,
+      tierId: booking.tierId,
+      tierName: booking.tierName,
+      quantity: booking.quantity,
+      currency: booking.currency || 'INR',
+      amount: booking.amount,
+      promoCode: booking.promoCode?.code || '',
+      referralCode: booking.referral?.code || '',
+      reservationExpiredAt: booking.cancelledAt || new Date(),
+      recoveryUrl: buildAbandonedCheckoutUrl(booking)
+    });
 
     await eventBus.publish(DomainEvents.BOOKING_CANCELLED, {
       bookingId: booking._id.toString(),

@@ -3,9 +3,76 @@ const normalizeInterestList = (values = []) =>
     .map((value) => String(value || '').trim().toLowerCase())
     .filter(Boolean))];
 
+const MIN_AVAILABILITY_SLOT_MINUTES = 15;
+const MAX_AVAILABILITY_SLOT_MINUTES = 120;
+
 const getNetworkingProfile = (attendee = {}) => attendee.networkingProfile || {};
 
 const normalizeGoal = (value) => String(value || '').trim().toLowerCase();
+
+const getSlotKey = (slot = {}) => {
+  const startsAt = new Date(slot.startsAt || 0);
+  const endsAt = new Date(slot.endsAt || 0);
+  if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) {
+    return '';
+  }
+
+  return `${startsAt.toISOString()}|${endsAt.toISOString()}`;
+};
+
+const normalizeAvailabilitySlots = (slots = []) => {
+  const uniqueSlots = new Map();
+
+  for (const slot of Array.isArray(slots) ? slots : []) {
+    const startsAt = new Date(slot?.startsAt || 0);
+    const endsAt = new Date(slot?.endsAt || 0);
+
+    if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) {
+      continue;
+    }
+
+    const durationMinutes = Math.round((endsAt.getTime() - startsAt.getTime()) / 60000);
+    if (
+      durationMinutes < MIN_AVAILABILITY_SLOT_MINUTES ||
+      durationMinutes > MAX_AVAILABILITY_SLOT_MINUTES
+    ) {
+      continue;
+    }
+
+    const key = getSlotKey({ startsAt, endsAt });
+    if (!key) {
+      continue;
+    }
+
+    uniqueSlots.set(key, {
+      startsAt,
+      endsAt
+    });
+  }
+
+  return [...uniqueSlots.values()]
+    .sort((left, right) => {
+      if (left.startsAt.getTime() !== right.startsAt.getTime()) {
+        return left.startsAt.getTime() - right.startsAt.getTime();
+      }
+
+      return left.endsAt.getTime() - right.endsAt.getTime();
+    })
+    .slice(0, 8);
+};
+
+const isBookableMeetingSlot = ({ slot, participantProfiles = [] }) => {
+  const requestedKey = getSlotKey(slot);
+  if (!requestedKey) {
+    return false;
+  }
+
+  return participantProfiles.some((profile) =>
+    normalizeAvailabilitySlots(profile?.availabilitySlots).some(
+      (profileSlot) => getSlotKey(profileSlot) === requestedKey
+    )
+  );
+};
 
 const buildComplementaryTags = (firstAttendee, secondAttendee) => {
   const firstProfile = getNetworkingProfile(firstAttendee);
@@ -294,6 +361,9 @@ module.exports = {
   buildMatchSummary,
   enrichMatchesWithAiIntros,
   generateNetworkingMatches,
+  getSlotKey,
+  isBookableMeetingSlot,
+  normalizeAvailabilitySlots,
   normalizeInterestList,
   scoreMatch
 };

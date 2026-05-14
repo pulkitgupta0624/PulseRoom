@@ -39,8 +39,88 @@ const teamMemberSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const speakerResourceSchema = new mongoose.Schema(
+  {
+    resourceId: {
+      type: String,
+      required: true
+    },
+    label: {
+      type: String,
+      required: true
+    },
+    url: {
+      type: String,
+      required: true
+    },
+    type: {
+      type: String,
+      default: 'resource'
+    }
+  },
+  { _id: false }
+);
+
+const speakerChecklistItemSchema = new mongoose.Schema(
+  {
+    itemId: {
+      type: String,
+      required: true
+    },
+    label: {
+      type: String,
+      required: true
+    },
+    completed: {
+      type: Boolean,
+      default: false
+    }
+  },
+  { _id: false }
+);
+
+const speakerBriefingTimelineItemSchema = new mongoose.Schema(
+  {
+    itemId: {
+      type: String,
+      required: true
+    },
+    title: {
+      type: String,
+      required: true
+    },
+    details: String,
+    startsAt: Date,
+    owner: {
+      type: String,
+      enum: ['organizer', 'speaker', 'moderator', 'producer'],
+      default: 'organizer'
+    }
+  },
+  { _id: false }
+);
+
+const speakerWorkspaceSchema = new mongoose.Schema(
+  {
+    greenRoomNotes: {
+      type: String,
+      default: ''
+    },
+    sharedResources: {
+      type: [speakerResourceSchema],
+      default: []
+    },
+    briefingTimeline: {
+      type: [speakerBriefingTimelineItemSchema],
+      default: []
+    }
+  },
+  { _id: false }
+);
+
 const sessionSchema = new mongoose.Schema(
   {
+    sessionId: String,
     title: {
       type: String,
       required: true
@@ -58,6 +138,23 @@ const sessionSchema = new mongoose.Schema(
     capacity: Number,
     speakerNames: {
       type: [String],
+      default: []
+    },
+    deckUrl: String,
+    speakerPrepNotes: {
+      type: String,
+      default: ''
+    },
+    rehearsalChecklist: {
+      type: [speakerChecklistItemSchema],
+      default: []
+    },
+    resourceLinks: {
+      type: [speakerResourceSchema],
+      default: []
+    },
+    postSessionResources: {
+      type: [speakerResourceSchema],
       default: []
     }
   },
@@ -558,6 +655,10 @@ const eventSchema = new mongoose.Schema(
     sessions: {
       type: [sessionSchema],
       default: []
+    },
+    speakerWorkspace: {
+      type: speakerWorkspaceSchema,
+      default: () => ({})
     },
     ticketTiers: {
       type: [ticketTierSchema],

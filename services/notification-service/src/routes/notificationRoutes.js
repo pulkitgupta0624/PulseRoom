@@ -33,14 +33,19 @@ const {
   AUTOMATION_STATUS_PAUSED,
   AUTOMATION_TRIGGER_CONFIG,
   computeAutomationScheduledFor,
+  isJourneyOptimizationTrigger,
   isScheduledAutomationTrigger,
+  normalizeJourneyAbTest,
+  normalizeJourneySettings,
   removeAutomationDispatchJob,
   scheduleAutomationDispatch,
   serializeAudienceAutomation
 } = require('../services/automationService');
 const {
   enrichMatchesWithAiIntros,
-  generateNetworkingMatches
+  generateNetworkingMatches,
+  isBookableMeetingSlot,
+  normalizeAvailabilitySlots
 } = require('../services/networkingService');
 const {
   applyAudienceCrmFilters,
@@ -52,9 +57,14 @@ const {
   buildSeriesCrmSummary,
   normalizeSeriesCrmFilters
 } = require('../services/seriesCrmService');
+const {
+  loadEventJourneyAnalytics,
+  loadEventJourneyDetail
+} = require('../services/journeyAnalyticsService');
 
 const router = express.Router();
 const NETWORKING_DECISIONS = new Set(['pending', 'accepted', 'skipped']);
+const NETWORKING_MEETING_STATUSES = new Set(['none', 'proposed', 'confirmed', 'declined', 'cancelled']);
 const CRM_CAMPAIGN_CHANNELS = new Set(['in_app', 'email', 'both']);
 const CRM_AUTOMATION_STATUSES = new Set([AUTOMATION_STATUS_ACTIVE, AUTOMATION_STATUS_PAUSED]);
 const getCrmAutomationTriggersForScope = (scopeType = 'event') =>
@@ -72,6 +82,9 @@ const assertInternalEventService = (req) => {
 
 const buildMessageUrl = (appOrigin, userId) =>
   `${String(appOrigin || '').replace(/\/$/, '')}/messages/${userId}`;
+
+const buildMyBookingsUrl = (appOrigin) =>
+  `${String(appOrigin || '').replace(/\/$/, '')}/my-bookings`;
 
 const buildNetworkingEmailHtml = ({
   attendeeName,
@@ -96,6 +109,99 @@ const buildNetworkingEmailHtml = ({
   </div>
 `;
 
+const formatNetworkingMeetingWindow = ({ startsAt, endsAt }) => {
+  const startDate = new Date(startsAt || 0);
+  const endDate = new Date(endsAt || 0);
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+    return 'the proposed time';
+  }
+
+  const fullFormatter = new Intl.DateTimeFormat('en-IN', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: 'UTC'
+  });
+  const timeFormatter = new Intl.DateTimeFormat('en-IN', {
+    timeStyle: 'short',
+    timeZone: 'UTC'
+  });
+
+  return `${fullFormatter.format(startDate)} - ${timeFormatter.format(endDate)} UTC`;
+};
+
+const buildNetworkingMeetingEmailHtml = ({
+  attendeeName,
+  counterpartName,
+  actorName,
+  eventTitle,
+  slot,
+  note,
+  meetingStatus,
+  appOrigin
+}) => {
+  const slotLabel = formatNetworkingMeetingWindow(slot);
+
+  if (meetingStatus === 'confirmed') {
+    return `
+      <div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6;color:#1f2937;">
+        <p>Hi ${attendeeName || 'there'},</p>
+        <p>Your networking meetup for <strong>${eventTitle}</strong> is confirmed.</p>
+        <p><strong>${counterpartName || actorName || 'Your match'}</strong> is booked for ${slotLabel}.</p>
+        ${note ? `<p>Note: ${note}</p>` : ''}
+        <p>
+          <a href="${buildMyBookingsUrl(appOrigin)}" style="display:inline-block;padding:12px 18px;border-radius:9999px;background:#111827;color:#f9fafb;text-decoration:none;font-weight:700;">
+            Open tickets
+          </a>
+        </p>
+      </div>
+    `;
+  }
+
+  if (meetingStatus === 'declined') {
+    return `
+      <div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6;color:#1f2937;">
+        <p>Hi ${attendeeName || 'there'},</p>
+        <p>${actorName || 'Your match'} declined the proposed networking meetup for <strong>${eventTitle}</strong>.</p>
+        <p>The declined slot was ${slotLabel}. You can suggest another time from your ticket page.</p>
+        <p>
+          <a href="${buildMyBookingsUrl(appOrigin)}" style="display:inline-block;padding:12px 18px;border-radius:9999px;background:#111827;color:#f9fafb;text-decoration:none;font-weight:700;">
+            Propose another slot
+          </a>
+        </p>
+      </div>
+    `;
+  }
+
+  if (meetingStatus === 'cancelled') {
+    return `
+      <div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6;color:#1f2937;">
+        <p>Hi ${attendeeName || 'there'},</p>
+        <p>${actorName || 'Your match'} cancelled the networking meetup for <strong>${eventTitle}</strong>.</p>
+        <p>The previous slot was ${slotLabel}. You can propose a new time whenever you are ready.</p>
+        <p>
+          <a href="${buildMyBookingsUrl(appOrigin)}" style="display:inline-block;padding:12px 18px;border-radius:9999px;background:#111827;color:#f9fafb;text-decoration:none;font-weight:700;">
+            Review networking
+          </a>
+        </p>
+      </div>
+    `;
+  }
+
+  return `
+    <div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6;color:#1f2937;">
+      <p>Hi ${attendeeName || 'there'},</p>
+      <p>${actorName || 'Your match'} proposed a networking meetup for <strong>${eventTitle}</strong>.</p>
+      <p>Suggested time: <strong>${slotLabel}</strong></p>
+      ${note ? `<p>Note: ${note}</p>` : ''}
+      <p>
+        <a href="${buildMyBookingsUrl(appOrigin)}" style="display:inline-block;padding:12px 18px;border-radius:9999px;background:#111827;color:#f9fafb;text-decoration:none;font-weight:700;">
+          Review proposal
+        </a>
+      </p>
+    </div>
+  `;
+};
+
 const sanitizeNetworkingText = (value, maxLength = 240) =>
   String(value || '').trim().slice(0, maxLength);
 
@@ -105,11 +211,18 @@ const normalizeNetworkingList = (values = []) =>
     .filter(Boolean))]
     .slice(0, 8);
 
+const serializeAvailabilitySlots = (slots = []) =>
+  normalizeAvailabilitySlots(slots).map((slot) => ({
+    startsAt: slot.startsAt,
+    endsAt: slot.endsAt
+  }));
+
 const serializeNetworkingProfile = (networking = {}) => ({
   meetingGoal: sanitizeNetworkingText(networking.meetingGoal, 80),
   canHelpWith: Array.isArray(networking.canHelpWith) ? networking.canHelpWith : [],
   lookingFor: Array.isArray(networking.lookingFor) ? networking.lookingFor : [],
-  availabilityNote: sanitizeNetworkingText(networking.availabilityNote, 240)
+  availabilityNote: sanitizeNetworkingText(networking.availabilityNote, 240),
+  availabilitySlots: serializeAvailabilitySlots(networking.availabilitySlots || [])
 });
 
 const hasNetworkingProfile = (networking = {}) => {
@@ -118,7 +231,8 @@ const hasNetworkingProfile = (networking = {}) => {
     profile.meetingGoal ||
     profile.canHelpWith.length ||
     profile.lookingFor.length ||
-    profile.availabilityNote
+    profile.availabilityNote ||
+    profile.availabilitySlots.length
   );
 };
 
@@ -160,6 +274,47 @@ const serializeAudienceProfileForManage = (audience) => ({
   lastMatchedAt: audience.networking?.lastMatchedAt || null,
   profile: serializeNetworkingProfile(audience.networking || {})
 });
+
+const normalizeNetworkingMeetingStatus = (status) =>
+  NETWORKING_MEETING_STATUSES.has(status) ? status : 'none';
+
+const mergeParticipantAudienceProfile = (participant = {}, audience = null) => ({
+  ...participant,
+  displayName: audience?.attendeeName || participant.displayName,
+  email: audience?.email || participant.email,
+  networkingProfile: audience
+    ? serializeNetworkingProfile(audience.networking || {})
+    : serializeNetworkingProfile(participant.networkingProfile || {})
+});
+
+const serializeMeetingForUser = (meeting = {}, userId, participants = []) => {
+  const status = normalizeNetworkingMeetingStatus(meeting?.status);
+  const proposedByUserId = meeting?.proposedByUserId || '';
+  const proposedBy = participants.find((participant) => participant.userId === proposedByUserId);
+  const respondedBy = participants.find((participant) => participant.userId === meeting?.respondedByUserId);
+  const cancelledBy = participants.find((participant) => participant.userId === meeting?.cancelledByUserId);
+
+  return {
+    status,
+    startsAt: meeting?.startsAt || null,
+    endsAt: meeting?.endsAt || null,
+    note: sanitizeNetworkingText(meeting?.note, 240),
+    proposedByUserId,
+    proposedByName: proposedBy?.displayName || proposedBy?.email || 'Your match',
+    proposedAt: meeting?.proposedAt || null,
+    respondedByUserId: meeting?.respondedByUserId || '',
+    respondedByName: respondedBy?.displayName || respondedBy?.email || '',
+    respondedAt: meeting?.respondedAt || null,
+    confirmedAt: meeting?.confirmedAt || null,
+    declinedAt: meeting?.declinedAt || null,
+    cancelledAt: meeting?.cancelledAt || null,
+    cancelledByUserId: meeting?.cancelledByUserId || '',
+    cancelledByName: cancelledBy?.displayName || cancelledBy?.email || '',
+    canRespond: status === 'proposed' && proposedByUserId && proposedByUserId !== userId,
+    canCancel: ['proposed', 'confirmed'].includes(status),
+    isMine: proposedByUserId === userId
+  };
+};
 
 const serializeAudienceSegment = (segment) => ({
   segmentId: segment._id.toString(),
@@ -281,12 +436,30 @@ const buildAudienceNetworkingUpdate = (payload = {}, currentNetworking = {}) => 
   if (payload.availabilityNote !== undefined) {
     nextNetworking.availabilityNote = sanitizeNetworkingText(payload.availabilityNote, 240);
   }
+  if (payload.availabilitySlots !== undefined) {
+    nextNetworking.availabilitySlots = normalizeAvailabilitySlots(payload.availabilitySlots);
+  }
 
   return nextNetworking;
 };
 
-const serializeMatchForUser = (match, userId) => {
-  const participants = match.participants || [];
+const serializeManageMeeting = (meeting = {}, participants = []) => {
+  const status = normalizeNetworkingMeetingStatus(meeting?.status);
+  const proposedBy = participants.find((participant) => participant.userId === meeting?.proposedByUserId);
+
+  return {
+    status,
+    startsAt: meeting?.startsAt || null,
+    endsAt: meeting?.endsAt || null,
+    proposedByUserId: meeting?.proposedByUserId || '',
+    proposedByName: proposedBy?.displayName || proposedBy?.email || ''
+  };
+};
+
+const serializeMatchForUser = (match, userId, audienceMap = new Map()) => {
+  const participants = (match.participants || []).map((participant) =>
+    mergeParticipantAudienceProfile(participant, audienceMap.get(participant.userId))
+  );
   const counterpart = participants.find((participant) => participant.userId !== userId);
   const participantStatuses = buildParticipantStatuses(
     match.participantUserIds || participants.map((participant) => participant.userId),
@@ -305,6 +478,7 @@ const serializeMatchForUser = (match, userId) => {
     summary: match.summary || '',
     myStatus: serializeParticipantStatus(myStatus),
     counterpartStatus: serializeParticipantStatus(counterpartStatus),
+    meeting: serializeMeetingForUser(match.meeting || {}, userId, participants),
     mutualAcceptance:
       myStatus?.decision === 'accepted' &&
       counterpartStatus?.decision === 'accepted',
@@ -365,6 +539,12 @@ const buildManageResponse = async (eventId) => {
     profiledOptIns,
     createdMatches: matches.length,
     matchedAttendees: matchedAttendeeIds.size,
+    meetingProposals: matches.filter(
+      (match) => normalizeNetworkingMeetingStatus(match.meeting?.status) === 'proposed'
+    ).length,
+    confirmedMeetings: matches.filter(
+      (match) => normalizeNetworkingMeetingStatus(match.meeting?.status) === 'confirmed'
+    ).length,
     introEmailsSent: matches.filter((match) => match.introEmailSentAt).length * 2,
     acceptedResponses: matches.reduce(
       (total, match) =>
@@ -405,6 +585,7 @@ const buildManageResponse = async (eventId) => {
       summary: match.summary || '',
       introEmailSentAt: match.introEmailSentAt || null,
       participants: match.participants || [],
+      meeting: serializeManageMeeting(match.meeting || {}, match.participants || []),
       participantStatuses: buildParticipantStatuses(
         match.participantUserIds,
         match.participantStatuses
@@ -427,6 +608,114 @@ const loadAudienceOrThrow = async ({ eventId, userId }) => {
   }
 
   return audience;
+};
+
+const loadAudienceMapForUsers = async ({ eventId, userIds = [] }) => {
+  const resolvedUserIds = [...new Set((Array.isArray(userIds) ? userIds : []).filter(Boolean))];
+  if (!resolvedUserIds.length) {
+    return new Map();
+  }
+
+  const audiences = await EventAudience.find({
+    eventId,
+    userId: {
+      $in: resolvedUserIds
+    }
+  }).lean();
+
+  return new Map(audiences.map((audience) => [audience.userId, audience]));
+};
+
+const assertMutualNetworkingAcceptance = (match) => {
+  const statuses = buildParticipantStatuses(match.participantUserIds, match.participantStatuses);
+  if (statuses.length < 2 || !statuses.every((status) => status.decision === 'accepted')) {
+    throw new AppError(
+      'Both attendees need to accept the intro before scheduling a meeting',
+      409,
+      'networking_match_not_ready'
+    );
+  }
+};
+
+const notifyNetworkingMeetingParticipant = async ({
+  req,
+  eventId,
+  eventTitle,
+  recipient,
+  actor,
+  counterpartName,
+  meetingStatus,
+  meeting
+}) => {
+  if (!recipient?.userId) {
+    return;
+  }
+
+  const actorName = actor?.displayName || actor?.email || 'Your match';
+  const slotLabel = formatNetworkingMeetingWindow(meeting || {});
+  const ctaUrl = buildMyBookingsUrl(req.config.appOrigin);
+  const notificationByStatus = {
+    proposed: {
+      type: 'networking.meeting.proposed',
+      title: `${actorName} proposed a meetup`,
+      body: `Suggested time: ${slotLabel}. Review it from your tickets page.`,
+      ctaLabel: 'Review meeting'
+    },
+    confirmed: {
+      type: 'networking.meeting.confirmed',
+      title: `Networking meetup confirmed for ${eventTitle}`,
+      body: `You are booked with ${counterpartName || actorName} at ${slotLabel}.`,
+      ctaLabel: 'Open tickets'
+    },
+    declined: {
+      type: 'networking.meeting.declined',
+      title: `${actorName} declined the proposed meetup`,
+      body: `The ${slotLabel} slot was declined. You can propose another time anytime.`,
+      ctaLabel: 'Review networking'
+    },
+    cancelled: {
+      type: 'networking.meeting.cancelled',
+      title: `${actorName} cancelled the meetup`,
+      body: `The ${slotLabel} networking slot is no longer booked.`,
+      ctaLabel: 'Review networking'
+    }
+  };
+
+  const notificationCopy = notificationByStatus[meetingStatus];
+  if (!notificationCopy) {
+    return;
+  }
+
+  await req.services.createNotification({
+    userId: recipient.userId,
+    eventId,
+    email: recipient.email,
+    type: notificationCopy.type,
+    title: notificationCopy.title,
+    body: notificationCopy.body,
+    metadata: {
+      counterpartUserId: actor?.userId || '',
+      ctaUrl,
+      ctaLabel: notificationCopy.ctaLabel
+    }
+  });
+
+  if (recipient.email) {
+    await req.services.queue.add('send-email', {
+      to: recipient.email,
+      subject: notificationCopy.title,
+      html: buildNetworkingMeetingEmailHtml({
+        attendeeName: recipient.displayName || recipient.attendeeName || recipient.email,
+        counterpartName,
+        actorName,
+        eventTitle,
+        slot: meeting,
+        note: sanitizeNetworkingText(meeting?.note, 240),
+        meetingStatus,
+        appOrigin: req.config.appOrigin
+      })
+    });
+  }
 };
 
 router.get(
@@ -509,7 +798,6 @@ router.get(
   asyncHandler(async (req, res) => {
     const eventMeta = await loadCrmEventMeta(req, req.params.eventId);
     assertOrganizerCrmAccess(eventMeta, req.user);
-    const eventAutomationTriggers = getCrmAutomationTriggersForScope('event');
 
     const filters = normalizeAudienceCrmFilters(req.query);
     const [{ audience }, segments, recentCampaigns, automations] = await Promise.all([
@@ -546,6 +834,11 @@ router.get(
     const campaignAnalytics = await collectCampaignAnalytics(
       recentCampaigns.map((campaign) => campaign._id.toString())
     );
+    const journeyAnalytics = await loadEventJourneyAnalytics({
+      eventId: req.params.eventId,
+      organizerId: eventMeta.organizerId,
+      automations
+    });
 
     const filteredAudience = applyAudienceCrmFilters(audience, filters);
 
@@ -565,12 +858,36 @@ router.get(
       audience: filteredAudience,
       segments: segments.map(serializeAudienceSegment),
       automations: automations.map(serializeAudienceAutomation),
+      journeys: journeyAnalytics,
       recentCampaigns: recentCampaigns.map((campaign) =>
         serializeAudienceCampaign(
           campaign,
           campaignAnalytics.get(campaign._id.toString())
         )
       )
+    });
+  })
+);
+
+router.get(
+  '/events/:eventId/crm/automations/:automationId/journey',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const eventMeta = await loadCrmEventMeta(req, req.params.eventId);
+    assertOrganizerCrmAccess(eventMeta, req.user);
+
+    const journey = await loadEventJourneyDetail({
+      eventId: req.params.eventId,
+      organizerId: eventMeta.organizerId,
+      automationId: req.params.automationId
+    });
+
+    if (!journey) {
+      throw new AppError('Journey automation not found', 404, 'crm_journey_not_found');
+    }
+
+    sendSuccess(res, {
+      journey
     });
   })
 );
@@ -588,7 +905,7 @@ router.post(
     }
 
     const filters = normalizeAudienceCrmFilters(req.body.filters || {});
-    let segment = null;
+    let segment;
 
     if (req.body.segmentId) {
       segment = await AudienceSegment.findOne({
@@ -787,6 +1104,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const eventMeta = await loadCrmEventMeta(req, req.params.eventId);
     assertOrganizerCrmAccess(eventMeta, req.user);
+    const eventAutomationTriggers = getCrmAutomationTriggersForScope('event');
 
     const name = String(req.body.name || '').trim().slice(0, 120);
     const title = String(req.body.title || '').trim().slice(0, 140);
@@ -813,7 +1131,6 @@ router.post(
     if (!triggerType) {
       throw new AppError('Choose a valid automation trigger', 422, 'crm_automation_trigger_invalid');
     }
-
     let segment = null;
     if (req.body.segmentId) {
       segment = await AudienceSegment.findOne({
@@ -828,6 +1145,29 @@ router.post(
     }
 
     const filters = normalizeAudienceCrmFilters(req.body.filters || segment?.filters || {});
+    const journeySettings = normalizeJourneySettings(
+      triggerType,
+      req.body.journeySettings || {}
+    );
+    const journeyAbTest = normalizeJourneyAbTest(
+      triggerType,
+      req.body.journeyAbTest || {},
+      title,
+      body
+    );
+    if (
+      journeyAbTest?.enabled &&
+      (
+        !journeyAbTest.variants?.[1]?.title ||
+        !journeyAbTest.variants?.[1]?.body
+      )
+    ) {
+      throw new AppError(
+        'Add both a title and message for Variant B before enabling A/B testing.',
+        422,
+        'crm_automation_ab_test_variant_b_required'
+      );
+    }
     const validatedScheduledFor =
       status === AUTOMATION_STATUS_ACTIVE && isScheduledAutomationTrigger(triggerType)
         ? computeAutomationScheduledFor(triggerType, eventMeta)
@@ -849,7 +1189,7 @@ router.post(
       );
     }
 
-    let automation = null;
+    let automation;
 
     if (req.body.automationId) {
       automation = await AudienceAutomation.findOne({
@@ -865,6 +1205,11 @@ router.post(
         throw new AppError('Automation not found', 404, 'crm_automation_not_found');
       }
 
+      const previousTitle = automation.title;
+      const previousBody = automation.body;
+      const previousVariantBTitle = automation.journeyAbTest?.variants?.[1]?.title || '';
+      const previousVariantBBody = automation.journeyAbTest?.variants?.[1]?.body || '';
+
       automation.name = name;
       automation.title = title;
       automation.body = body;
@@ -874,6 +1219,20 @@ router.post(
       automation.segmentId = segment?._id?.toString() || '';
       automation.segmentName = segment?.name || '';
       automation.filters = filters;
+      automation.journeySettings = journeySettings;
+      if (
+        automation?.journeyAbTest?.winnerVariantKey &&
+        journeyAbTest?.enabled &&
+        (
+          previousTitle !== title ||
+          previousBody !== body ||
+          previousVariantBTitle !== journeyAbTest.variants?.[1]?.title ||
+          previousVariantBBody !== journeyAbTest.variants?.[1]?.body
+        )
+      ) {
+        journeyAbTest.winnerVariantKey = '';
+      }
+      automation.journeyAbTest = journeyAbTest;
       automation.updatedByUserId = req.user.sub;
     } else {
       automation = await AudienceAutomation.create({
@@ -890,8 +1249,15 @@ router.post(
         status,
         segmentId: segment?._id?.toString() || '',
         segmentName: segment?.name || '',
-        filters
+        filters,
+        journeySettings,
+        journeyAbTest
       });
+    }
+
+    if (!isJourneyOptimizationTrigger(triggerType)) {
+      automation.journeySettings = null;
+      automation.journeyAbTest = null;
     }
 
     if (
@@ -1037,7 +1403,7 @@ router.post(
     }
 
     const filters = normalizeSeriesCrmFilters(req.body.filters || {});
-    let segment = null;
+    let segment;
 
     if (req.body.segmentId) {
       segment = await AudienceSegment.findOne({
@@ -1301,7 +1667,7 @@ router.post(
       );
     }
 
-    let automation = null;
+    let automation;
 
     if (req.body.automationId) {
       automation = await AudienceAutomation.findOne({
@@ -1417,13 +1783,17 @@ router.post(
     })
       .sort({ score: -1, createdAt: -1 })
       .lean();
+    const audienceMap = await loadAudienceMapForUsers({
+      eventId: req.params.eventId,
+      userIds: matches.flatMap((match) => match.participantUserIds || [])
+    });
 
     sendSuccess(res, {
       eventId: req.params.eventId,
       eventTitle: audience.eventTitle,
       attendeeName: audience.attendeeName,
       ...serializeAudienceNetworking(audience),
-      matches: matches.map((match) => serializeMatchForUser(match, req.body.userId))
+      matches: matches.map((match) => serializeMatchForUser(match, req.body.userId, audienceMap))
     });
   })
 );
@@ -1443,6 +1813,7 @@ router.post(
     await audience.save();
 
     let matches = [];
+    let removedMatches = [];
 
     if (audience.networking?.optedIn) {
       matches = await NetworkingMatch.find({
@@ -1452,16 +1823,60 @@ router.post(
         .sort({ score: -1, createdAt: -1 })
         .lean();
     } else if (previousOptInState) {
+      removedMatches = await NetworkingMatch.find({
+        eventId: req.params.eventId,
+        participantUserIds: req.body.userId
+      }).lean();
+
       await NetworkingMatch.deleteMany({
         eventId: req.params.eventId,
         participantUserIds: req.body.userId
       });
     }
 
+    const audienceMap = await loadAudienceMapForUsers({
+      eventId: req.params.eventId,
+      userIds: matches.flatMap((match) => match.participantUserIds || [])
+    });
+
+    if (removedMatches.length) {
+      const removedAudienceMap = await loadAudienceMapForUsers({
+        eventId: req.params.eventId,
+        userIds: removedMatches.flatMap((match) => match.participantUserIds || [])
+      });
+
+      for (const removedMatch of removedMatches) {
+        if (!['proposed', 'confirmed'].includes(normalizeNetworkingMeetingStatus(removedMatch.meeting?.status))) {
+          continue;
+        }
+
+        const participants = (removedMatch.participants || []).map((participant) =>
+          mergeParticipantAudienceProfile(participant, removedAudienceMap.get(participant.userId))
+        );
+        const actor = participants.find((participant) => participant.userId === req.body.userId) || {
+          userId: req.body.userId,
+          displayName: audience.attendeeName,
+          email: audience.email
+        };
+        const counterpart = participants.find((participant) => participant.userId !== req.body.userId);
+
+        await notifyNetworkingMeetingParticipant({
+          req,
+          eventId: req.params.eventId,
+          eventTitle: audience.eventTitle,
+          recipient: counterpart,
+          actor,
+          counterpartName: actor.displayName || actor.email || 'Your match',
+          meetingStatus: 'cancelled',
+          meeting: removedMatch.meeting || {}
+        });
+      }
+    }
+
     sendSuccess(res, {
       eventId: req.params.eventId,
       ...serializeAudienceNetworking(audience),
-      matches: matches.map((match) => serializeMatchForUser(match, req.body.userId))
+      matches: matches.map((match) => serializeMatchForUser(match, req.body.userId, audienceMap))
     });
   })
 );
@@ -1540,8 +1955,247 @@ router.post(
       });
     }
 
+    const audienceMap = await loadAudienceMapForUsers({
+      eventId: req.params.eventId,
+      userIds: match.participantUserIds || []
+    });
+
     sendSuccess(res, {
-      match: serializeMatchForUser(match.toObject(), req.body.userId)
+      match: serializeMatchForUser(match.toObject(), req.body.userId, audienceMap)
+    });
+  })
+);
+
+router.post(
+  '/internal/networking/:eventId/matches/:matchId/meeting',
+  asyncHandler(async (req, res) => {
+    assertInternalEventService(req);
+
+    const audience = await loadAudienceOrThrow({
+      eventId: req.params.eventId,
+      userId: req.body.userId
+    });
+    const match = await NetworkingMatch.findOne({
+      _id: req.params.matchId,
+      eventId: req.params.eventId,
+      participantUserIds: req.body.userId
+    });
+
+    if (!match) {
+      throw new AppError('Networking match not found', 404, 'networking_match_not_found');
+    }
+
+    assertMutualNetworkingAcceptance(match);
+
+    const action = String(req.body.action || '').trim().toLowerCase();
+    const now = new Date();
+    const participantAudiences = await loadAudienceMapForUsers({
+      eventId: req.params.eventId,
+      userIds: match.participantUserIds || []
+    });
+    const participants = (match.participants || []).map((participant) =>
+      mergeParticipantAudienceProfile(participant, participantAudiences.get(participant.userId))
+    );
+    const actor = participants.find((participant) => participant.userId === req.body.userId);
+    const counterpart = participants.find((participant) => participant.userId !== req.body.userId);
+    const currentMeetingStatus = normalizeNetworkingMeetingStatus(match.meeting?.status);
+
+    if (!counterpart?.userId) {
+      throw new AppError('This match no longer has a valid counterpart', 409, 'networking_match_incomplete');
+    }
+
+    if (action === 'propose') {
+      if (currentMeetingStatus === 'confirmed') {
+        throw new AppError(
+          'Cancel the confirmed meeting before proposing a new slot',
+          409,
+          'networking_meeting_already_confirmed'
+        );
+      }
+      if (
+        currentMeetingStatus === 'proposed' &&
+        match.meeting?.proposedByUserId &&
+        match.meeting.proposedByUserId !== req.body.userId
+      ) {
+        throw new AppError(
+          'Respond to the current proposal before suggesting another slot',
+          409,
+          'networking_meeting_response_required'
+        );
+      }
+
+      const proposedSlot = {
+        startsAt: req.body.startsAt,
+        endsAt: req.body.endsAt
+      };
+
+      if (
+        !isBookableMeetingSlot({
+          slot: proposedSlot,
+          participantProfiles: participants.map((participant) => participant.networkingProfile || {})
+        })
+      ) {
+        throw new AppError(
+          'Choose a valid slot from the published availability windows',
+          422,
+          'networking_meeting_slot_invalid'
+        );
+      }
+
+      const normalizedSlots = normalizeAvailabilitySlots([proposedSlot]);
+      if (!normalizedSlots.length) {
+        throw new AppError(
+          'Meeting slots must be between 15 and 120 minutes',
+          422,
+          'networking_meeting_slot_invalid'
+        );
+      }
+
+      match.meeting = {
+        status: 'proposed',
+        startsAt: normalizedSlots[0].startsAt,
+        endsAt: normalizedSlots[0].endsAt,
+        note: sanitizeNetworkingText(req.body.note, 240),
+        proposedByUserId: req.body.userId,
+        proposedAt: now,
+        respondedByUserId: '',
+        respondedAt: null,
+        confirmedAt: null,
+        declinedAt: null,
+        cancelledAt: null,
+        cancelledByUserId: ''
+      };
+      await match.save();
+
+      await notifyNetworkingMeetingParticipant({
+        req,
+        eventId: req.params.eventId,
+        eventTitle: audience.eventTitle,
+        recipient: counterpart,
+        actor,
+        counterpartName: actor?.displayName || actor?.email || 'Your match',
+        meetingStatus: 'proposed',
+        meeting: match.meeting
+      });
+    } else if (action === 'confirm') {
+      if (currentMeetingStatus !== 'proposed' || match.meeting?.proposedByUserId === req.body.userId) {
+        throw new AppError(
+          'Only the invited attendee can confirm a proposed meeting',
+          409,
+          'networking_meeting_confirm_invalid'
+        );
+      }
+
+      match.meeting = {
+        ...(match.meeting?.toObject ? match.meeting.toObject() : match.meeting),
+        status: 'confirmed',
+        respondedByUserId: req.body.userId,
+        respondedAt: now,
+        confirmedAt: now,
+        declinedAt: null,
+        cancelledAt: null,
+        cancelledByUserId: ''
+      };
+      await match.save();
+
+      const proposer = participants.find(
+        (participant) => participant.userId === match.meeting?.proposedByUserId
+      );
+
+      await Promise.all([
+        notifyNetworkingMeetingParticipant({
+          req,
+          eventId: req.params.eventId,
+          eventTitle: audience.eventTitle,
+          recipient: proposer,
+          actor,
+          counterpartName: actor?.displayName || actor?.email || 'Your match',
+          meetingStatus: 'confirmed',
+          meeting: match.meeting
+        }),
+        notifyNetworkingMeetingParticipant({
+          req,
+          eventId: req.params.eventId,
+          eventTitle: audience.eventTitle,
+          recipient: actor,
+          actor: proposer || actor,
+          counterpartName: proposer?.displayName || proposer?.email || 'Your match',
+          meetingStatus: 'confirmed',
+          meeting: match.meeting
+        })
+      ]);
+    } else if (action === 'decline') {
+      if (currentMeetingStatus !== 'proposed' || match.meeting?.proposedByUserId === req.body.userId) {
+        throw new AppError(
+          'Only the invited attendee can decline a proposed meeting',
+          409,
+          'networking_meeting_decline_invalid'
+        );
+      }
+
+      match.meeting = {
+        ...(match.meeting?.toObject ? match.meeting.toObject() : match.meeting),
+        status: 'declined',
+        respondedByUserId: req.body.userId,
+        respondedAt: now,
+        declinedAt: now
+      };
+      await match.save();
+
+      const proposer = participants.find(
+        (participant) => participant.userId === match.meeting?.proposedByUserId
+      );
+
+      await notifyNetworkingMeetingParticipant({
+        req,
+        eventId: req.params.eventId,
+        eventTitle: audience.eventTitle,
+        recipient: proposer,
+        actor,
+        counterpartName: actor?.displayName || actor?.email || 'Your match',
+        meetingStatus: 'declined',
+        meeting: match.meeting
+      });
+    } else if (action === 'cancel') {
+      if (!['proposed', 'confirmed'].includes(currentMeetingStatus)) {
+        throw new AppError(
+          'There is no active meeting proposal to cancel',
+          409,
+          'networking_meeting_cancel_invalid'
+        );
+      }
+
+      match.meeting = {
+        ...(match.meeting?.toObject ? match.meeting.toObject() : match.meeting),
+        status: 'cancelled',
+        respondedByUserId: req.body.userId,
+        respondedAt: now,
+        cancelledAt: now,
+        cancelledByUserId: req.body.userId
+      };
+      await match.save();
+
+      await notifyNetworkingMeetingParticipant({
+        req,
+        eventId: req.params.eventId,
+        eventTitle: audience.eventTitle,
+        recipient: counterpart,
+        actor,
+        counterpartName: actor?.displayName || actor?.email || 'Your match',
+        meetingStatus: 'cancelled',
+        meeting: match.meeting
+      });
+    } else {
+      throw new AppError('Choose a valid meeting action', 422, 'networking_meeting_action_invalid');
+    }
+
+    const refreshedAudienceMap = await loadAudienceMapForUsers({
+      eventId: req.params.eventId,
+      userIds: match.participantUserIds || []
+    });
+
+    sendSuccess(res, {
+      match: serializeMatchForUser(match.toObject(), req.body.userId, refreshedAudienceMap)
     });
   })
 );

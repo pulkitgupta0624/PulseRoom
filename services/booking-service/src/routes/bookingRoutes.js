@@ -75,6 +75,10 @@ const {
   calculatePricingBreakdown
 } = require('../services/pricingService');
 const {
+  assessBookingRisk,
+  summarizeHistoricalBookings
+} = require('../services/bookingRiskService');
+const {
   serializeWaitlistEntry,
   getCommittedQuantity,
   findActiveWaitlistEntry
@@ -246,6 +250,19 @@ const buildPaymentResponse = (payment, paymentIntentStatus = null) => ({
   paymentIntentStatus
 });
 
+const buildCheckoutResponse = ({
+  booking,
+  payment,
+  paymentIntentStatus = null,
+  paymentIntentMeta = null,
+  resumedExistingBooking = false
+}) => ({
+  booking: serializeBooking(booking),
+  payment: buildPaymentResponse(payment, paymentIntentStatus),
+  paymentIntent: paymentIntentMeta,
+  resumedExistingBooking
+});
+
 const syncPaymentStatusFromIntent = (payment, intent) => {
   if (intent.status === 'succeeded') {
     payment.status = PaymentStatus.SUCCEEDED;
@@ -258,6 +275,57 @@ const syncPaymentStatusFromIntent = (payment, intent) => {
   }
 
   payment.status = PaymentStatus.REQUIRES_ACTION;
+};
+
+const publishBookingRiskIncidentIfNeeded = async ({ booking, req }) => {
+  const historicalBookings = await Booking.find({
+    userId: booking.userId,
+    _id: {
+      $ne: booking._id
+    },
+    status: {
+      $in: [BookingStatus.CONFIRMED, BookingStatus.CANCELLED, BookingStatus.REFUNDED]
+    }
+  })
+    .select('status')
+    .lean();
+  const historicalSummary = summarizeHistoricalBookings(historicalBookings);
+
+  const assessment = assessBookingRisk({
+    booking,
+    historicalSummary
+  });
+
+  if (!assessment.shouldFlag) {
+    return;
+  }
+
+  await req.eventBus.publish(DomainEvents.SAFETY_INCIDENT_DETECTED, {
+    incidentType: 'booking',
+    category: assessment.category,
+    severity: assessment.severity,
+    sourceService: 'booking-service',
+    eventId: booking.eventId,
+    organizerId: booking.eventSnapshot?.organizerId || '',
+    eventTitle: booking.eventSnapshot?.title || '',
+    targetId: booking._id.toString(),
+    targetUserId: booking.userId,
+    summary: `Suspicious booking flagged for ${booking.eventSnapshot?.title || 'event'}`,
+    detail: `${booking.attendee?.name || booking.attendee?.email || 'An attendee'} booked ${booking.quantity} ticket${Number(booking.quantity || 0) === 1 ? '' : 's'} and triggered automated trust checks.`,
+    riskScore: assessment.riskScore,
+    autoActions: assessment.autoActions,
+    evidence: assessment.evidence,
+    detectedAt: new Date(),
+    metadata: {
+      attendeeEmail: booking.attendee?.email || '',
+      attendeeName: booking.attendee?.name || '',
+      quantity: Number(booking.quantity || 0),
+      amount: Number(booking.amount || 0),
+      reportingAmount: getReportingAmount(booking),
+      promoCode: booking.promoCode?.code || '',
+      refundedHistoryCount: historicalSummary.refundedCount
+    }
+  });
 };
 
 const finalizeSuccessfulPayment = async ({ booking, payment, req, providerPaymentId }) => {
@@ -311,7 +379,125 @@ const finalizeSuccessfulPayment = async ({ booking, payment, req, providerPaymen
     });
   }
 
+  await publishBookingRiskIncidentIfNeeded({
+    booking,
+    req
+  });
+
   return booking;
+};
+
+const loadActivePendingStripeCheckout = async ({ userId, eventId }) => {
+  const booking = await Booking.findOne({
+    userId,
+    eventId,
+    status: BookingStatus.PENDING,
+    reservationExpiresAt: { $gt: new Date() }
+  }).sort({ createdAt: -1 });
+
+  if (!booking?.paymentId) {
+    return null;
+  }
+
+  const payment = await Payment.findById(booking.paymentId);
+  if (!payment || payment.provider !== 'stripe') {
+    return null;
+  }
+
+  return {
+    booking,
+    payment
+  };
+};
+
+const resumePendingStripeCheckout = async ({ booking, payment, req }) => {
+  if (payment.status === PaymentStatus.SUCCEEDED) {
+    await finalizeSuccessfulPayment({
+      booking,
+      payment,
+      req,
+      providerPaymentId: payment.providerPaymentId
+    });
+
+    return {
+      booking,
+      payment,
+      paymentIntentMeta: null,
+      paymentIntentStatus: 'succeeded'
+    };
+  }
+
+  if (payment.providerPaymentId && payment.clientSecret) {
+    return {
+      booking,
+      payment,
+      paymentIntentMeta: {
+        clientSecret: payment.clientSecret,
+        paymentIntentId: payment.providerPaymentId
+      },
+      paymentIntentStatus:
+        payment.status === PaymentStatus.REQUIRES_ACTION ? 'requires_action' : null
+    };
+  }
+
+  if (!payment.providerPaymentId) {
+    const intent = await createPaymentIntent({
+      amount: payment.amount,
+      currency: payment.currency,
+      bookingId: booking._id,
+      eventId: booking.eventId,
+      tierId: booking.tierId
+    });
+
+    payment.providerPaymentId = intent.id;
+    payment.clientSecret = intent.client_secret;
+    payment.status = PaymentStatus.REQUIRES_ACTION;
+    await payment.save();
+
+    return {
+      booking,
+      payment,
+      paymentIntentMeta: {
+        clientSecret: intent.client_secret,
+        paymentIntentId: intent.id
+      },
+      paymentIntentStatus: 'requires_action'
+    };
+  }
+
+  const intent = await retrievePaymentIntent(payment.providerPaymentId);
+  syncPaymentStatusFromIntent(payment, intent);
+  payment.providerPaymentId = intent.id;
+  payment.clientSecret = intent.client_secret || payment.clientSecret;
+  await payment.save();
+
+  if (intent.status === 'succeeded') {
+    await finalizeSuccessfulPayment({
+      booking,
+      payment,
+      req,
+      providerPaymentId: intent.id
+    });
+
+    return {
+      booking,
+      payment,
+      paymentIntentMeta: null,
+      paymentIntentStatus: intent.status
+    };
+  }
+
+  return {
+    booking,
+    payment,
+    paymentIntentMeta: payment.clientSecret
+      ? {
+          clientSecret: payment.clientSecret,
+          paymentIntentId: intent.id
+        }
+      : null,
+    paymentIntentStatus: intent.status
+  };
 };
 
 const getOrganizerEvents = async (req) => {
@@ -1009,6 +1195,26 @@ router.post(
   authenticate(),
   validateSchema(checkoutSchema),
   asyncHandler(async (req, res) => {
+    const activePendingCheckout = await loadActivePendingStripeCheckout({
+      userId: req.user.sub,
+      eventId: req.body.eventId
+    });
+
+    if (activePendingCheckout) {
+      const resumedCheckout = await resumePendingStripeCheckout({
+        ...activePendingCheckout,
+        req
+      });
+
+      return sendSuccess(
+        res,
+        buildCheckoutResponse({
+          ...resumedCheckout,
+          resumedExistingBooking: true
+        })
+      );
+    }
+
     const eventResponse = await req.clients.eventService.get(`/api/events/${req.body.eventId}`);
     const event = eventResponse.data.data;
 
@@ -1168,7 +1374,7 @@ router.post(
       promoDiscountBaseAmount
     });
     const discountBaseAmount = selectedDiscount.discountBaseAmount;
-    const { acceptedCurrencies, pricing } = await buildPricingContext({
+    const { pricing } = await buildPricingContext({
       req,
       event,
       tier,
@@ -1367,15 +1573,12 @@ router.post(
       });
     }
 
-    sendSuccess(
-      res,
-      {
-        booking: serializeBooking(booking),
-        payment: buildPaymentResponse(payment, paymentIntentMeta?.paymentIntentId ? 'requires_action' : null),
-        paymentIntent: paymentIntentMeta
-      },
-      201
-    );
+    sendSuccess(res, buildCheckoutResponse({
+      booking,
+      payment,
+      paymentIntentStatus: paymentIntentMeta?.paymentIntentId ? 'requires_action' : null,
+      paymentIntentMeta
+    }), 201);
   })
 );
 

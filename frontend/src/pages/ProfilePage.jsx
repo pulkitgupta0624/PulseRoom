@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { Link } from 'react-router-dom';
 import GamificationShowcase from '../components/GamificationShowcase';
+import OrganizerBrandingFields from '../components/OrganizerBrandingFields';
 import SectionHeader from '../components/SectionHeader';
 import TwoFactorSettings from '../components/TwoFactorSettings';
 import {
@@ -13,14 +14,34 @@ import {
   syncFollowState
 } from '../features/user/userSlice';
 import { api } from '../lib/api';
+import { getOrganizerPublicPath, normalizeOrganizerBranding } from '../lib/organizerBranding';
 
 const INTEREST_OPTIONS = [
   'technology', 'ai', 'design', 'finance', 'community', 'startup',
   'marketing', 'product', 'engineering', 'data', 'climate', 'health'
 ];
 
+const buildProfileForm = (profile) => ({
+  displayName: profile.displayName || '',
+  bio: profile.bio || '',
+  avatarUrl: profile.avatarUrl || '',
+  location: profile.location || '',
+  interests: profile.interests || [],
+  socialLinks: {
+    website: profile.socialLinks?.website || '',
+    linkedin: profile.socialLinks?.linkedin || '',
+    twitter: profile.socialLinks?.twitter || ''
+  },
+  organizerProfile: {
+    companyName: profile.organizerProfile?.companyName || '',
+    website: profile.organizerProfile?.website || '',
+    supportEmail: profile.organizerProfile?.supportEmail || '',
+    branding: normalizeOrganizerBranding(profile.organizerProfile?.branding || {})
+  }
+});
+
 // ─── Organizer Verification Request Form ──────────────────────────────────────
-const OrganizerVerificationSection = ({ userId }) => {
+const OrganizerVerificationSection = () => {
   const [form, setForm] = useState({ legalName: '', companyName: '', website: '', supportEmail: '' });
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -150,8 +171,7 @@ const FollowingTab = () => {
     setUnfollowingId(organizerId);
     setToast(null);
     try {
-      const response = await api.delete(`/api/users/organizers/${organizerId}/follow`);
-      const { followersCount } = response.data.data;
+      await api.delete(`/api/users/organizers/${organizerId}/follow`);
       dispatch(syncFollowState({ organizerId, isFollowing: false, organizerProfile: null }));
       setToast({ tone: 'success', message: `You unfollowed ${displayName}.` });
     } catch (err) {
@@ -270,7 +290,7 @@ const FollowingTab = () => {
                 {/* Actions */}
                 <div className="flex gap-2 mt-auto pt-1">
                   <Link
-                    to={`/organizers/${organizer.userId}`}
+                    to={getOrganizerPublicPath(organizer, organizer.userId)}
                     className="flex-1 rounded-full border border-ink/10 bg-sand px-4 py-2 text-center text-xs font-semibold text-ink hover:bg-white transition"
                   >
                     View profile
@@ -333,26 +353,10 @@ const ProfilePage = () => {
   }, [dispatch]);
 
   useEffect(() => {
-    if (profile && !form) {
-      setForm({
-        displayName: profile.displayName || '',
-        bio: profile.bio || '',
-        avatarUrl: profile.avatarUrl || '',
-        location: profile.location || '',
-        interests: profile.interests || [],
-        socialLinks: {
-          website: profile.socialLinks?.website || '',
-          linkedin: profile.socialLinks?.linkedin || '',
-          twitter: profile.socialLinks?.twitter || ''
-        },
-        organizerProfile: {
-          companyName: profile.organizerProfile?.companyName || '',
-          website: profile.organizerProfile?.website || '',
-          supportEmail: profile.organizerProfile?.supportEmail || ''
-        }
-      });
+    if (profile && (!form || saved)) {
+      setForm(buildProfileForm(profile));
     }
-  }, [profile, form]);
+  }, [profile, form, saved]);
 
   useEffect(() => {
     if (saved) {
@@ -364,6 +368,14 @@ const ProfilePage = () => {
   const updateField = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
   const updateNested = (parent, key, value) =>
     setForm((prev) => ({ ...prev, [parent]: { ...prev[parent], [key]: value } }));
+  const updateOrganizerBranding = (branding) =>
+    setForm((prev) => ({
+      ...prev,
+      organizerProfile: {
+        ...prev.organizerProfile,
+        branding
+      }
+    }));
 
   const toggleInterest = (interest) =>
     setForm((prev) => ({
@@ -418,6 +430,16 @@ const ProfilePage = () => {
     profile &&
     !profile.verifiedOrganizer &&
     !['organizer', 'admin'].includes(profile.role);
+  const publicHubPath = ['organizer', 'admin'].includes(profile?.role)
+    ? getOrganizerPublicPath(
+      {
+        userId: user?.id,
+        publicHubPath: profile?.publicHubPath,
+        organizerProfile: form.organizerProfile
+      },
+      user?.id
+    )
+    : '';
 
   // ── Tab nav ────────────────────────────────────────────────────────────────
   const TABS = [
@@ -430,7 +452,7 @@ const ProfilePage = () => {
       <SectionHeader
         eyebrow="Account"
         title="Your profile"
-        description="Manage your identity, interests, organizer details, and the organizers you follow."
+        description="Manage your identity, interests, organizer details, white-label brand kit, and the organizers you follow."
       />
 
       {/* Tab switcher */}
@@ -456,7 +478,7 @@ const ProfilePage = () => {
       {activeTab === 'profile' && (
         <>
           {showVerificationRequest && (
-            <OrganizerVerificationSection userId={user?.id} />
+            <OrganizerVerificationSection />
           )}
 
           <GamificationShowcase
@@ -575,7 +597,7 @@ const ProfilePage = () => {
                 {/* Quick link to own organizer profile page */}
                 {['organizer', 'admin'].includes(profile?.role) && (
                   <Link
-                    to={`/organizers/${user?.id}`}
+                    to={publicHubPath}
                     className="mt-3 inline-flex items-center gap-1.5 text-xs text-reef hover:underline"
                   >
                     View your public organizer page →
@@ -637,7 +659,7 @@ const ProfilePage = () => {
                 <div className="rounded-[32px] border border-ink/10 bg-white/80 p-6 shadow-bloom">
                   <h2 className="font-display text-2xl text-ink">Organizer profile</h2>
                   <p className="mt-2 text-sm text-ink/60">
-                    Public details shown on your event pages and organizer profile.
+                    Public details shown on your event pages and organizer hub.
                   </p>
                   <div className="mt-4 space-y-3">
                     {[
@@ -656,6 +678,13 @@ const ProfilePage = () => {
                         />
                       </div>
                     ))}
+                  </div>
+                  <div className="mt-5">
+                    <OrganizerBrandingFields
+                      value={form.organizerProfile.branding}
+                      onChange={updateOrganizerBranding}
+                      userId={user?.id}
+                    />
                   </div>
                 </div>
               )}

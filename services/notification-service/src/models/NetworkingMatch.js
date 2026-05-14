@@ -1,5 +1,19 @@
 const mongoose = require('mongoose');
 
+const availabilitySlotSchema = new mongoose.Schema(
+  {
+    startsAt: {
+      type: Date,
+      required: true
+    },
+    endsAt: {
+      type: Date,
+      required: true
+    }
+  },
+  { _id: false }
+);
+
 const participantSnapshotSchema = new mongoose.Schema(
   {
     userId: {
@@ -31,6 +45,10 @@ const participantSnapshotSchema = new mongoose.Schema(
       availabilityNote: {
         type: String,
         default: ''
+      },
+      availabilitySlots: {
+        type: [availabilitySlotSchema],
+        default: []
       }
     }
   },
@@ -49,6 +67,31 @@ const participantStatusSchema = new mongoose.Schema(
       default: 'pending'
     },
     decidedAt: Date
+  },
+  { _id: false }
+);
+
+const networkingMeetingSchema = new mongoose.Schema(
+  {
+    status: {
+      type: String,
+      enum: ['none', 'proposed', 'confirmed', 'declined', 'cancelled'],
+      default: 'none'
+    },
+    startsAt: Date,
+    endsAt: Date,
+    note: {
+      type: String,
+      default: ''
+    },
+    proposedByUserId: String,
+    proposedAt: Date,
+    respondedByUserId: String,
+    respondedAt: Date,
+    confirmedAt: Date,
+    declinedAt: Date,
+    cancelledAt: Date,
+    cancelledByUserId: String
   },
   { _id: false }
 );
@@ -102,6 +145,10 @@ const networkingMatchSchema = new mongoose.Schema(
     participantStatuses: {
       type: [participantStatusSchema],
       default: []
+    },
+    meeting: {
+      type: networkingMeetingSchema,
+      default: () => ({})
     },
     introEmailSentAt: Date,
     generatedAt: {

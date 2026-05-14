@@ -2,7 +2,9 @@ const {
   buildComplementaryTags,
   buildPairKey,
   buildSharedInterests,
-  generateNetworkingMatches
+  generateNetworkingMatches,
+  isBookableMeetingSlot,
+  normalizeAvailabilitySlots
 } = require('./networkingService');
 
 describe('networkingService', () => {
@@ -103,5 +105,78 @@ describe('networkingService', () => {
     expect(matches).toHaveLength(1);
     expect(matches[0].sharedInterests).toEqual([]);
     expect(matches[0].sharedIntentTags).toEqual(['fundraising', 'hiring']);
+  });
+
+  test('normalizeAvailabilitySlots keeps valid slots sorted and deduped', () => {
+    const slots = normalizeAvailabilitySlots([
+      {
+        startsAt: '2026-05-20T12:00:00.000Z',
+        endsAt: '2026-05-20T12:30:00.000Z'
+      },
+      {
+        startsAt: '2026-05-20T12:00:00.000Z',
+        endsAt: '2026-05-20T12:30:00.000Z'
+      },
+      {
+        startsAt: '2026-05-19T12:00:00.000Z',
+        endsAt: '2026-05-19T14:30:00.000Z'
+      },
+      {
+        startsAt: '2026-05-18T12:00:00.000Z',
+        endsAt: '2026-05-18T12:45:00.000Z'
+      }
+    ]);
+
+    expect(slots).toHaveLength(2);
+    expect(slots[0].startsAt.toISOString()).toBe('2026-05-18T12:00:00.000Z');
+    expect(slots[1].startsAt.toISOString()).toBe('2026-05-20T12:00:00.000Z');
+  });
+
+  test('isBookableMeetingSlot accepts slots from either participant availability', () => {
+    expect(
+      isBookableMeetingSlot({
+        slot: {
+          startsAt: '2026-05-21T16:00:00.000Z',
+          endsAt: '2026-05-21T16:30:00.000Z'
+        },
+        participantProfiles: [
+          {
+            availabilitySlots: [
+              {
+                startsAt: '2026-05-21T16:00:00.000Z',
+                endsAt: '2026-05-21T16:30:00.000Z'
+              }
+            ]
+          },
+          {
+            availabilitySlots: [
+              {
+                startsAt: '2026-05-22T16:00:00.000Z',
+                endsAt: '2026-05-22T16:30:00.000Z'
+              }
+            ]
+          }
+        ]
+      })
+    ).toBe(true);
+
+    expect(
+      isBookableMeetingSlot({
+        slot: {
+          startsAt: '2026-05-23T16:00:00.000Z',
+          endsAt: '2026-05-23T16:30:00.000Z'
+        },
+        participantProfiles: [
+          {
+            availabilitySlots: [
+              {
+                startsAt: '2026-05-21T16:00:00.000Z',
+                endsAt: '2026-05-21T16:30:00.000Z'
+              }
+            ]
+          }
+        ]
+      })
+    ).toBe(false);
   });
 });

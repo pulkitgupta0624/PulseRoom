@@ -7,6 +7,8 @@ const { connectMongo, RedisEventBus, DomainEvents } = require('@pulseroom/common
 const { createApp, logger } = require('./app');
 const config = require('./config');
 const AnalyticsSnapshot = require('./models/AnalyticsSnapshot');
+const SafetyIncident = require('./models/SafetyIncident');
+const { serializeSafetyIncident } = require('./services/safetyIncidentService');
 
 const metricsByEvent = {
   [DomainEvents.USER_REGISTERED]: { users: 1 },
@@ -45,6 +47,30 @@ const applyMetricDelta = async (event, payload, io) => {
   ).lean();
 
   io.to('admins').emit('admin:analytics', snapshot);
+};
+
+const persistSafetyIncident = async (payload = {}, io) => {
+  const incident = await SafetyIncident.create({
+    incidentType: payload.incidentType,
+    category: payload.category,
+    severity: payload.severity,
+    status: payload.status || 'open',
+    sourceService: payload.sourceService || '',
+    eventId: payload.eventId || '',
+    organizerId: payload.organizerId || '',
+    eventTitle: payload.eventTitle || '',
+    targetId: payload.targetId,
+    targetUserId: payload.targetUserId || '',
+    summary: payload.summary,
+    detail: payload.detail || '',
+    riskScore: Number(payload.riskScore || 0),
+    autoActions: Array.isArray(payload.autoActions) ? payload.autoActions : [],
+    evidence: Array.isArray(payload.evidence) ? payload.evidence : [],
+    metadata: payload.metadata || {},
+    detectedAt: payload.detectedAt || new Date()
+  });
+
+  io.to('admins').emit('admin:safety-incident', serializeSafetyIncident(incident));
 };
 
 const start = async () => {
@@ -91,9 +117,17 @@ const start = async () => {
     socket.join('admins');
   });
 
-  await eventBus.subscribe(Object.keys(metricsByEvent), async ({ event, payload }) => {
-    await applyMetricDelta(event, payload, io);
-  });
+  await eventBus.subscribe(
+    [...Object.keys(metricsByEvent), DomainEvents.SAFETY_INCIDENT_DETECTED],
+    async ({ event, payload }) => {
+      if (event === DomainEvents.SAFETY_INCIDENT_DETECTED) {
+        await persistSafetyIncident(payload, io);
+        return;
+      }
+
+      await applyMetricDelta(event, payload, io);
+    }
+  );
 
   const app = createApp({ io });
   const server = http.createServer(app);
@@ -115,4 +149,3 @@ start().catch((error) => {
   });
   process.exit(1);
 });
-

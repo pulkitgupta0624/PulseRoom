@@ -33,15 +33,56 @@ const teamMemberSchema = Joi.object({
   notes: Joi.string().max(240).allow('')
 });
 
+const speakerResourceSchema = Joi.object({
+  resourceId: Joi.string().allow(''),
+  label: Joi.string().trim().min(2).max(120).required(),
+  url: Joi.string().uri({ scheme: ['http', 'https'] }).required(),
+  type: Joi.string().trim().max(40).allow('').default('resource')
+});
+
+const speakerChecklistItemSchema = Joi.object({
+  itemId: Joi.string().allow(''),
+  label: Joi.string().trim().min(2).max(160).required(),
+  completed: Joi.boolean().default(false)
+});
+
+const speakerBriefingTimelineItemSchema = Joi.object({
+  itemId: Joi.string().allow(''),
+  title: Joi.string().trim().min(2).max(160).required(),
+  details: Joi.string().trim().max(600).allow('').default(''),
+  startsAt: Joi.date().allow(null),
+  owner: Joi.string().valid('organizer', 'speaker', 'moderator', 'producer').default('organizer')
+});
+
 const sessionSchema = Joi.object({
+  sessionId: Joi.string().allow(''),
   title: Joi.string().required(),
   description: Joi.string().allow(''),
   startsAt: Joi.date().required(),
   endsAt: Joi.date().required(),
   roomLabel: Joi.string().allow(''),
   capacity: Joi.number().integer().min(1),
-  speakerNames: Joi.array().items(Joi.string()).default([])
+  speakerNames: Joi.array().items(Joi.string()).default([]),
+  deckUrl: Joi.string().uri({ scheme: ['http', 'https'] }).allow(''),
+  speakerPrepNotes: Joi.string().max(2000).allow(''),
+  rehearsalChecklist: Joi.array().items(speakerChecklistItemSchema).max(20).default([]),
+  resourceLinks: Joi.array().items(speakerResourceSchema).max(20).default([]),
+  postSessionResources: Joi.array().items(speakerResourceSchema).max(20).default([])
 });
+
+const speakerWorkspaceUpdateSchema = Joi.object({
+  greenRoomNotes: Joi.string().trim().max(4000).allow('').optional(),
+  sharedResources: Joi.array().items(speakerResourceSchema).max(20).optional(),
+  briefingTimeline: Joi.array().items(speakerBriefingTimelineItemSchema).max(20).optional()
+}).min(1);
+
+const speakerSessionWorkspaceUpdateSchema = Joi.object({
+  deckUrl: Joi.string().uri({ scheme: ['http', 'https'] }).allow('').optional(),
+  speakerPrepNotes: Joi.string().trim().max(2000).allow('').optional(),
+  rehearsalChecklist: Joi.array().items(speakerChecklistItemSchema).max(20).optional(),
+  resourceLinks: Joi.array().items(speakerResourceSchema).max(20).optional(),
+  postSessionResources: Joi.array().items(speakerResourceSchema).max(20).optional()
+}).min(1);
 
 const sponsorPackageSchema = Joi.object({
   name: Joi.string().min(2).max(120).required(),
@@ -186,16 +227,37 @@ const networkingSettingsSchema = Joi.object({
   matchesPerAttendee: Joi.number().integer().min(1).max(5)
 }).min(1);
 
+const networkingAvailabilitySlotSchema = Joi.object({
+  startsAt: Joi.date().required(),
+  endsAt: Joi.date().greater(Joi.ref('startsAt')).required()
+});
+
 const networkingOptInSchema = Joi.object({
   optedIn: Joi.boolean(),
   meetingGoal: Joi.string().trim().max(80).allow(''),
   canHelpWith: Joi.array().items(Joi.string().trim().max(40)).max(8),
   lookingFor: Joi.array().items(Joi.string().trim().max(40)).max(8),
-  availabilityNote: Joi.string().trim().max(240).allow('')
+  availabilityNote: Joi.string().trim().max(240).allow(''),
+  availabilitySlots: Joi.array().items(networkingAvailabilitySlotSchema).max(8)
 }).min(1);
 
 const networkingMatchDecisionSchema = Joi.object({
   decision: Joi.string().valid('pending', 'accepted', 'skipped').required()
+});
+
+const networkingMeetingActionSchema = Joi.object({
+  action: Joi.string().valid('propose', 'confirm', 'decline', 'cancel').required(),
+  startsAt: Joi.date().when('action', {
+    is: 'propose',
+    then: Joi.required(),
+    otherwise: Joi.optional()
+  }),
+  endsAt: Joi.date().when('action', {
+    is: 'propose',
+    then: Joi.date().greater(Joi.ref('startsAt')).required(),
+    otherwise: Joi.optional()
+  }),
+  note: Joi.string().trim().max(240).allow('')
 });
 
 const networkingGenerateSchema = Joi.object({
@@ -357,7 +419,10 @@ module.exports = {
   networkingSettingsSchema,
   networkingOptInSchema,
   networkingMatchDecisionSchema,
+  networkingMeetingActionSchema,
   networkingGenerateSchema,
+  speakerWorkspaceUpdateSchema,
+  speakerSessionWorkspaceUpdateSchema,
   promoPreviewSchema,
   promoConsumeSchema,
   promoReleaseSchema,

@@ -118,6 +118,18 @@ const serializeSeriesMembershipPurchase = (purchase) => {
   };
 };
 
+const buildSeriesCheckoutPayload = ({
+  purchase,
+  membership = null,
+  paymentIntentStatus = null,
+  paymentIntentMeta = null
+}) => ({
+  purchase: serializeSeriesMembershipPurchase(purchase),
+  membership: serializeSeriesMembership(membership),
+  payment: buildSeriesPaymentResponse(purchase, paymentIntentStatus),
+  paymentIntent: paymentIntentMeta
+});
+
 const activateSeriesMembershipFromPurchase = async ({ req, purchase, providerPaymentId = null }) => {
   const series = await loadSeriesOrThrow(purchase.seriesId);
   const perksSnapshot = buildSeriesMembershipPerksSnapshot(series);
@@ -676,6 +688,34 @@ router.post(
       throw new AppError('Your series pass is already active', 409, 'series_membership_active');
     }
 
+    const pendingPurchase = await SeriesMembershipPurchase.findOne({
+      seriesId: series._id.toString(),
+      userId: req.user.sub,
+      status: {
+        $in: [PaymentStatus.CREATED, PaymentStatus.REQUIRES_ACTION]
+      }
+    }).sort({ createdAt: -1 });
+
+    if (
+      pendingPurchase &&
+      pendingPurchase.provider === 'stripe' &&
+      pendingPurchase.providerPaymentId &&
+      pendingPurchase.clientSecret
+    ) {
+      return sendSuccess(
+        res,
+        buildSeriesCheckoutPayload({
+          purchase: pendingPurchase,
+          paymentIntentStatus:
+            pendingPurchase.status === PaymentStatus.REQUIRES_ACTION ? 'requires_action' : null,
+          paymentIntentMeta: {
+            clientSecret: pendingPurchase.clientSecret,
+            paymentIntentId: pendingPurchase.providerPaymentId
+          }
+        })
+      );
+    }
+
     const attendeeName =
       req.user.name?.trim?.() ||
       req.user.email?.split?.('@')?.[0] ||
@@ -739,16 +779,12 @@ router.post(
       membership = activation.membership;
     }
 
-    sendSuccess(
-      res,
-      {
-        purchase: serializeSeriesMembershipPurchase(purchase),
-        membership: serializeSeriesMembership(membership),
-        payment: buildSeriesPaymentResponse(purchase, paymentIntentMeta?.paymentIntentId ? 'requires_action' : null),
-        paymentIntent: paymentIntentMeta
-      },
-      201
-    );
+    sendSuccess(res, buildSeriesCheckoutPayload({
+      purchase,
+      membership,
+      paymentIntentStatus: paymentIntentMeta?.paymentIntentId ? 'requires_action' : null,
+      paymentIntentMeta
+    }), 201);
   })
 );
 

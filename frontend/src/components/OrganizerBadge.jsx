@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
+import { getOrganizerPublicPath } from '../lib/organizerBranding';
 
 // Module-level cache shared by every instance in the app
 const profileCache = new Map(); // organizerId -> Promise<profile | null>
@@ -45,18 +45,19 @@ const OrganizerBadge = ({ organizerId, size = 'sm', className = '' }) => {
     const displayName = profile?.displayName || 'Organizer';
     const companyName = profile?.organizerProfile?.companyName;
     const initial = displayName?.[0]?.toUpperCase() || 'O';
+    const publicPath = getOrganizerPublicPath(profile, organizerId);
 
     const handleClick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        navigate(`/organizers/${organizerId}`);
+        navigate(publicPath);
     };
 
     const handleKeyDown = (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             e.stopPropagation();
-            navigate(`/organizers/${organizerId}`);
+            navigate(publicPath);
         }
     };
 

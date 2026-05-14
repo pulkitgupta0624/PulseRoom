@@ -1,5 +1,70 @@
 const mongoose = require('mongoose');
 
+const journeySettingsSchema = new mongoose.Schema(
+  {
+    initialDelayMinutes: {
+      type: Number,
+      default: 0
+    },
+    resendEnabled: {
+      type: Boolean,
+      default: false
+    },
+    resendDelayHours: {
+      type: Number,
+      default: 24
+    },
+    cooldownHours: {
+      type: Number,
+      default: 72
+    },
+    stopOnGoal: {
+      type: Boolean,
+      default: true
+    }
+  },
+  { _id: false }
+);
+
+const journeyAbTestVariantSchema = new mongoose.Schema(
+  {
+    key: {
+      type: String,
+      required: true
+    },
+    label: String,
+    title: String,
+    body: String
+  },
+  { _id: false }
+);
+
+const journeyAbTestSchema = new mongoose.Schema(
+  {
+    enabled: {
+      type: Boolean,
+      default: false
+    },
+    autoWinnerEnabled: {
+      type: Boolean,
+      default: false
+    },
+    minimumSampleSize: {
+      type: Number,
+      default: 50
+    },
+    winnerVariantKey: {
+      type: String,
+      default: ''
+    },
+    variants: {
+      type: [journeyAbTestVariantSchema],
+      default: []
+    }
+  },
+  { _id: false }
+);
+
 const audienceAutomationSchema = new mongoose.Schema(
   {
     scopeType: {
@@ -54,7 +119,9 @@ const audienceAutomationSchema = new mongoose.Schema(
         'event_starts_24h',
         'event_starts_1h',
         'replay_ready',
+        'booking_abandoned',
         'event_completed_no_show',
+        'event_completed_next_drop',
         'series_membership_activated',
         'series_next_event_24h'
       ],
@@ -121,10 +188,18 @@ const audienceAutomationSchema = new mongoose.Schema(
       type: [String],
       default: []
     },
+    journeySettings: {
+      type: journeySettingsSchema,
+      default: null
+    },
+    journeyAbTest: {
+      type: journeyAbTestSchema,
+      default: null
+    },
     lastCampaignId: String,
     lastDispatchStatus: {
       type: String,
-      enum: ['sent', 'failed']
+      enum: ['scheduled', 'sent', 'failed']
     },
     lastDispatchError: String
   },

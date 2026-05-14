@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import clsx from 'clsx';
 import { motion } from 'framer-motion';
 import { formatCurrency, formatDate } from '../lib/formatters';
+import { parseCssVariablesBlob } from '../lib/eventTheme';
 import OrganizerBadge from './OrganizerBadge';
 
 const MotionLink = motion.create(Link);
@@ -14,6 +15,10 @@ const EventCard = ({ event, compact = false }) => {
   const isFree = typeof event.isFree === 'boolean'
     ? event.isFree
     : Boolean(lowestTier?.isFree || lowestPrice === 0);
+  const themeStyles = parseCssVariablesBlob(event?.pageTheme?.cssVariables);
+  const heroBackground = event?.coverImageUrl
+    ? `linear-gradient(135deg, rgba(18,18,18,0.28), rgba(18,18,18,0.1)), url(${event.coverImageUrl})`
+    : `linear-gradient(135deg, ${event?.pageTheme?.primaryColor || '#21484c'}, ${event?.pageTheme?.accentColor || '#b45309'})`;
 
   return (
     <MotionLink
@@ -29,7 +34,12 @@ const EventCard = ({ event, compact = false }) => {
     >
       <motion.div
         layoutId={`event-card-hero-${event._id}`}
-        className="overflow-hidden rounded-[24px] bg-gradient-to-br from-dusk to-reef p-6 text-sand"
+        className="overflow-hidden rounded-[24px] border border-white/10 bg-cover bg-center p-6 text-sand"
+        style={{
+          ...themeStyles,
+          background: heroBackground,
+          fontFamily: 'var(--event-body-font)'
+        }}
       >
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -39,7 +49,12 @@ const EventCard = ({ event, compact = false }) => {
                 {event.series.name}
               </p>
             ) : null}
-            <h3 className="mt-3 font-display text-2xl leading-tight">{event.title}</h3>
+            <h3
+              className="mt-3 text-2xl leading-tight"
+              style={{ fontFamily: 'var(--event-heading-font)' }}
+            >
+              {event.title}
+            </h3>
           </div>
           <span className="rounded-full border border-sand/20 px-3 py-1 text-xs uppercase tracking-[0.25em]">
             {event.status}

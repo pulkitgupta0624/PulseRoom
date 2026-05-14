@@ -6,9 +6,23 @@ import { createSocket } from '../lib/socket';
 import { formatDate } from '../lib/formatters';
 import LiveStreamStage from '../components/LiveStreamStage';
 import LiveSponsorsPanel from '../components/LiveSponsorsPanel';
-import LiveViewerCount from '../components/LiveViewerCount';   // ← NEW
+import LiveViewerCount from '../components/LiveViewerCount';
 
 const REACTION_EMOJIS = ['🔥', '👏', '❤️', '🚀', '😂', '🤯'];
+const SLOW_MODE_OPTIONS = [0, 5, 10, 20, 30, 60];
+
+const INCIDENT_STATUS_STYLES = {
+  open: 'bg-ember/10 text-ember',
+  reviewing: 'bg-amber-100 text-amber-700',
+  resolved: 'bg-reef/10 text-reef'
+};
+
+const INCIDENT_SEVERITY_STYLES = {
+  low: 'bg-sand text-ink/60',
+  medium: 'bg-dusk/10 text-dusk',
+  high: 'bg-amber-100 text-amber-700',
+  critical: 'bg-ember text-white'
+};
 
 const getBadgeClasses = (badge) => {
   if (badge === 'Speaker') {
@@ -32,6 +46,15 @@ const QuestionAuthor = ({ author }) => (
     )}
   </div>
 );
+
+const buildAnnouncementFeedItem = (payload = {}) => ({
+  _id: `ann-${payload._id}`,
+  body: `Announcement: ${payload.body}`,
+  createdAt: payload.createdAt,
+  answered: true,
+  upvotes: 0,
+  isAnnouncement: true
+});
 
 const ReplyComposer = ({
   value,
@@ -149,8 +172,16 @@ const LiveEventPage = () => {
   const [assistantHistory, setAssistantHistory] = useState([]);
   const [activeTab, setActiveTab] = useState('polls');
   const [chatError, setChatError] = useState(null);
-  const [chatSocket, setChatSocket] = useState(null);
   const [liveSocket, setLiveSocket] = useState(null);
+  const [chatPolicy, setChatPolicy] = useState({
+    slowModeSeconds: 0,
+    active: false
+  });
+  const [safetyIncidents, setSafetyIncidents] = useState([]);
+  const [loadingSafety, setLoadingSafety] = useState(false);
+  const [safetyError, setSafetyError] = useState(null);
+  const [policySaving, setPolicySaving] = useState(false);
+  const [incidentSavingId, setIncidentSavingId] = useState(null);
   const chatBottomRef = useRef(null);
 
   const canManage = useMemo(
@@ -177,20 +208,49 @@ const LiveEventPage = () => {
     });
   };
 
+  const loadSafetyIncidents = async () => {
+    if (!canManage) {
+      return;
+    }
+
+    setLoadingSafety(true);
+    setSafetyError(null);
+    try {
+      const response = await api.get('/api/admin/incidents', {
+        params: {
+          eventId,
+          limit: 20
+        }
+      });
+      setSafetyIncidents(response.data.data.incidents || []);
+    } catch (error) {
+      setSafetyIncidents([]);
+      setSafetyError(error.response?.data?.message || 'Unable to load safety signals right now.');
+    } finally {
+      setLoadingSafety(false);
+    }
+  };
+
   useEffect(() => {
     const load = async () => {
       try {
-        const [eventRes, chatRes, pollsRes, questionsRes, reactionsRes] = await Promise.all([
+        const [eventRes, chatRes, policyRes, pollsRes, questionsRes, announcementsRes, reactionsRes] = await Promise.all([
           api.get(`/api/events/${eventId}`),
           api.get(`/api/chat/event/${eventId}/messages`),
+          api.get(`/api/chat/event/${eventId}/policy`),
           api.get(`/api/live/${eventId}/polls`),
           api.get(`/api/live/${eventId}/questions`),
+          api.get(`/api/live/${eventId}/announcements`),
           api.get(`/api/live/${eventId}/reactions`)
         ]);
         setEvent(eventRes.data.data);
         setMessages(chatRes.data.data);
+        setChatPolicy(policyRes.data.data);
         setPolls(pollsRes.data.data);
-        setQuestions(questionsRes.data.data);
+        setQuestions([
+          ...(questionsRes.data.data || []),
+          ...((announcementsRes.data.data || []).map(buildAnnouncementFeedItem))
+        ]);
         setReactions(reactionsRes.data.data);
       } catch (error) {
         console.error('Failed to load live event data:', error);
@@ -198,6 +258,16 @@ const LiveEventPage = () => {
     };
     load();
   }, [eventId]);
+
+  useEffect(() => {
+    if (canManage) {
+      loadSafetyIncidents();
+      return;
+    }
+
+    setSafetyIncidents([]);
+    setSafetyError(null);
+  }, [canManage, eventId]);
 
   useEffect(() => {
     if (messages.length) {
@@ -208,19 +278,24 @@ const LiveEventPage = () => {
   useEffect(() => {
     const nextChatSocket = createSocket('/socket/chat');
     const nextLiveSocket = createSocket('/socket/live');
-    setChatSocket(nextChatSocket);
     setLiveSocket(nextLiveSocket);
 
     nextChatSocket.emit('chat:join-event', { eventId });
     nextLiveSocket.emit('live:join', { eventId });
 
-    const handleNewMessage = (message) => setMessages((current) => [...current, message]);
+    const handleNewMessage = (message) => {
+      setMessages((current) => [...current, message]);
+      if (canManage && message.moderation?.status === 'flagged') {
+        loadSafetyIncidents();
+      }
+    };
     const handleDeletedMessage = ({ messageId }) =>
       setMessages((current) => current.filter((message) => message._id !== messageId));
     const handleChatError = ({ message }) => {
       setChatError(message);
       setTimeout(() => setChatError(null), 4000);
     };
+    const handlePolicyUpdated = (policy) => setChatPolicy(policy);
     const handlePollCreated = (poll) => setPolls((current) => [poll, ...current]);
     const handlePollUpdated = (poll) =>
       setPolls((current) => current.map((item) => (item._id === poll._id ? poll : item)));
@@ -233,17 +308,13 @@ const LiveEventPage = () => {
           : [question, ...current];
       });
     const handleAnnouncement = (payload) => {
-      setQuestions((current) => [
-        {
-          _id: `ann-${payload._id}`,
-          body: `Announcement: ${payload.body}`,
-          createdAt: payload.createdAt,
-          answered: true,
-          upvotes: 0,
-          isAnnouncement: true
-        },
-        ...current
-      ]);
+      const nextAnnouncement = buildAnnouncementFeedItem(payload);
+      setQuestions((current) => {
+        const exists = current.some((item) => item._id === nextAnnouncement._id);
+        return exists
+          ? current.map((item) => (item._id === nextAnnouncement._id ? nextAnnouncement : item))
+          : [nextAnnouncement, ...current];
+      });
     };
     const handleReaction = (reaction) => {
       setReactions((current) => {
@@ -256,6 +327,7 @@ const LiveEventPage = () => {
     nextChatSocket.on('chat:new-message', handleNewMessage);
     nextChatSocket.on('chat:message-deleted', handleDeletedMessage);
     nextChatSocket.on('chat:error', handleChatError);
+    nextChatSocket.on('chat:policy-updated', handlePolicyUpdated);
     nextLiveSocket.on('live:poll-created', handlePollCreated);
     nextLiveSocket.on('live:poll-updated', handlePollUpdated);
     nextLiveSocket.on('live:question-created', handleQuestionCreated);
@@ -267,6 +339,7 @@ const LiveEventPage = () => {
       nextChatSocket.off('chat:new-message', handleNewMessage);
       nextChatSocket.off('chat:message-deleted', handleDeletedMessage);
       nextChatSocket.off('chat:error', handleChatError);
+      nextChatSocket.off('chat:policy-updated', handlePolicyUpdated);
       nextLiveSocket.off('live:poll-created', handlePollCreated);
       nextLiveSocket.off('live:poll-updated', handlePollUpdated);
       nextLiveSocket.off('live:question-created', handleQuestionCreated);
@@ -275,16 +348,39 @@ const LiveEventPage = () => {
       nextLiveSocket.off('live:reaction', handleReaction);
       nextChatSocket.disconnect();
       nextLiveSocket.disconnect();
-      setChatSocket(null);
       setLiveSocket(null);
     };
-  }, [eventId]);
+  }, [canManage, eventId]);
 
   const sendMessage = async (eventInput) => {
     eventInput.preventDefault();
     if (!chatMessage.trim()) return;
-    await api.post(`/api/chat/event/${eventId}/messages`, { body: chatMessage });
-    setChatMessage('');
+    setChatError(null);
+    try {
+      const response = await api.post(`/api/chat/event/${eventId}/messages`, { body: chatMessage });
+      const nextPolicy = response.data.data.policy;
+      const moderationStatus = response.data.data.safety?.moderationStatus;
+
+      if (nextPolicy) {
+        setChatPolicy(nextPolicy);
+      }
+
+      if (moderationStatus === 'hidden') {
+        setChatError('That message was held back by automated moderation.');
+        if (canManage) {
+          loadSafetyIncidents();
+        }
+      } else if (response.data.data.safety?.moderated) {
+        setChatError('That message was sent, but it has been flagged for moderator review.');
+        if (canManage) {
+          loadSafetyIncidents();
+        }
+      }
+
+      setChatMessage('');
+    } catch (error) {
+      setChatError(error.response?.data?.message || 'Failed to send message.');
+    }
   };
 
   const submitQuestion = async (eventInput) => {
@@ -406,6 +502,42 @@ const LiveEventPage = () => {
   };
 
   const totalReactions = reactions.reduce((sum, reaction) => sum + reaction.count, 0);
+  const safetySummary = useMemo(
+    () =>
+      safetyIncidents.reduce(
+        (summary, incident) => {
+          summary.total += 1;
+          summary[incident.status] = (summary[incident.status] || 0) + 1;
+
+          if (['high', 'critical'].includes(incident.severity)) {
+            summary.highOrCritical += 1;
+          }
+
+          if (
+            incident.incidentType === 'chat_message' &&
+            incident.autoActions?.includes('message_hidden')
+          ) {
+            summary.hiddenMessages += 1;
+          }
+
+          if (incident.incidentType === 'booking') {
+            summary.bookingRisks += 1;
+          }
+
+          return summary;
+        },
+        {
+          total: 0,
+          open: 0,
+          reviewing: 0,
+          resolved: 0,
+          highOrCritical: 0,
+          hiddenMessages: 0,
+          bookingRisks: 0
+        }
+      ),
+    [safetyIncidents]
+  );
   const orderedQuestions = useMemo(
     () =>
       [...questions].sort((left, right) => {
@@ -425,6 +557,45 @@ const LiveEventPage = () => {
       }),
     [questions]
   );
+
+  const updateChatPolicy = async (slowModeSeconds) => {
+    if (!canManage) {
+      return;
+    }
+
+    setPolicySaving(true);
+    setSafetyError(null);
+    try {
+      const response = await api.patch(`/api/chat/event/${eventId}/policy`, {
+        slowModeSeconds
+      });
+      setChatPolicy(response.data.data);
+    } catch (error) {
+      setSafetyError(error.response?.data?.message || 'Unable to update slow mode right now.');
+    } finally {
+      setPolicySaving(false);
+    }
+  };
+
+  const updateIncidentStatus = async (incidentId, status) => {
+    setIncidentSavingId(incidentId);
+    setSafetyError(null);
+    try {
+      const response = await api.patch(`/api/admin/incidents/${incidentId}`, {
+        status,
+        resolutionNotes: ''
+      });
+      setSafetyIncidents((current) =>
+        current.map((incident) =>
+          incident.incidentId === incidentId ? response.data.data : incident
+        )
+      );
+    } catch (error) {
+      setSafetyError(error.response?.data?.message || 'Unable to update this incident right now.');
+    } finally {
+      setIncidentSavingId(null);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -489,23 +660,63 @@ const LiveEventPage = () => {
         {/* ── Chat ── */}
         <div className="flex flex-col rounded-[28px] border border-ink/10 bg-white/80 shadow-bloom overflow-hidden">
           <div className="border-b border-ink/8 px-5 py-4">
-            <h2 className="font-display text-2xl">Chat</h2>
-            <p className="text-xs text-ink/45 mt-0.5">{messages.length} messages</p>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="font-display text-2xl">Chat</h2>
+                <p className="mt-0.5 text-xs text-ink/45">{messages.length} messages</p>
+              </div>
+              <div className="flex flex-wrap justify-end gap-2">
+                <span
+                  className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.15em] ${
+                    chatPolicy.active ? 'bg-amber-100 text-amber-700' : 'bg-reef/10 text-reef'
+                  }`}
+                >
+                  {chatPolicy.active ? `Slow mode ${chatPolicy.slowModeSeconds}s` : 'Open chat'}
+                </span>
+                {canManage && safetySummary.open > 0 && (
+                  <span className="rounded-full bg-ember/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.15em] text-ember">
+                    {safetySummary.open} open incident{safetySummary.open === 1 ? '' : 's'}
+                  </span>
+                )}
+              </div>
+            </div>
+            {chatPolicy.active && (
+              <p className="mt-2 text-xs text-ink/50">
+                Slow mode is active. Regular attendees can post once every {chatPolicy.slowModeSeconds} seconds.
+              </p>
+            )}
           </div>
 
           <div className="flex-1 min-h-0 max-h-[420px] overflow-y-auto p-4 space-y-3">
             {!messages.length && (
               <p className="text-sm text-ink/45 text-center py-6">Be the first to say hello.</p>
             )}
-            {messages.map((message) => (
-              <div key={message._id} className="rounded-2xl bg-sand/70 p-3">
-                <p className="text-xs uppercase tracking-[0.18em] text-reef font-semibold">
-                  {message.senderRole || 'participant'}
-                </p>
-                <p className="mt-1 text-sm text-ink">{message.body}</p>
-                <p className="mt-1 text-xs text-ink/35">{formatDate(message.createdAt)}</p>
-              </div>
-            ))}
+            {messages.map((message) => {
+              const flaggedMessage = message.moderation?.status === 'flagged';
+              return (
+                <div
+                  key={message._id}
+                  className={`rounded-2xl p-3 ${
+                    flaggedMessage
+                      ? 'border border-amber-200 bg-amber-50/70'
+                      : 'bg-sand/70'
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-reef">
+                      {message.senderRole || 'participant'}
+                    </p>
+                    {canManage && flaggedMessage && (
+                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-amber-700">
+                        Flagged
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-1 text-sm text-ink">{message.body}</p>
+                  <p className="mt-1 text-xs text-ink/35">{formatDate(message.createdAt)}</p>
+                </div>
+              );
+            })}
             <div ref={chatBottomRef} />
           </div>
 
@@ -519,7 +730,11 @@ const LiveEventPage = () => {
             <input
               value={chatMessage}
               onChange={(eventInput) => setChatMessage(eventInput.target.value)}
-              placeholder="Say something..."
+              placeholder={
+                chatPolicy.active && !canManage
+                  ? `Slow mode is on. Share one message every ${chatPolicy.slowModeSeconds}s.`
+                  : 'Say something...'
+              }
               className="flex-1 rounded-2xl border border-ink/10 bg-sand px-4 py-2.5 text-sm outline-none focus:border-reef"
             />
             <button type="submit" className="rounded-2xl bg-ink px-4 py-2.5 text-sm font-semibold text-sand">
@@ -741,6 +956,157 @@ const LiveEventPage = () => {
         {/* ── AI assistant + reactions + announcements ── */}
         <div className="space-y-4 rounded-[28px] border border-ink/10 bg-white/80 p-5 shadow-bloom">
           <LiveSponsorsPanel eventId={eventId} sponsors={event?.sponsors || []} />
+
+          {canManage && (
+            <div className="rounded-2xl bg-sand/60 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-ink/45">Trust and safety</p>
+                  <p className="mt-1 text-sm text-ink/60">
+                    Keep this room healthy with slow mode, live incident review, and quick moderator actions.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={loadSafetyIncidents}
+                  className="rounded-full border border-ink/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink/60 hover:border-reef/20 hover:text-reef"
+                >
+                  Refresh
+                </button>
+              </div>
+
+              <div className="mt-4 grid grid-cols-2 gap-2">
+                <div className="rounded-2xl bg-white/85 px-3 py-3">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-ink/40">Open</p>
+                  <p className="mt-1 font-display text-2xl text-ink">{safetySummary.open}</p>
+                </div>
+                <div className="rounded-2xl bg-white/85 px-3 py-3">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-ink/40">High risk</p>
+                  <p className="mt-1 font-display text-2xl text-ink">{safetySummary.highOrCritical}</p>
+                </div>
+                <div className="rounded-2xl bg-white/85 px-3 py-3">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-ink/40">Hidden chat</p>
+                  <p className="mt-1 font-display text-2xl text-ink">{safetySummary.hiddenMessages}</p>
+                </div>
+                <div className="rounded-2xl bg-white/85 px-3 py-3">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-ink/40">Booking risk</p>
+                  <p className="mt-1 font-display text-2xl text-ink">{safetySummary.bookingRisks}</p>
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-semibold text-ink">Chat slow mode</p>
+                  <span className="text-xs text-ink/45">
+                    {policySaving ? 'Updating...' : chatPolicy.active ? `${chatPolicy.slowModeSeconds}s active` : 'Off'}
+                  </span>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {SLOW_MODE_OPTIONS.map((seconds) => {
+                    const active = chatPolicy.slowModeSeconds === seconds;
+                    return (
+                      <button
+                        key={seconds}
+                        type="button"
+                        onClick={() => updateChatPolicy(seconds)}
+                        disabled={policySaving}
+                        className={`rounded-full px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${
+                          active
+                            ? 'bg-ink text-sand'
+                            : 'border border-ink/10 bg-white text-ink/60 hover:border-reef/20 hover:text-reef'
+                        }`}
+                      >
+                        {seconds === 0 ? 'Off' : `${seconds}s`}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {safetyError && (
+                <p className="mt-4 rounded-2xl bg-ember/10 px-4 py-3 text-sm text-ember">
+                  {safetyError}
+                </p>
+              )}
+
+              <div className="mt-4 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-semibold text-ink">Live incident queue</p>
+                  {loadingSafety && <span className="text-xs text-ink/45">Refreshing...</span>}
+                </div>
+
+                {!loadingSafety && !safetyIncidents.length && (
+                  <p className="rounded-2xl bg-white/80 px-4 py-4 text-sm text-ink/55">
+                    No automated safety incidents have been detected for this event yet.
+                  </p>
+                )}
+
+                {safetyIncidents.slice(0, 4).map((incident) => (
+                  <div key={incident.incidentId} className="rounded-2xl bg-white/85 p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] ${
+                              INCIDENT_SEVERITY_STYLES[incident.severity] || 'bg-ink/8 text-ink/50'
+                            }`}
+                          >
+                            {incident.severity}
+                          </span>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] ${
+                              INCIDENT_STATUS_STYLES[incident.status] || 'bg-ink/8 text-ink/50'
+                            }`}
+                          >
+                            {incident.status}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-sm font-semibold text-ink">{incident.summary}</p>
+                        <p className="mt-1 text-xs text-ink/45">
+                          {incident.incidentType.replace(/_/g, ' ')} · Risk {incident.riskScore} · {formatDate(incident.detectedAt || incident.createdAt)}
+                        </p>
+                        {incident.evidence?.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {incident.evidence.slice(0, 3).map((item) => (
+                              <span
+                                key={`${incident.incidentId}-${item}`}
+                                className="rounded-full border border-ink/10 bg-sand px-2.5 py-1 text-[11px] text-ink/55"
+                              >
+                                {item}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {incident.status !== 'resolved' && (
+                        <div className="flex flex-wrap gap-2">
+                          {incident.status === 'open' && (
+                            <button
+                              type="button"
+                              onClick={() => updateIncidentStatus(incident.incidentId, 'reviewing')}
+                              disabled={incidentSavingId === incident.incidentId}
+                              className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 hover:bg-amber-100 disabled:opacity-50"
+                            >
+                              {incidentSavingId === incident.incidentId ? 'Saving...' : 'Review'}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => updateIncidentStatus(incident.incidentId, 'resolved')}
+                            disabled={incidentSavingId === incident.incidentId}
+                            className="rounded-full border border-reef/20 bg-reef/5 px-3 py-1.5 text-xs font-semibold text-reef hover:bg-reef/10 disabled:opacity-50"
+                          >
+                            {incidentSavingId === incident.incidentId ? 'Saving...' : 'Resolve'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="rounded-2xl bg-sand/60 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-ink/45 mb-3">AI attendee assistant</p>

@@ -127,4 +127,55 @@ const downloadAgendaCalendar = ({ eventTitle, sessions = [], venueName = '' }) =
   });
 };
 
-export { downloadAgendaCalendar, downloadEventBookingsCsv, downloadEventFeedbackCsv, downloadTextFile };
+const downloadNetworkingMeetingCalendar = ({
+  eventTitle,
+  counterpartName,
+  startsAt,
+  endsAt,
+  note = '',
+  location = 'PulseRoom networking meetup'
+}) => {
+  const calendarLines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//PulseRoom//Networking Meetup//EN',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+    'BEGIN:VEVENT',
+    `UID:${escapeIcsText(`networking-${counterpartName || 'match'}-${startsAt || Date.now()}`)}@pulseroom`,
+    `DTSTAMP:${toIcsDate(Date.now())}`,
+    `DTSTART:${toIcsDate(startsAt)}`,
+    `DTEND:${toIcsDate(endsAt || startsAt)}`,
+    `SUMMARY:${escapeIcsText(`${eventTitle || 'Event'} networking meetup`)}`,
+    `LOCATION:${escapeIcsText(location)}`
+  ];
+
+  const description = [
+    counterpartName ? `Meet with: ${counterpartName}` : '',
+    note ? `Note: ${note}` : '',
+    'Manage this meetup from your PulseRoom tickets page.'
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  if (description) {
+    calendarLines.push(`DESCRIPTION:${escapeIcsText(description)}`);
+  }
+
+  calendarLines.push('END:VEVENT');
+  calendarLines.push('END:VCALENDAR');
+
+  downloadTextFile({
+    content: calendarLines.join('\r\n'),
+    fileName: `${sanitizeFileName(eventTitle, 'event')}-networking-meeting.ics`,
+    mimeType: 'text/calendar;charset=utf-8'
+  });
+};
+
+export {
+  downloadAgendaCalendar,
+  downloadEventBookingsCsv,
+  downloadEventFeedbackCsv,
+  downloadNetworkingMeetingCalendar,
+  downloadTextFile
+};

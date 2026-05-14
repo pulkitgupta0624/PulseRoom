@@ -1,5 +1,19 @@
 const mongoose = require('mongoose');
 
+const availabilitySlotSchema = new mongoose.Schema(
+  {
+    startsAt: {
+      type: Date,
+      required: true
+    },
+    endsAt: {
+      type: Date,
+      required: true
+    }
+  },
+  { _id: false }
+);
+
 const networkingPreferencesSchema = new mongoose.Schema(
   {
     optedIn: {
@@ -23,6 +37,10 @@ const networkingPreferencesSchema = new mongoose.Schema(
     availabilityNote: {
       type: String,
       default: ''
+    },
+    availabilitySlots: {
+      type: [availabilitySlotSchema],
+      default: []
     }
   },
   { _id: false }

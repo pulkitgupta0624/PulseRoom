@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { slugify } = require('./slugify');
 const { buildEventPageTheme } = require('./eventThemeService');
 const { getReviewWindowOpensAt, hasReviewWindowOpened } = require('./reviewService');
+const { buildDerivedSessionId } = require('./speakerPortalService');
 const {
   buildSponsorApplicationLink,
   filterSponsorPackagesForViewer,
@@ -56,7 +57,7 @@ const buildReferralRecord = (event, overrides = {}) => ({
   ...overrides
 });
 
-const ensureActiveReferralCode = async (event) => {
+const ensureActiveReferralCode = async (event, { persist = true } = {}) => {
   const eventHasStarted = event?.startsAt && new Date(event.startsAt).getTime() <= Date.now();
   const eventShouldAcceptReferrals = !['completed', 'cancelled'].includes(event?.status) && !eventHasStarted;
 
@@ -67,7 +68,9 @@ const ensureActiveReferralCode = async (event) => {
         status: 'expired',
         expiresAt: event.referral?.expiresAt || buildReferralExpiresAt(event)
       };
-      await event.save();
+      if (persist) {
+        await event.save();
+      }
     }
     return event;
   }
@@ -81,7 +84,9 @@ const ensureActiveReferralCode = async (event) => {
     totalRedemptions: Number(event?.referral?.totalRedemptions || 0),
     totalDiscountGiven: Number(event?.referral?.totalDiscountGiven || 0)
   });
-  await event.save();
+  if (persist) {
+    await event.save();
+  }
   return event;
 };
 
@@ -184,6 +189,7 @@ const serializeEventForViewer = ({
     delete raw.promoCodes;
     delete raw.postEventSummary;
     delete raw.teamMembers;
+    delete raw.speakerWorkspace;
   }
 
   raw.sponsorPackages = filterSponsorPackagesForViewer(raw.sponsorPackages || [], {
@@ -200,6 +206,34 @@ const serializeEventForViewer = ({
     const sanitizedSpeaker = { ...speaker };
     delete sanitizedSpeaker.email;
     return sanitizedSpeaker;
+  });
+  raw.sessions = (raw.sessions || []).map((session) => {
+    const sessionId = session.sessionId || buildDerivedSessionId(session);
+    if (viewerIsOwner) {
+      return {
+        ...session,
+        sessionId
+      };
+    }
+
+    return {
+      sessionId,
+      title: session.title || '',
+      description: session.description || '',
+      startsAt: session.startsAt || null,
+      endsAt: session.endsAt || null,
+      roomLabel: session.roomLabel || '',
+      capacity: session.capacity || null,
+      speakerNames: Array.isArray(session.speakerNames) ? session.speakerNames : [],
+      postSessionResources: (Array.isArray(session.postSessionResources) ? session.postSessionResources : [])
+        .map((resource) => ({
+          resourceId: resource.resourceId || '',
+          label: resource.label || '',
+          url: resource.url || '',
+          type: resource.type || 'resource'
+        }))
+        .filter((resource) => resource.label && resource.url)
+    };
   });
   raw.pageTheme = buildEventPageTheme(raw.pageTheme || {});
   raw.reviewWindow = {

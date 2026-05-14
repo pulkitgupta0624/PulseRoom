@@ -11,6 +11,11 @@ const reviewReportSchema = Joi.object({
   resolutionNotes: Joi.string().allow('').max(500)
 });
 
+const reviewIncidentSchema = Joi.object({
+  status: Joi.string().valid('open', 'reviewing', 'resolved').required(),
+  resolutionNotes: Joi.string().allow('').max(500)
+});
+
 const banSchema = Joi.object({
   reason: Joi.string().min(5).max(500).required(),
   expiresAt: Joi.date().optional()
@@ -23,7 +28,7 @@ const moderateEventSchema = Joi.object({
 module.exports = {
   reportSchema,
   reviewReportSchema,
+  reviewIncidentSchema,
   banSchema,
   moderateEventSchema
 };
-

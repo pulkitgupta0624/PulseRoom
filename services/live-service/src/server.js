@@ -12,6 +12,7 @@ const Announcement = require('./models/Announcement');
 const ReactionCounter = require('./models/ReactionCounter');
 const StreamSession = require('./models/StreamSession');
 const { incrementEngagementMetric } = require('./services/engagementAnalyticsService');
+const { assertCanAccessEventRoom } = require('./services/eventRoomAccess');
 const { buildAuthorProfile, serializeQuestionThread } = require('./services/questionThreadService');
 const { createRecordingUploadService } = require('./services/recordingUploadService');
 const { markRecordingFailed } = require('./services/recordingSessionService');
@@ -366,15 +367,28 @@ const start = async () => {
       socket.leave(buildOrganizerRoom(requestedOrganizerId));
     });
 
-    socket.on('live:join', ({ eventId }) => {
-      if (!eventId) {
-        return;
-      }
+    socket.on('live:join', async ({ eventId }) => {
+      try {
+        if (!eventId) {
+          return;
+        }
 
-      socket.join(`live:${eventId}`);
-      loadStreamRoom(eventId)
-        .then((room) => socket.emit('stream:status', getStreamPayload(eventId, room)))
-        .catch((error) => logger.warn({ message: 'stream status lookup failed', error: error.message }));
+        const eventMeta = await loadEventMeta(eventId);
+        assertCanAccessEventRoom({
+          eventMeta,
+          user: socket.user
+        });
+
+        socket.join(`live:${eventId}`);
+        const room = await loadStreamRoom(eventId);
+        socket.emit('stream:status', getStreamPayload(eventId, room));
+      } catch (error) {
+        logger.warn({ message: 'live join denied', error: error.message, eventId });
+        socket.emit('live:error', {
+          message: error.message || 'Event not available.',
+          code: error.code || 'event_private'
+        });
+      }
     });
 
     socket.on('stream:start-broadcast', async ({ eventId }) => {
@@ -420,6 +434,12 @@ const start = async () => {
         if (!eventId) {
           return;
         }
+
+        const eventMeta = await loadEventMeta(eventId);
+        assertCanAccessEventRoom({
+          eventMeta,
+          user: socket.user
+        });
 
         const room = await loadStreamRoom(eventId);
         if (!room?.broadcasterSocketId || room.broadcasterSocketId === socket.id) {
@@ -470,6 +490,11 @@ const start = async () => {
           socket.emit('live:error', { message: 'Poll is closed.' });
           return;
         }
+        const eventMeta = await loadEventMeta(poll.eventId);
+        assertCanAccessEventRoom({
+          eventMeta,
+          user: socket.user
+        });
         if (poll.responses.some((item) => item.userId === socket.user.sub)) {
           socket.emit('live:error', { message: 'Duplicate vote blocked.' });
           return;
@@ -506,6 +531,10 @@ const start = async () => {
 
         const eventMetaResponse = await eventServiceClient.get(`/api/events/${eventId}/internal-meta`);
         const eventMeta = eventMetaResponse.data.data;
+        assertCanAccessEventRoom({
+          eventMeta,
+          user: socket.user
+        });
 
         const question = await Question.create({
           eventId,
@@ -541,6 +570,12 @@ const start = async () => {
           socket.emit('live:error', { message: 'Invalid emoji.' });
           return;
         }
+
+        const eventMeta = await loadEventMeta(eventId);
+        assertCanAccessEventRoom({
+          eventMeta,
+          user: socket.user
+        });
 
         const reaction = await ReactionCounter.findOneAndUpdate(
           { eventId, emoji },

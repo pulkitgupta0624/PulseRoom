@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import SectionHeader from '../components/SectionHeader';
@@ -10,7 +10,6 @@ import PersonalAgendaPanel from '../components/PersonalAgendaPanel';
 import EventSponsorSection from '../components/EventSponsorSection';
 import PostEventFeedbackPanel from '../components/PostEventFeedbackPanel';
 import SeriesMembershipPanel from '../components/SeriesMembershipPanel';
-import StripeCheckoutModal from '../components/StripeCheckoutModal';
 import { fetchEventById } from '../features/events/eventsSlice';
 import { deriveOrganizerFollowState } from '../features/user/organizerFollowState';
 import { syncFollowState } from '../features/user/userSlice';
@@ -18,6 +17,18 @@ import { api } from '../lib/api';
 import { formatCurrency, formatDate } from '../lib/formatters';
 import { getViewerLocale, inferPreferredCurrency } from '../lib/currency';
 import { parseCssVariablesBlob } from '../lib/eventTheme';
+import { buildOrganizerBrandTheme, getOrganizerPublicPath } from '../lib/organizerBranding';
+
+const StripeCheckoutModal = lazy(() => import('../components/StripeCheckoutModal'));
+
+const DeferredCheckoutFallback = ({ label = 'Loading secure checkout...' }) => (
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 px-4 backdrop-blur-sm">
+    <div className="w-full max-w-md rounded-[28px] border border-ink/10 bg-white px-6 py-10 text-center shadow-bloom">
+      <div className="mx-auto h-9 w-9 animate-spin rounded-full border-2 border-reef border-t-transparent" />
+      <p className="mt-4 text-sm text-ink/60">{label}</p>
+    </div>
+  </div>
+);
 
 const ShareButton = ({ event, shareUrl }) => {
   const [copied, setCopied] = useState(false);
@@ -121,24 +132,6 @@ const ShareButton = ({ event, shareUrl }) => {
   );
 };
 
-const STATIC_STARS = [1, 2, 3, 4, 5];
-
-const StaticStarRating = ({ rating }) => (
-  <div className="flex items-center gap-1" aria-label={`${rating} star rating`}>
-    {STATIC_STARS.map((star) => (
-      <svg
-        key={star}
-        className={`h-4 w-4 ${star <= rating ? 'text-amber-500' : 'text-ink/15'}`}
-        fill="currentColor"
-        viewBox="0 0 20 20"
-        aria-hidden="true"
-      >
-        <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.148 3.53a1 1 0 00.95.69h3.708c.969 0 1.371 1.24.588 1.81l-3 2.18a1 1 0 00-.364 1.118l1.146 3.53c.3.922-.755 1.688-1.54 1.118l-3-2.18a1 1 0 00-1.176 0l-3 2.18c-.784.57-1.838-.196-1.539-1.118l1.145-3.53a1 1 0 00-.363-1.118l-3-2.18c-.784-.57-.38-1.81.588-1.81h3.708a1 1 0 00.95-.69l1.147-3.53z" />
-      </svg>
-    ))}
-  </div>
-);
-
 const buildBookingSuccessMessage = (booking, locale) => {
   const promoSavedAmount = booking?.promoCode?.discountAmount || 0;
   const referralSavedAmount = booking?.referral?.discountAmount || 0;
@@ -185,24 +178,6 @@ const EventDetailPage = () => {
   const [organizerStatus, setOrganizerStatus] = useState(null);
   const [joiningSeriesMembership, setJoiningSeriesMembership] = useState(false);
   const [seriesStatus, setSeriesStatus] = useState(null);
-  const [reviewsState, setReviewsState] = useState({
-    summary: {
-      averageRating: 0,
-      totalRatings: 0,
-      distribution: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }
-    },
-    reviewWindow: {
-      opensAt: null,
-      isOpen: false
-    },
-    items: []
-  });
-  const [reviewEligibility, setReviewEligibility] = useState(null);
-  const [reviewDraft, setReviewDraft] = useState({ rating: 0, reviewText: '' });
-  const [reviewSubmitting, setReviewSubmitting] = useState(false);
-  const [reviewFeedback, setReviewFeedback] = useState(null);
-  const [replyDrafts, setReplyDrafts] = useState({});
-  const [replySavingId, setReplySavingId] = useState(null);
   const referralVisitTrackedRef = useRef(false);
   const stripeRedirectHandledRef = useRef('');
   const seriesStripeRedirectHandledRef = useRef('');
@@ -314,65 +289,10 @@ const EventDetailPage = () => {
     () => parseCssVariablesBlob(event?.pageTheme?.cssVariables),
     [event?.pageTheme?.cssVariables]
   );
-
-  const loadReviews = async () => {
-    try {
-      const response = await api.get(`/api/events/${eventId}/reviews`);
-      setReviewsState(response.data.data);
-    } catch (_error) {
-      setReviewsState({
-        summary: {
-          averageRating: 0,
-          totalRatings: 0,
-          distribution: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }
-        },
-        reviewWindow: {
-          opensAt: null,
-          isOpen: false
-        },
-        items: []
-      });
-    }
-  };
-
-  const loadReviewEligibility = async () => {
-    if (!user) {
-      setReviewEligibility(null);
-      return;
-    }
-
-    try {
-      const response = await api.get(`/api/events/${eventId}/reviews/me`);
-      const nextEligibility = response.data.data;
-      setReviewEligibility(nextEligibility);
-      if (nextEligibility.review) {
-        setReviewDraft({
-          rating: nextEligibility.review.rating || 0,
-          reviewText: nextEligibility.review.reviewText || ''
-        });
-      }
-    } catch (error) {
-      setReviewEligibility({
-        eligible: false,
-        canReview: false,
-        reason: error.response?.data?.message || 'Unable to load review status for your account.',
-        booking: null,
-        reviewWindow: {
-          opensAt: null,
-          isOpen: false
-        },
-        review: null
-      });
-    }
-  };
-
-  useEffect(() => {
-    loadReviews();
-  }, [eventId]);
-
-  useEffect(() => {
-    loadReviewEligibility();
-  }, [eventId, user?.id]);
+  const organizerBrandTheme = useMemo(
+    () => buildOrganizerBrandTheme(organizerProfile?.organizerProfile?.branding || {}),
+    [organizerProfile?.organizerProfile?.branding]
+  );
 
   const selectedTier = useMemo(
     () => event?.ticketTiers?.find((tier) => tier.tierId === selectedTierId) || event?.ticketTiers?.[0],
@@ -409,6 +329,20 @@ const EventDetailPage = () => {
     return [...new Set(currencies)];
   }, [event, selectedTier]);
   const displayedPricing = pricingQuote?.pricing || null;
+  const shareableSessionResources = useMemo(
+    () =>
+      (event?.sessions || [])
+        .filter((session) => Array.isArray(session.postSessionResources) && session.postSessionResources.length > 0)
+        .filter((session) => {
+          if (event?.status === 'completed') {
+            return true;
+          }
+
+          const sessionEnd = new Date(session.endsAt || 0).getTime();
+          return Number.isFinite(sessionEnd) && sessionEnd <= Date.now();
+        }),
+    [event]
+  );
 
   useEffect(() => {
     if (!acceptedCurrencies.length) {
@@ -952,55 +886,6 @@ const EventDetailPage = () => {
     }
   };
 
-  const handleReviewSubmit = async (formEvent) => {
-    formEvent.preventDefault();
-    setReviewFeedback(null);
-    setReviewSubmitting(true);
-
-    try {
-      await api.post(`/api/events/${eventId}/reviews`, {
-        rating: reviewDraft.rating,
-        reviewText: reviewDraft.reviewText
-      });
-      setReviewFeedback({
-        tone: 'success',
-        message: reviewEligibility?.review ? 'Your review was updated.' : 'Thanks for sharing your review.'
-      });
-      await Promise.all([loadReviews(), loadReviewEligibility()]);
-    } catch (error) {
-      setReviewFeedback({
-        tone: 'error',
-        message: error.response?.data?.message || 'Unable to save your review right now.'
-      });
-    } finally {
-      setReviewSubmitting(false);
-    }
-  };
-
-  const handleReviewReplySave = async (reviewId) => {
-    const body = replyDrafts[reviewId]?.trim();
-    if (!body) {
-      return;
-    }
-
-    setReplySavingId(reviewId);
-    try {
-      await api.patch(`/api/events/${eventId}/reviews/${reviewId}/reply`, {
-        body
-      });
-      await loadReviews();
-      setReplyDrafts((current) => {
-        const next = { ...current };
-        delete next[reviewId];
-        return next;
-      });
-    } catch (_error) {
-      // Keep the draft in place so the organizer can retry.
-    } finally {
-      setReplySavingId(null);
-    }
-  };
-
   if (!event) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -1027,13 +912,7 @@ const EventDetailPage = () => {
     (!isSelectedTierSoldOut || waitlistOfferActive) &&
     !seriesMembershipRequired
   );
-  const canManageReviewReplies = Boolean(
-    user &&
-    (user.role === 'admin' || user.id === event.organizerId)
-  );
   const hasPendingStripeCheckout = Boolean(stripeCheckoutSession);
-  const reviewSummary = reviewsState.summary;
-  const reviewWindow = reviewEligibility?.reviewWindow || reviewsState.reviewWindow;
 
   return (
     <div className="event-page-themed space-y-10" style={eventThemeStyles}>
@@ -1566,61 +1445,85 @@ const EventDetailPage = () => {
       <EventConcierge eventId={eventId} user={user} />
 
       {organizerProfile && (
-        <section className="rounded-[32px] border border-ink/10 bg-white/75 p-6 shadow-bloom">
-          <SectionHeader
-            eyebrow="Organizer"
-            title={organizerProfile.organizerProfile?.companyName || organizerProfile.displayName}
-            description={organizerProfile.bio || 'Follow this organizer to hear about their next event drops.'}
-            actions={
-              <div className="flex flex-wrap items-center gap-2">
-                <Link
-                  to={`/organizers/${event.organizerId}`}
-                  className="rounded-full border border-ink/10 bg-white px-5 py-3 text-sm font-semibold text-ink transition hover:bg-sand"
-                >
-                  View profile
-                </Link>
-                {canFollowOrganizer ? (
-                  <button
-                    type="button"
-                    onClick={handleFollowToggle}
-                    disabled={followLoading}
-                    className={`rounded-full px-5 py-3 text-sm font-semibold transition disabled:opacity-60 ${organizerProfile.isFollowingOrganizer
-                      ? 'border border-ink/10 bg-sand text-ink'
-                      : 'bg-ink text-sand'
-                      }`}
-                  >
-                    {followLoading
-                      ? 'Updating...'
-                      : organizerProfile.isFollowingOrganizer
-                        ? 'Following'
-                        : 'Follow organizer'}
-                  </button>
-                ) : shouldPromptFollowSignIn ? (
+        <section
+          className="overflow-hidden rounded-[32px] border border-[color:var(--organizer-outline)] shadow-bloom"
+          style={{
+            ...organizerBrandTheme.styles,
+            background: organizerBrandTheme.heroBackground
+          }}
+        >
+          <div className="relative">
+            {organizerProfile.organizerProfile?.branding?.coverImageUrl ? (
+              <div
+                className="absolute inset-0 bg-cover bg-center opacity-30"
+                style={{
+                  backgroundImage: `url(${organizerProfile.organizerProfile.branding.coverImageUrl})`
+                }}
+              />
+            ) : null}
+            <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(18,18,18,0.18),rgba(18,18,18,0.04))]" />
+            <div className="relative p-6 text-[color:var(--organizer-hero-text)]">
+              <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold uppercase tracking-[0.3em] text-white/64">Organizer</p>
+                  <h2 className="text-3xl text-white md:text-4xl" style={{ fontFamily: 'var(--organizer-heading-font)' }}>
+                    {organizerProfile.organizerProfile?.companyName || organizerProfile.displayName}
+                  </h2>
+                  <p className="max-w-2xl text-sm text-white/80 md:text-base">
+                    {organizerProfile.organizerProfile?.branding?.heroSubtitle ||
+                      organizerProfile.bio ||
+                      'Follow this organizer to hear about their next event drops.'}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
                   <Link
-                    to="/auth"
-                    className="rounded-full border border-ink/10 bg-white px-5 py-3 text-sm font-semibold text-ink transition hover:bg-sand"
+                    to={getOrganizerPublicPath(organizerProfile, event.organizerId)}
+                    className="rounded-full border border-white/18 bg-white/10 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/16"
                   >
-                    Sign in to follow
+                    View studio
                   </Link>
-                ) : null}
+                  {canFollowOrganizer ? (
+                    <button
+                      type="button"
+                      onClick={handleFollowToggle}
+                      disabled={followLoading}
+                      className={`rounded-full px-5 py-3 text-sm font-semibold transition disabled:opacity-60 ${
+                        organizerProfile.isFollowingOrganizer
+                          ? 'border border-white/18 bg-white/12 text-white'
+                          : 'bg-white text-ink'
+                      }`}
+                    >
+                      {followLoading
+                        ? 'Updating...'
+                        : organizerProfile.isFollowingOrganizer
+                          ? 'Following'
+                          : 'Follow organizer'}
+                    </button>
+                  ) : shouldPromptFollowSignIn ? (
+                    <Link
+                      to="/auth"
+                      className="rounded-full border border-white/18 bg-white/10 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/16"
+                    >
+                      Sign in to follow
+                    </Link>
+                  ) : null}
+                </div>
               </div>
-            }
-          />
 
           <div className="mt-6 grid gap-6 md:grid-cols-[auto,1fr]">
             <Link
-              to={`/organizers/${event.organizerId}`}
+              to={getOrganizerPublicPath(organizerProfile, event.organizerId)}
               className="group inline-flex"
-              aria-label={`View ${organizerProfile.displayName}'s profile`}
+              aria-label={`View ${organizerProfile.displayName}'s studio`}
             >
               {organizerProfile.avatarUrl ? (
                 <img
                   src={organizerProfile.avatarUrl}
                   alt={organizerProfile.displayName}
-                  className="h-20 w-20 rounded-full object-cover transition group-hover:ring-2 group-hover:ring-reef/40"
+                  className="h-20 w-20 rounded-full object-cover transition group-hover:ring-2 group-hover:ring-white/35"
                 />
               ) : (
-                <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-reef/40 to-dusk/40 font-display text-3xl text-ink transition group-hover:ring-2 group-hover:ring-reef/40">
+                <div className="flex h-20 w-20 items-center justify-center rounded-full bg-white/14 font-display text-3xl text-white transition group-hover:ring-2 group-hover:ring-white/35">
                   {organizerProfile.displayName?.[0]?.toUpperCase() || 'O'}
                 </div>
               )}
@@ -1628,31 +1531,32 @@ const EventDetailPage = () => {
 
             <div className="space-y-4">
               <Link
-                to={`/organizers/${event.organizerId}`}
-                className="inline-block font-display text-xl text-ink hover:text-reef"
+                to={getOrganizerPublicPath(organizerProfile, event.organizerId)}
+                className="inline-block text-xl text-white hover:text-white/78"
+                style={{ fontFamily: 'var(--organizer-heading-font)' }}
               >
                 {organizerProfile.organizerProfile?.companyName || organizerProfile.displayName}
               </Link>
               <div className="grid gap-4 md:grid-cols-3">
-                <div className="rounded-[24px] bg-sand p-4">
-                  <p className="text-xs uppercase tracking-[0.24em] text-ink/45">Followers</p>
-                  <p className="mt-2 font-semibold text-ink">{organizerProfile.followersCount || 0}</p>
+                <div className="rounded-[24px] border border-white/14 bg-white/10 p-4">
+                  <p className="text-xs uppercase tracking-[0.24em] text-white/56">Followers</p>
+                  <p className="mt-2 font-semibold text-white">{organizerProfile.followersCount || 0}</p>
                 </div>
-                <div className="rounded-[24px] bg-sand p-4">
-                  <p className="text-xs uppercase tracking-[0.24em] text-ink/45">Role</p>
-                  <p className="mt-2 font-semibold capitalize text-ink">{organizerProfile.role}</p>
+                <div className="rounded-[24px] border border-white/14 bg-white/10 p-4">
+                  <p className="text-xs uppercase tracking-[0.24em] text-white/56">Role</p>
+                  <p className="mt-2 font-semibold capitalize text-white">{organizerProfile.role}</p>
                 </div>
-                <div className="rounded-[24px] bg-sand p-4">
-                  <p className="text-xs uppercase tracking-[0.24em] text-ink/45">Location</p>
-                  <p className="mt-2 font-semibold text-ink">{organizerProfile.location || 'Remote / not set'}</p>
+                <div className="rounded-[24px] border border-white/14 bg-white/10 p-4">
+                  <p className="text-xs uppercase tracking-[0.24em] text-white/56">Location</p>
+                  <p className="mt-2 font-semibold text-white">{organizerProfile.location || 'Remote / not set'}</p>
                 </div>
               </div>
 
-              <div className="flex flex-wrap gap-3 text-sm text-ink/65">
+              <div className="flex flex-wrap gap-3 text-sm text-white/80">
                 {organizerProfile.organizerProfile?.supportEmail && (
                   <a
                     href={`mailto:${organizerProfile.organizerProfile.supportEmail}`}
-                    className="rounded-full border border-ink/10 bg-white px-4 py-2 hover:bg-sand"
+                    className="rounded-full border border-white/16 bg-white/10 px-4 py-2 hover:bg-white/16"
                   >
                     {organizerProfile.organizerProfile.supportEmail}
                   </a>
@@ -1662,21 +1566,31 @@ const EventDetailPage = () => {
                     href={organizerProfile.organizerProfile.website}
                     target="_blank"
                     rel="noreferrer"
-                    className="rounded-full border border-ink/10 bg-white px-4 py-2 hover:bg-sand"
+                    className="rounded-full border border-white/16 bg-white/10 px-4 py-2 hover:bg-white/16"
                   >
                     Visit website
                   </a>
                 )}
+                {organizerProfile.organizerProfile?.branding?.publicHandle ? (
+                  <span className="rounded-full border border-white/16 bg-white/8 px-4 py-2 text-xs uppercase tracking-[0.24em]">
+                    /studio/{organizerProfile.organizerProfile.branding.publicHandle}
+                  </span>
+                ) : null}
               </div>
 
               {organizerStatus && (
                 <p
-                  className={`rounded-2xl px-4 py-3 text-sm ${organizerStatus.tone === 'success' ? 'bg-reef/10 text-reef' : 'bg-ember/10 text-ember'
-                    }`}
+                  className={`rounded-2xl px-4 py-3 text-sm ${
+                    organizerStatus.tone === 'success'
+                      ? 'bg-white/14 text-white'
+                      : 'bg-amber-100/92 text-amber-900'
+                  }`}
                 >
                   {organizerStatus.message}
                 </p>
               )}
+            </div>
+          </div>
             </div>
           </div>
         </section>
@@ -1729,6 +1643,39 @@ const EventDetailPage = () => {
         </div>
       </section>
 
+      {shareableSessionResources.length > 0 && (
+        <section className="rounded-[32px] border border-ink/10 bg-white/75 p-6 shadow-bloom">
+          <SectionHeader
+            eyebrow="Resources"
+            title="Session downloads"
+            description="Slides, docs, and follow-up assets shared by the speaker team after each talk."
+          />
+          <div className="mt-6 grid gap-4 lg:grid-cols-2">
+            {shareableSessionResources.map((session) => (
+              <div key={session.sessionId || `${session.title}-${session.startsAt}`} className="rounded-[24px] bg-sand p-4">
+                <p className="font-semibold text-ink">{session.title}</p>
+                <p className="mt-1 text-sm text-ink/60">
+                  {[session.roomLabel, formatDate(session.endsAt || session.startsAt)].filter(Boolean).join(' · ')}
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {session.postSessionResources.map((resource) => (
+                    <a
+                      key={resource.resourceId || resource.url}
+                      href={resource.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded-full border border-ink/10 bg-white px-3 py-1.5 text-xs font-semibold text-reef hover:bg-sand"
+                    >
+                      {resource.label}
+                    </a>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       <PostEventFeedbackPanel
         event={event}
         user={user}
@@ -1757,29 +1704,33 @@ const EventDetailPage = () => {
       </div>
 
       {stripeCheckoutSession && stripeCheckoutOpen && (
-        <StripeCheckoutModal
-          session={stripeCheckoutSession}
-          onClose={handleStripeCheckoutClose}
-          onComplete={(paymentIntentId) =>
-            finalizeStripePayment({
-              bookingId: stripeCheckoutSession.bookingId,
-              paymentIntentId
-            })
-          }
-        />
+        <Suspense fallback={<DeferredCheckoutFallback label="Loading ticket checkout..." />}>
+          <StripeCheckoutModal
+            session={stripeCheckoutSession}
+            onClose={handleStripeCheckoutClose}
+            onComplete={(paymentIntentId) =>
+              finalizeStripePayment({
+                bookingId: stripeCheckoutSession.bookingId,
+                paymentIntentId
+              })
+            }
+          />
+        </Suspense>
       )}
 
       {seriesCheckoutSession && seriesCheckoutOpen && (
-        <StripeCheckoutModal
-          session={seriesCheckoutSession}
-          onClose={handleSeriesCheckoutClose}
-          onComplete={(paymentIntentId) =>
-            finalizeSeriesMembershipPayment({
-              purchaseId: seriesCheckoutSession.resourceId,
-              paymentIntentId
-            })
-          }
-        />
+        <Suspense fallback={<DeferredCheckoutFallback label="Loading series pass checkout..." />}>
+          <StripeCheckoutModal
+            session={seriesCheckoutSession}
+            onClose={handleSeriesCheckoutClose}
+            onComplete={(paymentIntentId) =>
+              finalizeSeriesMembershipPayment({
+                purchaseId: seriesCheckoutSession.resourceId,
+                paymentIntentId
+              })
+            }
+          />
+        </Suspense>
       )}
 
       {showReport && <EventReportModal eventId={eventId} onClose={() => setShowReport(false)} />}

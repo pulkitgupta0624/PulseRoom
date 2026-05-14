@@ -31,7 +31,10 @@ const {
   networkingSettingsSchema,
   networkingOptInSchema,
   networkingMatchDecisionSchema,
+  networkingMeetingActionSchema,
   networkingGenerateSchema,
+  speakerWorkspaceUpdateSchema,
+  speakerSessionWorkspaceUpdateSchema,
   promoPreviewSchema,
   promoConsumeSchema,
   promoReleaseSchema,
@@ -75,7 +78,14 @@ const {
 } = require('../services/referralService');
 const {
   buildSpeakerPortalEntry,
-  normalizeEmail
+  canEditEventSpeakerWorkspace,
+  canEditSessionSpeakerWorkspace,
+  findSessionByRouteId,
+  normalizeSpeakerSession,
+  normalizeSpeakerSessions,
+  normalizeSpeakerWorkspace,
+  normalizeEmail,
+  serializeSpeakerSession
 } = require('../services/speakerPortalService');
 const {
   normalizeSeriesMembershipSettings,
@@ -202,6 +212,59 @@ const normalizeCollaboratorPayload = (payload = {}) => {
 
   return nextPayload;
 };
+
+const normalizeSpeakerWorkspacePayload = (payload = {}, existingEvent = null) => {
+  const nextPayload = { ...payload };
+
+  if (payload.sessions) {
+    nextPayload.sessions = normalizeSpeakerSessions(payload.sessions, existingEvent?.sessions || []);
+  }
+
+  if (payload.speakerWorkspace) {
+    nextPayload.speakerWorkspace = normalizeSpeakerWorkspace(
+      payload.speakerWorkspace,
+      existingEvent?.speakerWorkspace || {}
+    );
+  }
+
+  return nextPayload;
+};
+
+const buildSpeakerWorkspaceManagerPayload = (event, user) => ({
+  event: {
+    eventId: event._id?.toString?.() || event.eventId || '',
+    title: event.title || '',
+    status: event.status || 'draft',
+    startsAt: event.startsAt || null,
+    endsAt: event.endsAt || null,
+    venueName: event.venueName || '',
+    type: event.type || 'online'
+  },
+  speakerWorkspace: normalizeSpeakerWorkspace(event.speakerWorkspace || {}),
+  speakers: (event.speakers || []).map((speaker) => ({
+    userId: speaker.userId || '',
+    email: speaker.email || '',
+    name: speaker.name || '',
+    title: speaker.title || '',
+    company: speaker.company || ''
+  })),
+  teamMembers: (event.teamMembers || []).map((member) => ({
+    userId: member.userId || '',
+    email: member.email || '',
+    name: member.name || '',
+    role: member.role || '',
+    notes: member.notes || ''
+  })),
+  sessions: (event.sessions || []).map((session) =>
+    serializeSpeakerSession(session, {
+      includePrivate: true,
+      canEditWorkspace: canEditSessionSpeakerWorkspace(event, user, session)
+    })
+  ),
+  permissions: {
+    canEditEventWorkspace: canEditEventSpeakerWorkspace(event, user)
+  }
+});
 
 const assertInternalBookingService = (req) => {
   if (req.headers['x-service-name'] !== 'booking-service') {
@@ -1134,6 +1197,34 @@ router.post(
   })
 );
 
+router.post(
+  '/:eventId/networking/matches/:matchId/meeting',
+  authenticate(),
+  validateSchema(networkingMeetingActionSchema),
+  asyncHandler(async (req, res) => {
+    const event = await Event.findById(req.params.eventId);
+    if (!event) {
+      throw new AppError('Event not found', 404, 'event_not_found');
+    }
+
+    const response = await req.clients.notificationService.post(
+      `/api/notifications/internal/networking/${req.params.eventId}/matches/${req.params.matchId}/meeting`,
+      {
+        userId: req.user.sub,
+        action: req.body.action,
+        startsAt: req.body.startsAt,
+        endsAt: req.body.endsAt,
+        note: req.body.note
+      }
+    );
+
+    sendSuccess(res, {
+      ...response.data.data,
+      settings: serializeNetworkingSettings(event)
+    });
+  })
+);
+
 router.get(
   '/recommendations/me',
   authenticate(),
@@ -1245,8 +1336,10 @@ router.post(
   validateSchema(createEventSchema),
   asyncHandler(async (req, res) => {
     const slugBase = slugify(req.body.title);
-    const normalizedPayload = normalizeCollaboratorPayload(
-      normalizeEventFinanceSettings(req.body)
+    const normalizedPayload = normalizeSpeakerWorkspacePayload(
+      normalizeCollaboratorPayload(
+        normalizeEventFinanceSettings(req.body)
+      )
     );
     const event = new Event({
       ...normalizedPayload,
@@ -1254,7 +1347,8 @@ router.post(
       organizerId: req.user.sub,
       slug: `${slugBase}-${crypto.randomBytes(3).toString('hex')}`
     });
-    await ensureActiveReferralCode(event);
+    await ensureActiveReferralCode(event, { persist: false });
+    await event.save();
 
     await syncSearchDocument(req, event);
     await syncCompletionSchedule(req, event);
@@ -1293,7 +1387,7 @@ router.get(
     };
 
     const events = await Event.find(query)
-      .select('organizerId title summary coverImageUrl type status startsAt endsAt venueName city country speakers teamMembers sessions')
+      .select('organizerId title summary coverImageUrl type status startsAt endsAt venueName city country speakers teamMembers sessions speakerWorkspace')
       .sort({ startsAt: 1 })
       .lean();
 
@@ -1304,6 +1398,89 @@ router.get(
     sendSuccess(res, {
       assignments
     });
+  })
+);
+
+router.get(
+  '/:eventId/speaker-workspace/manage',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const event = await Event.findById(req.params.eventId)
+      .select('organizerId title status type startsAt endsAt venueName speakers teamMembers sessions speakerWorkspace');
+    if (!event) {
+      throw new AppError('Event not found', 404, 'event_not_found');
+    }
+
+    if (!canEditEventSpeakerWorkspace(event, req.user)) {
+      throw new AppError('Forbidden', 403, 'forbidden');
+    }
+
+    sendSuccess(res, buildSpeakerWorkspaceManagerPayload(event, req.user));
+  })
+);
+
+router.patch(
+  '/:eventId/speaker-workspace',
+  authenticate(),
+  validateSchema(speakerWorkspaceUpdateSchema),
+  asyncHandler(async (req, res) => {
+    const event = await Event.findById(req.params.eventId)
+      .select('organizerId title status type startsAt endsAt venueName speakers teamMembers sessions speakerWorkspace');
+    if (!event) {
+      throw new AppError('Event not found', 404, 'event_not_found');
+    }
+
+    if (!canEditEventSpeakerWorkspace(event, req.user)) {
+      throw new AppError('Forbidden', 403, 'forbidden');
+    }
+
+    event.speakerWorkspace = normalizeSpeakerWorkspace(req.body, event.speakerWorkspace || {});
+    await event.save();
+
+    sendSuccess(res, buildSpeakerWorkspaceManagerPayload(event, req.user));
+  })
+);
+
+router.patch(
+  '/:eventId/speaker-workspace/sessions/:sessionId',
+  authenticate(),
+  validateSchema(speakerSessionWorkspaceUpdateSchema),
+  asyncHandler(async (req, res) => {
+    const event = await Event.findById(req.params.eventId)
+      .select('organizerId title status type startsAt endsAt venueName speakers teamMembers sessions speakerWorkspace');
+    if (!event) {
+      throw new AppError('Event not found', 404, 'event_not_found');
+    }
+
+    const session = findSessionByRouteId(event, req.params.sessionId);
+    if (!session) {
+      throw new AppError('Session not found', 404, 'session_not_found');
+    }
+
+    if (!canEditSessionSpeakerWorkspace(event, req.user, session)) {
+      throw new AppError('Forbidden', 403, 'forbidden');
+    }
+
+    Object.assign(
+      session,
+      normalizeSpeakerSession(
+        {
+          ...req.body,
+          sessionId: session.sessionId || req.params.sessionId
+        },
+        typeof session.toObject === 'function' ? session.toObject() : session
+      )
+    );
+    await event.save();
+
+    const updatedSession = findSessionByRouteId(event, session.sessionId || req.params.sessionId) || session;
+    sendSuccess(
+      res,
+      serializeSpeakerSession(updatedSession, {
+        includePrivate: true,
+        canEditWorkspace: canEditSessionSpeakerWorkspace(event, req.user, updatedSession)
+      })
+    );
   })
 );
 
@@ -1404,7 +1581,7 @@ router.get(
 router.get(
   '/:eventId/internal-meta',
   asyncHandler(async (req, res) => {
-    assertInternalService(req, ['live-service', 'notification-service', 'booking-service', 'chat-service']);
+    assertInternalService(req, ['live-service', 'notification-service', 'booking-service', 'chat-service', 'admin-service']);
 
     const event = await Event.findById(req.params.eventId)
       .select('organizerId title startsAt endsAt timezone venueName visibility status networking speakers teamMembers sessions series')
@@ -1413,6 +1590,21 @@ router.get(
     if (!event) {
       throw new AppError('Event not found', 404, 'event_not_found');
     }
+
+    const nextOrganizerEvent = await Event.findOne({
+      organizerId: event.organizerId,
+      _id: {
+        $ne: event._id
+      },
+      status: 'published',
+      visibility: EventVisibility.PUBLIC,
+      startsAt: {
+        $gt: new Date()
+      }
+    })
+      .sort({ startsAt: 1 })
+      .select('_id title startsAt endsAt visibility status')
+      .lean();
 
     sendSuccess(res, {
       eventId: req.params.eventId,
@@ -1425,6 +1617,16 @@ router.get(
       visibility: event.visibility,
       status: event.status,
       series: event.series || null,
+      nextOrganizerEvent: nextOrganizerEvent
+        ? {
+            eventId: nextOrganizerEvent._id.toString(),
+            title: nextOrganizerEvent.title,
+            startsAt: nextOrganizerEvent.startsAt,
+            endsAt: nextOrganizerEvent.endsAt,
+            visibility: nextOrganizerEvent.visibility,
+            status: nextOrganizerEvent.status
+          }
+        : null,
       speakers: (event.speakers || []).map((speaker) => ({
         userId: speaker.userId || '',
         email: speaker.email || '',
@@ -1440,6 +1642,7 @@ router.get(
         notes: member.notes || ''
       })),
       sessions: (event.sessions || []).map((session) => ({
+        sessionId: session.sessionId || '',
         title: session.title,
         description: session.description || '',
         startsAt: session.startsAt,
@@ -1960,8 +2163,11 @@ router.patch(
       throw new AppError('Forbidden', 403, 'forbidden');
     }
 
-    const nextPayload = normalizeCollaboratorPayload(
-      normalizeEventFinanceSettings(req.body, event)
+    const nextPayload = normalizeSpeakerWorkspacePayload(
+      normalizeCollaboratorPayload(
+        normalizeEventFinanceSettings(req.body, event)
+      ),
+      event
     );
     if (req.body.pageTheme) {
       nextPayload.pageTheme = buildEventPageTheme({

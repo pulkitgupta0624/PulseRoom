@@ -22,6 +22,7 @@ const createEmptyTeamMember = () => ({
 });
 
 const createEmptySession = () => ({
+  sessionId: '',
   title: '',
   description: '',
   startsAt: '',
@@ -186,6 +187,7 @@ const EventEditModal = ({ event, onClose }) => {
     allowsChat: event.allowsChat !== false,
     allowsQa: event.allowsQa !== false,
     sessions: (event.sessions || []).map((session) => ({
+      sessionId: session.sessionId || '',
       title: session.title || '',
       description: session.description || '',
       startsAt: toDatetimeLocal(session.startsAt),
@@ -298,6 +300,7 @@ const EventEditModal = ({ event, onClose }) => {
         sessions: form.sessions
           .filter((session) => session.title.trim() && session.startsAt && session.endsAt)
           .map((session) => ({
+            sessionId: session.sessionId || undefined,
             title: session.title.trim(),
             description: session.description.trim(),
             startsAt: session.startsAt,

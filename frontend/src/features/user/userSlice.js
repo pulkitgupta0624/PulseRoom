@@ -64,7 +64,7 @@ export const fetchGamificationSummary = createAsyncThunk(
  */
 export const syncFollowState = createAsyncThunk(
   'user/syncFollowState',
-  async ({ organizerId, isFollowing, organizerProfile }, thunkApi) => {
+  async ({ organizerId, isFollowing, organizerProfile }) => {
     return { organizerId, isFollowing, organizerProfile };
   }
 );

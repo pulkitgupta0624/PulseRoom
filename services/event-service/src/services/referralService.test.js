@@ -2,6 +2,7 @@ const {
   buildReferralCode,
   buildReferralLink,
   buildPublicReferralOffer,
+  ensureActiveReferralCode,
   getReferralDiscountAmount,
   serializeEventForViewer
 } = require('./referralService');
@@ -69,5 +70,78 @@ describe('referralService', () => {
         referral: event.referral
       })
     ).toBe(250);
+  });
+
+  it('keeps speaker workspace private while exposing post-session resources publicly', () => {
+    const event = {
+      _id: 'evt_123',
+      organizerId: 'org_1',
+      title: 'PulseRoom Live',
+      speakerWorkspace: {
+        greenRoomNotes: 'Private backstage notes'
+      },
+      sessions: [
+        {
+          title: 'Opening keynote',
+          startsAt: '2026-06-01T10:00:00.000Z',
+          endsAt: '2026-06-01T11:00:00.000Z',
+          deckUrl: 'https://example.com/private-deck',
+          postSessionResources: [
+            {
+              resourceId: 'res_1',
+              label: 'Slides',
+              url: 'https://example.com/slides',
+              type: 'slides'
+            }
+          ]
+        }
+      ]
+    };
+
+    const publicEvent = serializeEventForViewer({
+      event,
+      viewer: null,
+      appOrigin: 'http://localhost:5173'
+    });
+    const ownerEvent = serializeEventForViewer({
+      event,
+      viewer: { sub: 'org_1', role: 'organizer' },
+      appOrigin: 'http://localhost:5173'
+    });
+
+    expect(publicEvent.speakerWorkspace).toBeUndefined();
+    expect(publicEvent.sessions[0]).toEqual(
+      expect.objectContaining({
+        postSessionResources: [
+          expect.objectContaining({
+            label: 'Slides'
+          })
+        ]
+      })
+    );
+    expect(publicEvent.sessions[0].deckUrl).toBeUndefined();
+    expect(ownerEvent.speakerWorkspace.greenRoomNotes).toBe('Private backstage notes');
+    expect(ownerEvent.sessions[0].deckUrl).toBe('https://example.com/private-deck');
+  });
+
+  it('can prepare a referral code without persisting immediately', async () => {
+    const event = {
+      title: 'PulseRoom Live',
+      status: 'draft',
+      startsAt: '2099-06-01T10:00:00.000Z',
+      referral: null,
+      save: jest.fn()
+    };
+
+    await ensureActiveReferralCode(event, { persist: false });
+
+    expect(event.referral).toEqual(
+      expect.objectContaining({
+        status: 'active',
+        discountType: 'percentage',
+        discountValue: 10
+      })
+    );
+    expect(event.save).not.toHaveBeenCalled();
   });
 });

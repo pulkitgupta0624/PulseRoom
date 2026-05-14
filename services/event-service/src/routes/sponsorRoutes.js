@@ -810,7 +810,7 @@ router.get(
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader(
       'Content-Disposition',
-      `attachment; filename=\"${buildDownloadFileName(application.companyName)}\"`
+      `attachment; filename="${buildDownloadFileName(application.companyName)}"`
     );
     res.send(csv);
   })

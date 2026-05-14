@@ -46,6 +46,7 @@ const {
   loadOrCreateStreamSession,
   markRecordingFailed
 } = require('../services/recordingSessionService');
+const { assertCanAccessEventRoom } = require('../services/eventRoomAccess');
 
 const router = express.Router();
 const chunkUpload = multer({
@@ -197,6 +198,12 @@ router.get(
   '/:eventId/stream-session',
   authenticate(),
   asyncHandler(async (req, res) => {
+    const eventMeta = await loadEventMeta(req, req.params.eventId);
+    assertCanAccessEventRoom({
+      eventMeta,
+      user: req.user
+    });
+
     const session = await StreamSession.findOne({ eventId: req.params.eventId }).lean();
 
     sendSuccess(
@@ -632,6 +639,12 @@ router.get(
   '/:eventId/polls',
   authenticate(),
   asyncHandler(async (req, res) => {
+    const eventMeta = await loadEventMeta(req, req.params.eventId);
+    assertCanAccessEventRoom({
+      eventMeta,
+      user: req.user
+    });
+
     const polls = await Poll.find({ eventId: req.params.eventId }).sort({ createdAt: -1 });
     sendSuccess(res, polls);
   })
@@ -674,6 +687,11 @@ router.post(
     if (poll.status === 'closed') {
       throw new AppError('Poll is closed', 409, 'poll_closed');
     }
+    const eventMeta = await loadEventMeta(req, poll.eventId);
+    assertCanAccessEventRoom({
+      eventMeta,
+      user: req.user
+    });
     if (poll.responses.some((item) => item.userId === req.user.sub)) {
       throw new AppError('Already voted on this poll', 409, 'poll_already_voted');
     }
@@ -722,6 +740,12 @@ router.get(
   '/:eventId/questions',
   authenticate(),
   asyncHandler(async (req, res) => {
+    const eventMeta = await loadEventMeta(req, req.params.eventId);
+    assertCanAccessEventRoom({
+      eventMeta,
+      user: req.user
+    });
+
     const questions = await Question.find({
       eventId: req.params.eventId,
       hidden: false
@@ -737,6 +761,11 @@ router.post(
   validateSchema(questionSchema),
   asyncHandler(async (req, res) => {
     const eventMeta = await loadEventMeta(req, req.params.eventId);
+    assertCanAccessEventRoom({
+      eventMeta,
+      user: req.user
+    });
+
     const question = await Question.create({
       eventId: req.params.eventId,
       userId: req.user.sub,
@@ -771,6 +800,11 @@ router.post(
     }
 
     const eventMeta = await loadEventMeta(req, question.eventId);
+    assertCanAccessEventRoom({
+      eventMeta,
+      user: req.user
+    });
+
     const author = buildAuthorProfile({
       user: req.user,
       eventMeta
@@ -810,10 +844,20 @@ router.post(
   authenticate(),
   asyncHandler(async (req, res) => {
     const ownedQuestion = await Question.findById(req.params.questionId)
-      .select('userId')
+      .select('userId eventId')
       .lean();
 
-    if (ownedQuestion?.userId === req.user.sub) {
+    if (!ownedQuestion) {
+      throw new AppError('Question not found', 404, 'question_not_found');
+    }
+
+    const eventMeta = await loadEventMeta(req, ownedQuestion.eventId);
+    assertCanAccessEventRoom({
+      eventMeta,
+      user: req.user
+    });
+
+    if (ownedQuestion.userId === req.user.sub) {
       throw new AppError(
         'You cannot upvote your own question',
         409,
@@ -835,10 +879,6 @@ router.post(
 
     if (!question) {
       const existing = await Question.findById(req.params.questionId).lean();
-      if (!existing) {
-        throw new AppError('Question not found', 404, 'question_not_found');
-      }
-
       return sendSuccess(res, serializeQuestionThread(existing));
     }
 
@@ -926,6 +966,12 @@ router.get(
   '/:eventId/announcements',
   authenticate(),
   asyncHandler(async (req, res) => {
+    const eventMeta = await loadEventMeta(req, req.params.eventId);
+    assertCanAccessEventRoom({
+      eventMeta,
+      user: req.user
+    });
+
     const announcements = await Announcement.find({ eventId: req.params.eventId })
       .sort({ createdAt: -1 })
       .limit(20);
@@ -937,6 +983,12 @@ router.get(
   '/:eventId/reactions',
   authenticate(),
   asyncHandler(async (req, res) => {
+    const eventMeta = await loadEventMeta(req, req.params.eventId);
+    assertCanAccessEventRoom({
+      eventMeta,
+      user: req.user
+    });
+
     const reactions = await ReactionCounter.find({ eventId: req.params.eventId }).lean();
     sendSuccess(res, reactions);
   })

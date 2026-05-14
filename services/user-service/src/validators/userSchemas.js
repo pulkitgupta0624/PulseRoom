@@ -15,7 +15,19 @@ const updateProfileSchema = Joi.object({
   organizerProfile: Joi.object({
     companyName: Joi.string().max(120).allow(''),
     website: Joi.string().uri().allow(''),
-    supportEmail: Joi.string().email().allow('')
+    supportEmail: Joi.string().email().allow(''),
+    branding: Joi.object({
+      publicHandle: Joi.string().max(32).allow(''),
+      heroTitle: Joi.string().max(140).allow(''),
+      heroSubtitle: Joi.string().max(320).allow(''),
+      logoUrl: Joi.string().uri().allow(''),
+      coverImageUrl: Joi.string().uri().allow(''),
+      primaryColor: Joi.string().pattern(/^#?[0-9a-fA-F]{3,6}$/).allow(''),
+      accentColor: Joi.string().pattern(/^#?[0-9a-fA-F]{3,6}$/).allow(''),
+      fontPairing: Joi.string().valid('modern', 'editorial', 'contrast', 'crisp'),
+      ctaLabel: Joi.string().max(40).allow(''),
+      ctaUrl: Joi.string().uri().allow('')
+    })
   })
 }).min(1);
 

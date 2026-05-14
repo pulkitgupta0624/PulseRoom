@@ -14,6 +14,11 @@ const UserProfile = require('../models/UserProfile');
 const OrganizerVerificationRequest = require('../models/OrganizerVerificationRequest');
 const { getPermissionsForRole } = require('../services/permissions');
 const {
+  normalizeHandle,
+  normalizeOrganizerProfile,
+  serializePublicProfile
+} = require('../services/organizerBrandingService');
+const {
   updateProfileSchema,
   updateRoleSchema,
   organizerVerificationSchema,
@@ -81,7 +86,7 @@ router.get(
     if (!profile) {
       throw new AppError('Profile not found', 404, 'profile_not_found');
     }
-    sendSuccess(res, profile);
+    sendSuccess(res, serializePublicProfile(profile));
   })
 );
 
@@ -114,7 +119,7 @@ router.get(
     sendSuccess(
       res,
       organizers.map((org) => ({
-        ...org,
+        ...serializePublicProfile(org),
         followersCount: org.followersCount || 0,
         isFollowableOrganizer: true,
         isFollowingOrganizer: true,
@@ -185,9 +190,29 @@ router.patch(
   authenticate(),
   validateSchema(updateProfileSchema),
   asyncHandler(async (req, res) => {
+    const nextPayload = { ...req.body };
+
+    if (req.body.organizerProfile) {
+      nextPayload.organizerProfile = normalizeOrganizerProfile(req.body.organizerProfile);
+      const requestedHandle = normalizeHandle(nextPayload.organizerProfile?.branding?.publicHandle);
+
+      if (requestedHandle) {
+        const existingHandleOwner = await UserProfile.findOne({
+          userId: { $ne: req.user.sub },
+          'organizerProfile.branding.publicHandle': requestedHandle
+        })
+          .select('userId')
+          .lean();
+
+        if (existingHandleOwner) {
+          throw new AppError('This public organizer handle is already taken', 409, 'organizer_handle_taken');
+        }
+      }
+    }
+
     const profile = await UserProfile.findOneAndUpdate(
       { userId: req.user.sub },
-      { $set: req.body, lastSeenAt: new Date() },
+      { $set: nextPayload, lastSeenAt: new Date() },
       { new: true }
     );
 
@@ -202,7 +227,7 @@ router.patch(
       isActive: profile.isActive
     });
 
-    sendSuccess(res, profile);
+    sendSuccess(res, serializePublicProfile(profile));
   })
 );
 
@@ -246,13 +271,53 @@ router.get(
 
     sendSuccess(res, {
       organizer: {
-        userId: organizerProfile.userId,
-        displayName: organizerProfile.displayName,
-        avatarUrl: organizerProfile.avatarUrl,
-        followersCount: organizerProfile.followersCount || 0,
-        organizerProfile: organizerProfile.organizerProfile || {}
+        ...serializePublicProfile({
+          userId: organizerProfile.userId,
+          displayName: organizerProfile.displayName,
+          avatarUrl: organizerProfile.avatarUrl,
+          followersCount: organizerProfile.followersCount || 0,
+          organizerProfile: organizerProfile.organizerProfile || {}
+        })
       },
       followers
+    });
+  })
+);
+
+router.get(
+  '/organizers/handle/:publicHandle',
+  asyncHandler(async (req, res) => {
+    const normalizedHandle = normalizeHandle(req.params.publicHandle);
+    if (!normalizedHandle) {
+      throw new AppError('Organizer not found', 404, 'organizer_not_found');
+    }
+
+    const profile = await UserProfile.findOne({
+      isActive: true,
+      'organizerProfile.branding.publicHandle': normalizedHandle
+    })
+      .select(PUBLIC_PROFILE_FIELDS)
+      .lean();
+
+    if (!profile || !isFollowableOrganizer(profile)) {
+      throw new AppError('Organizer not found', 404, 'organizer_not_found');
+    }
+
+    const viewer = decodeOptionalToken(req);
+    const canFollowOrganizer = Boolean(viewer?.sub) && viewer.sub !== profile.userId;
+    const isFollowingOrganizer = canFollowOrganizer
+      ? await getFollowState({
+          viewerId: viewer?.sub,
+          organizerId: profile.userId
+        })
+      : false;
+
+    sendSuccess(res, {
+      ...serializePublicProfile(profile),
+      followersCount: profile.followersCount || 0,
+      isFollowableOrganizer: true,
+      canFollowOrganizer,
+      isFollowingOrganizer
     });
   })
 );
@@ -386,7 +451,7 @@ router.get(
       : false;
 
     sendSuccess(res, {
-      ...profile,
+      ...serializePublicProfile(profile),
       followersCount: profile.followersCount || 0,
       isFollowableOrganizer: followableOrganizer,
       canFollowOrganizer,

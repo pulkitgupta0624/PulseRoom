@@ -1,5 +1,33 @@
 const mongoose = require('mongoose');
 
+const messageModerationSchema = new mongoose.Schema(
+  {
+    status: {
+      type: String,
+      enum: ['visible', 'flagged', 'hidden'],
+      default: 'visible'
+    },
+    category: {
+      type: String,
+      default: ''
+    },
+    severity: {
+      type: String,
+      enum: ['low', 'medium', 'high', 'critical'],
+      default: 'low'
+    },
+    riskScore: {
+      type: Number,
+      default: 0
+    },
+    evidence: {
+      type: [String],
+      default: []
+    }
+  },
+  { _id: false }
+);
+
 const messageSchema = new mongoose.Schema(
   {
     roomType: {
@@ -28,6 +56,10 @@ const messageSchema = new mongoose.Schema(
       type: String,
       required: true
     },
+    moderation: {
+      type: messageModerationSchema,
+      default: () => ({})
+    },
     deletedAt: Date
   },
   {
@@ -38,4 +70,3 @@ const messageSchema = new mongoose.Schema(
 messageSchema.index({ roomId: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Message', messageSchema);
-

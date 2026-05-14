@@ -11,8 +11,12 @@ const sendMessageSchema = Joi.object({
   body: Joi.string().min(1).max(2000).required()
 });
 
+const chatPolicySchema = Joi.object({
+  slowModeSeconds: Joi.number().integer().min(0).max(60).required()
+});
+
 module.exports = {
   moderationSchema,
-  sendMessageSchema
+  sendMessageSchema,
+  chatPolicySchema
 };
-

@@ -53,6 +53,8 @@ const buildReplayCtaUrl = (eventId) =>
   `${config.appOrigin.replace(/\/$/, '')}/events/${eventId}/live?replay=1`;
 const buildEventCtaUrl = (eventId) =>
   `${config.appOrigin.replace(/\/$/, '')}/events/${eventId}`;
+const buildMyBookingsUrl = () =>
+  `${config.appOrigin.replace(/\/$/, '')}/my-bookings`;
 const buildFeedbackCtaUrl = (eventId) =>
   `${config.appOrigin.replace(/\/$/, '')}/events/${eventId}?feedback=1`;
 
@@ -374,6 +376,7 @@ const start = async () => {
       DomainEvents.SPONSOR_APPLICATION_REJECTED,
       DomainEvents.SPONSOR_ACTIVATED,
       DomainEvents.BOOKING_CONFIRMED,
+      DomainEvents.BOOKING_ABANDONED,
       DomainEvents.EVENT_PUBLISHED,
       DomainEvents.EVENT_UPDATED,
       DomainEvents.ANNOUNCEMENT_POSTED,
@@ -592,6 +595,39 @@ const start = async () => {
             )}<p><a href="${eventUrl}">View event page</a></p>${payload.portalUrl
               ? `<p><a href="${escapeHtml(payload.portalUrl)}">Open sponsor workspace</a></p>`
               : ''}`
+          });
+        }
+      }
+
+      if (event === DomainEvents.BOOKING_ABANDONED) {
+        try {
+          const abandonedAutomations = await AudienceAutomation.find({
+            scopeType: {
+              $ne: 'series'
+            },
+            eventId: payload.eventId,
+            triggerType: AUTOMATION_TRIGGER_TYPES.BOOKING_ABANDONED,
+            status: AUTOMATION_STATUS_ACTIVE
+          }).lean();
+
+          for (const automation of abandonedAutomations) {
+            await executeAudienceAutomation({
+              automationId: automation._id.toString(),
+              config,
+              createNotification,
+              queue,
+              eventServiceClient,
+              bookingServiceClient,
+              loadMergedCrmAudience,
+              logger,
+              triggerPayload: payload
+            });
+          }
+        } catch (error) {
+          logger.warn({
+            message: 'Failed to execute abandoned-checkout CRM automations',
+            eventId: payload.eventId,
+            error: error.message
           });
         }
       }
@@ -971,7 +1007,7 @@ const start = async () => {
             title: `Certificate ready for ${payload.title}`,
             body: 'Your certificate of attendance has been emailed to you.',
             metadata: {
-              ctaUrl: `${config.appOrigin.replace(/\/$/, '')}/bookings`,
+              ctaUrl: buildMyBookingsUrl(),
               ctaLabel: 'View tickets'
             }
           });
@@ -996,16 +1032,21 @@ const start = async () => {
         });
 
         try {
-          const noShowAutomations = await AudienceAutomation.find({
+          const postEventAutomations = await AudienceAutomation.find({
             scopeType: {
               $ne: 'series'
             },
             eventId: payload.eventId,
-            triggerType: AUTOMATION_TRIGGER_TYPES.EVENT_COMPLETED_NO_SHOW,
+            triggerType: {
+              $in: [
+                AUTOMATION_TRIGGER_TYPES.EVENT_COMPLETED_NO_SHOW,
+                AUTOMATION_TRIGGER_TYPES.EVENT_COMPLETED_NEXT_DROP
+              ]
+            },
             status: AUTOMATION_STATUS_ACTIVE
           }).lean();
 
-          for (const automation of noShowAutomations) {
+          for (const automation of postEventAutomations) {
             await executeAudienceAutomation({
               automationId: automation._id.toString(),
               config,
@@ -1020,7 +1061,7 @@ const start = async () => {
           }
         } catch (error) {
           logger.warn({
-            message: 'Failed to execute no-show CRM automations',
+            message: 'Failed to execute post-event CRM automations',
             eventId: payload.eventId,
             error: error.message
           });

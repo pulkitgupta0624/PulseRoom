@@ -18,7 +18,6 @@
  *  - "enum" arrays work the same way
  */
 
-const crypto = require('crypto');
 const { AppError } = require('@pulseroom/common');
 const config = require('../config');
 

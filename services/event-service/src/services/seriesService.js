@@ -149,6 +149,15 @@ const cloneSponsorPackage = (pkg = {}) => ({
   updatedAt: undefined
 });
 
+const cloneSpeakerWorkspace = (workspace = {}, deltaMs = 0) => ({
+  ...workspace,
+  sharedResources: Array.isArray(workspace.sharedResources) ? [...workspace.sharedResources] : [],
+  briefingTimeline: (Array.isArray(workspace.briefingTimeline) ? workspace.briefingTimeline : []).map((item) => ({
+    ...item,
+    startsAt: shiftDateByDelta(item.startsAt, deltaMs) || item.startsAt || null
+  }))
+});
+
 const cloneEventForSeries = ({
   sourceEvent,
   series,
@@ -195,6 +204,7 @@ const cloneEventForSeries = ({
       startsAt: shiftDateByDelta(session.startsAt, deltaMs),
       endsAt: shiftDateByDelta(session.endsAt, deltaMs)
     })),
+    speakerWorkspace: cloneSpeakerWorkspace(sourceEvent.speakerWorkspace || {}, deltaMs),
     ticketTiers: (sourceEvent.ticketTiers || []).map((tier) => cloneTicketTier(tier, deltaMs)),
     acceptedCurrencies: sourceEvent.acceptedCurrencies || ['INR'],
     sponsorPackages: (sourceEvent.sponsorPackages || []).map((pkg) => cloneSponsorPackage(pkg)),

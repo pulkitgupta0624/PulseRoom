@@ -63,6 +63,7 @@ const DomainEvents = Object.freeze({
   BOOKING_CREATED: 'booking.created',
   BOOKING_CONFIRMED: 'booking.confirmed',
   BOOKING_CHECKED_IN: 'booking.checked_in',
+  BOOKING_ABANDONED: 'booking.abandoned',
   BOOKING_CANCELLED: 'booking.cancelled',
   PAYMENT_CREATED: 'payment.created',
   PAYMENT_SUCCEEDED: 'payment.succeeded',
@@ -84,6 +85,7 @@ const DomainEvents = Object.freeze({
   EVENT_FEEDBACK_SUBMITTED: 'event.feedback.submitted',
   SERIES_MEMBERSHIP_ACTIVATED: 'series.membership.activated',
   NETWORKING_OPTED_IN: 'networking.opted_in',
+  SAFETY_INCIDENT_DETECTED: 'safety.incident.detected',
   NOTIFICATION_CREATED: 'notification.created'
 });
 

@@ -16,6 +16,14 @@ const decisionTone = {
   skipped: 'bg-ember/10 text-ember'
 };
 
+const meetingTone = {
+  none: 'bg-sand text-ink/55',
+  proposed: 'bg-dusk/10 text-dusk',
+  confirmed: 'bg-reef/10 text-reef',
+  declined: 'bg-ember/10 text-ember',
+  cancelled: 'bg-ink/8 text-ink/55'
+};
+
 const formatDecision = (decision) => {
   if (decision === 'accepted') return 'Interested';
   if (decision === 'skipped') return 'Not now';
@@ -27,6 +35,14 @@ const DecisionBadge = ({ label, decision }) => (
     {label}: {formatDecision(decision)}
   </span>
 );
+
+const formatMeetingStatus = (status) => {
+  if (status === 'proposed') return 'Proposal pending';
+  if (status === 'confirmed') return 'Meeting confirmed';
+  if (status === 'declined') return 'Proposal declined';
+  if (status === 'cancelled') return 'Meeting cancelled';
+  return 'No meeting yet';
+};
 
 const NetworkingManagerModal = ({ event, onClose }) => {
   const [loading, setLoading] = useState(true);
@@ -144,6 +160,8 @@ const NetworkingManagerModal = ({ event, onClose }) => {
                 <MetricCard label="Profiles Ready" value={stats?.profiledOptIns || 0} accent="text-dusk" />
                 <MetricCard label="Pairs" value={stats?.createdMatches || 0} accent="text-dusk" />
                 <MetricCard label="Matched People" value={stats?.matchedAttendees || 0} accent="text-ember" />
+                <MetricCard label="Meeting Proposals" value={stats?.meetingProposals || 0} accent="text-dusk" />
+                <MetricCard label="Confirmed Meetups" value={stats?.confirmedMeetings || 0} accent="text-reef" />
                 <MetricCard label="Accepted" value={stats?.acceptedResponses || 0} accent="text-reef" />
                 <MetricCard label="Mutual Yes" value={stats?.mutualMatches || 0} accent="text-dusk" />
                 <MetricCard label="Skipped" value={stats?.skippedResponses || 0} accent="text-ember" />
@@ -267,6 +285,13 @@ const NetworkingManagerModal = ({ event, onClose }) => {
                               Intro sent
                             </span>
                           )}
+                          {match.meeting?.status && match.meeting.status !== 'none' && (
+                            <span
+                              className={`rounded-full px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] ${meetingTone[match.meeting.status] || meetingTone.none}`}
+                            >
+                              {formatMeetingStatus(match.meeting.status)}
+                            </span>
+                          )}
                         </div>
                         <div className="mt-3 flex flex-wrap gap-3 text-sm text-ink/65">
                           {(match.participants || []).map((participant) => (
@@ -296,6 +321,11 @@ const NetworkingManagerModal = ({ event, onClose }) => {
                           </div>
                         )}
                         <p className="mt-3 text-sm text-ink/60">{match.summary}</p>
+                        {match.meeting?.status && match.meeting.status !== 'none' && match.meeting.startsAt && (
+                          <p className="mt-2 text-xs text-ink/45">
+                            {formatMeetingStatus(match.meeting.status)} for {formatDate(match.meeting.startsAt)}
+                          </p>
+                        )}
                         {(match.participantStatuses || []).length > 0 && (
                           <div className="mt-4 flex flex-wrap gap-2">
                             {match.participantStatuses.map((status) => {
@@ -386,6 +416,22 @@ const NetworkingManagerModal = ({ event, onClose }) => {
                           <div className="mt-3 rounded-2xl bg-white px-3 py-3">
                             <p className="text-[11px] uppercase tracking-[0.16em] text-ink/45">Availability</p>
                             <p className="mt-2 text-sm text-ink/60">{profile.profile.availabilityNote}</p>
+                          </div>
+                        )}
+
+                        {profile.profile?.availabilitySlots?.length > 0 && (
+                          <div className="mt-3 rounded-2xl bg-white px-3 py-3">
+                            <p className="text-[11px] uppercase tracking-[0.16em] text-ink/45">Bookable slots</p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {profile.profile.availabilitySlots.map((slot) => (
+                                <span
+                                  key={`${profile.userId}-${slot.startsAt}-${slot.endsAt}`}
+                                  className="rounded-full border border-dusk/15 bg-dusk/5 px-3 py-1 text-xs font-medium text-dusk"
+                                >
+                                  {formatDate(slot.startsAt)}
+                                </span>
+                              ))}
+                            </div>
                           </div>
                         )}
                       </article>

@@ -1,23 +1,40 @@
+import { Suspense, lazy } from 'react';
 import { createBrowserRouter } from 'react-router-dom';
 import AppShell from './AppShell';
 import ProtectedRoute from '../components/ProtectedRoute';
 import HomePage from '../pages/HomePage';
 import AuthPage from '../pages/AuthPage';
-import EventDetailPage from '../pages/EventDetailPage';
-import SeriesDetailPage from '../pages/SeriesDetailPage';
-import SponsorApplicationPage from '../pages/SponsorApplicationPage';
-import SponsorBoothPage from '../pages/SponsorBoothPage';
-import SponsorPortalPage from '../pages/SponsorPortalPage';
-import DashboardPage from '../pages/DashboardPage';
-import LiveEventPage from '../pages/LiveEventPage';
-import AdminPage from '../pages/AdminPage';
-import ProfilePage from '../pages/ProfilePage.jsx';
-import SpeakerPortalPage from '../pages/SpeakerPortalPage.jsx';
-import BookingsPage from '../pages/BookingsPage';
-import MessagesPage from '../pages/MessagesPage';
-import CheckInPage from '../pages/CheckInPage';
 import NotFoundPage from '../pages/NotFoundPage';
-import OrganizerProfilePage from '../pages/OrganizerProfilePage'; 
+
+const EventDetailPage = lazy(() => import('../pages/EventDetailPage'));
+const SeriesDetailPage = lazy(() => import('../pages/SeriesDetailPage'));
+const SponsorApplicationPage = lazy(() => import('../pages/SponsorApplicationPage'));
+const SponsorBoothPage = lazy(() => import('../pages/SponsorBoothPage'));
+const SponsorPortalPage = lazy(() => import('../pages/SponsorPortalPage'));
+const DashboardPage = lazy(() => import('../pages/DashboardPage'));
+const LiveEventPage = lazy(() => import('../pages/LiveEventPage'));
+const AdminPage = lazy(() => import('../pages/AdminPage'));
+const ProfilePage = lazy(() => import('../pages/ProfilePage'));
+const SpeakerPortalPage = lazy(() => import('../pages/SpeakerPortalPage'));
+const BookingsPage = lazy(() => import('../pages/BookingsPage'));
+const MessagesPage = lazy(() => import('../pages/MessagesPage'));
+const CheckInPage = lazy(() => import('../pages/CheckInPage'));
+const OrganizerProfilePage = lazy(() => import('../pages/OrganizerProfilePage'));
+
+const RouteLoader = () => (
+  <div className="flex min-h-[40vh] items-center justify-center px-6 py-16">
+    <div className="space-y-3 text-center">
+      <div className="mx-auto h-10 w-10 animate-spin rounded-full border-2 border-reef border-t-transparent" />
+      <p className="text-sm text-ink/55">Loading the next PulseRoom view...</p>
+    </div>
+  </div>
+);
+
+const withRouteLoader = (Component) => (
+  <Suspense fallback={<RouteLoader />}>
+    <Component />
+  </Suspense>
+);
 
 export const router = createBrowserRouter([
   {
@@ -26,48 +43,49 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <HomePage /> },
       { path: 'auth', element: <AuthPage /> },
-      { path: 'events/:eventId', element: <EventDetailPage /> },
-      { path: 'series/:seriesId', element: <SeriesDetailPage /> },
-      { path: 'events/:eventId/sponsor', element: <SponsorApplicationPage /> },
-      { path: 'events/:eventId/sponsors/:sponsorId', element: <SponsorBoothPage /> },
-      { path: 'events/:eventId/sponsors/:sponsorId/portal', element: <SponsorPortalPage /> },
+      { path: 'events/:eventId', element: withRouteLoader(EventDetailPage) },
+      { path: 'series/:seriesId', element: withRouteLoader(SeriesDetailPage) },
+      { path: 'events/:eventId/sponsor', element: withRouteLoader(SponsorApplicationPage) },
+      { path: 'events/:eventId/sponsors/:sponsorId', element: withRouteLoader(SponsorBoothPage) },
+      { path: 'events/:eventId/sponsors/:sponsorId/portal', element: withRouteLoader(SponsorPortalPage) },
       {
         path: 'events/:eventId/live',
-        element: <ProtectedRoute><LiveEventPage /></ProtectedRoute>
+        element: <ProtectedRoute>{withRouteLoader(LiveEventPage)}</ProtectedRoute>
       },
       {
         path: 'events/:eventId/check-in',
-        element: <ProtectedRoute><CheckInPage /></ProtectedRoute>
+        element: <ProtectedRoute>{withRouteLoader(CheckInPage)}</ProtectedRoute>
       },
       {
         path: 'dashboard',
-        element: <ProtectedRoute roles={['organizer', 'admin']}><DashboardPage /></ProtectedRoute>
+        element: <ProtectedRoute roles={['organizer', 'admin']}>{withRouteLoader(DashboardPage)}</ProtectedRoute>
       },
       {
         path: 'admin',
-        element: <ProtectedRoute roles={['admin']}><AdminPage /></ProtectedRoute>
+        element: <ProtectedRoute roles={['admin']}>{withRouteLoader(AdminPage)}</ProtectedRoute>
       },
       {
         path: 'profile',
-        element: <ProtectedRoute><ProfilePage /></ProtectedRoute>
+        element: <ProtectedRoute>{withRouteLoader(ProfilePage)}</ProtectedRoute>
       },
       {
         path: 'speaker',
-        element: <ProtectedRoute><SpeakerPortalPage /></ProtectedRoute>
+        element: <ProtectedRoute>{withRouteLoader(SpeakerPortalPage)}</ProtectedRoute>
       },
       {
         path: 'my-bookings',
-        element: <ProtectedRoute><BookingsPage /></ProtectedRoute>
+        element: <ProtectedRoute>{withRouteLoader(BookingsPage)}</ProtectedRoute>
       },
       {
         path: 'messages',
-        element: <ProtectedRoute><MessagesPage /></ProtectedRoute>
+        element: <ProtectedRoute>{withRouteLoader(MessagesPage)}</ProtectedRoute>
       },
       {
         path: 'messages/:userId',
-        element: <ProtectedRoute><MessagesPage /></ProtectedRoute>
+        element: <ProtectedRoute>{withRouteLoader(MessagesPage)}</ProtectedRoute>
       },
-      { path: 'organizers/:organizerId', element: <OrganizerProfilePage /> },
+      { path: 'studio/:publicHandle', element: withRouteLoader(OrganizerProfilePage) },
+      { path: 'organizers/:organizerId', element: withRouteLoader(OrganizerProfilePage) },
       { path: '*', element: <NotFoundPage /> }
     ]
   }

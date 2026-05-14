@@ -33,7 +33,7 @@ const authenticate = (options = {}) => (req, _res, next) => {
     const payload = jwt.verify(token, options.secret || process.env.JWT_ACCESS_SECRET);
     req.user = payload;
     return next();
-  } catch (error) {
+  } catch (_error) {
     return next(new AppError('Invalid or expired token', 401, 'invalid_token'));
   }
 };

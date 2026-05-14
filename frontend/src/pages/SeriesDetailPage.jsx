@@ -1,17 +1,29 @@
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import EventCard from '../components/EventCard';
 import SectionHeader from '../components/SectionHeader';
 import SeriesMembershipPanel from '../components/SeriesMembershipPanel';
-import StripeCheckoutModal from '../components/StripeCheckoutModal';
 import { api } from '../lib/api';
+import { buildOrganizerBrandTheme, getOrganizerPublicPath } from '../lib/organizerBranding';
+
+const StripeCheckoutModal = lazy(() => import('../components/StripeCheckoutModal'));
+
+const DeferredCheckoutFallback = ({ label = 'Loading secure checkout...' }) => (
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 px-4 backdrop-blur-sm">
+    <div className="w-full max-w-md rounded-[28px] border border-ink/10 bg-white px-6 py-10 text-center shadow-bloom">
+      <div className="mx-auto h-9 w-9 animate-spin rounded-full border-2 border-reef border-t-transparent" />
+      <p className="mt-4 text-sm text-ink/60">{label}</p>
+    </div>
+  </div>
+);
 
 const SeriesDetailPage = () => {
   const { seriesId } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useSelector((state) => state.auth);
   const [payload, setPayload] = useState(null);
+  const [organizerProfile, setOrganizerProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [joining, setJoining] = useState(false);
@@ -41,6 +53,32 @@ const SeriesDetailPage = () => {
   useEffect(() => {
     loadSeries();
   }, [seriesId]);
+
+  useEffect(() => {
+    const organizerId = payload?.series?.organizerId;
+    if (!organizerId) {
+      setOrganizerProfile(null);
+      return undefined;
+    }
+
+    let active = true;
+
+    api.get(`/api/users/profile/${organizerId}`)
+      .then((response) => {
+        if (active) {
+          setOrganizerProfile(response.data.data);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setOrganizerProfile(null);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [payload?.series?.organizerId]);
 
   const clearStripeReturnParams = () => {
     if (!redirectMembershipPurchaseId && !redirectPaymentIntentId && !redirectStatus) {
@@ -206,6 +244,11 @@ const SeriesDetailPage = () => {
     });
   };
 
+  const organizerBrandTheme = useMemo(
+    () => buildOrganizerBrandTheme(organizerProfile?.organizerProfile?.branding || {}),
+    [organizerProfile?.organizerProfile?.branding]
+  );
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -236,21 +279,73 @@ const SeriesDetailPage = () => {
   const events = payload.events || [];
   const upcomingEvents = events.filter((event) => new Date(event.startsAt).getTime() > Date.now());
   const pastEvents = events.filter((event) => new Date(event.startsAt).getTime() <= Date.now());
+  const organizerHubPath = organizerProfile
+    ? getOrganizerPublicPath(organizerProfile, series.organizerId)
+    : `/organizers/${series.organizerId}`;
+  const heroTitle = series.name;
+  const heroSubtitle =
+    organizerProfile?.organizerProfile?.branding?.heroSubtitle ||
+    series.description ||
+    series.summary;
 
   return (
-    <div className="space-y-10">
-      <SectionHeader
-        eyebrow="Series"
-        title={series.name}
-        description={series.description || series.summary}
-        actions={
-          !user ? (
-            <Link to="/auth" className="rounded-full border border-ink/12 bg-white px-4 py-2 text-sm font-semibold text-ink">
-              Sign in to join
-            </Link>
-          ) : null
-        }
-      />
+    <div className="space-y-10" style={organizerBrandTheme.styles}>
+      <section
+        className="overflow-hidden rounded-[36px] border border-[color:var(--organizer-outline)] shadow-bloom"
+        style={{
+          background: organizerBrandTheme.heroBackground
+        }}
+      >
+        <div
+          className="relative"
+          style={{
+            backgroundImage: series.theme?.coverImageUrl
+              ? `linear-gradient(135deg, rgba(18,18,18,0.32), rgba(18,18,18,0.12)), url(${series.theme.coverImageUrl})`
+              : organizerProfile?.organizerProfile?.branding?.coverImageUrl
+                ? `linear-gradient(135deg, rgba(18,18,18,0.32), rgba(18,18,18,0.12)), url(${organizerProfile.organizerProfile.branding.coverImageUrl})`
+                : undefined,
+            backgroundPosition: 'center',
+            backgroundSize: 'cover'
+          }}
+        >
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.18),transparent_35%)]" />
+          <div className="relative flex flex-col gap-6 px-6 py-10 text-[color:var(--organizer-hero-text)] md:px-10">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="rounded-full border border-white/18 bg-white/10 px-3 py-1 text-xs uppercase tracking-[0.24em]">
+                Series
+              </span>
+              {organizerProfile?.organizerProfile?.branding?.publicHandle ? (
+                <span className="rounded-full border border-white/18 bg-white/8 px-3 py-1 text-xs uppercase tracking-[0.24em]">
+                  /studio/{organizerProfile.organizerProfile.branding.publicHandle}
+                </span>
+              ) : null}
+            </div>
+
+            <div className="space-y-3">
+              <h1 className="max-w-4xl text-4xl leading-tight md:text-5xl" style={{ fontFamily: 'var(--organizer-heading-font)' }}>
+                {heroTitle}
+              </h1>
+              <p className="max-w-3xl text-sm text-white/82 md:text-base">{heroSubtitle}</p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              {!user ? (
+                <Link to="/auth" className="rounded-full border border-white/18 bg-white/10 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/16">
+                  Sign in to join
+                </Link>
+              ) : null}
+              {organizerProfile ? (
+                <Link
+                  to={organizerHubPath}
+                  className="rounded-full border border-white/18 bg-white/8 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/14"
+                >
+                  View organizer studio
+                </Link>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      </section>
 
       <SeriesMembershipPanel
         series={series}
@@ -269,15 +364,15 @@ const SeriesDetailPage = () => {
       ) : null}
 
       <section className="grid gap-4 sm:grid-cols-3">
-        <div className="rounded-[24px] border border-ink/10 bg-white/80 p-5 shadow-bloom">
+        <div className="rounded-[24px] border border-[color:var(--organizer-outline)] bg-white/82 p-5 shadow-bloom">
           <p className="text-xs uppercase tracking-[0.22em] text-ink/45">Active members</p>
           <p className="mt-2 font-display text-4xl text-ink">{series.stats?.activeMembers || 0}</p>
         </div>
-        <div className="rounded-[24px] border border-ink/10 bg-white/80 p-5 shadow-bloom">
+        <div className="rounded-[24px] border border-[color:var(--organizer-outline)] bg-white/82 p-5 shadow-bloom">
           <p className="text-xs uppercase tracking-[0.22em] text-ink/45">Total events</p>
           <p className="mt-2 font-display text-4xl text-ink">{series.stats?.totalEvents || 0}</p>
         </div>
-        <div className="rounded-[24px] border border-ink/10 bg-white/80 p-5 shadow-bloom">
+        <div className="rounded-[24px] border border-[color:var(--organizer-outline)] bg-white/82 p-5 shadow-bloom">
           <p className="text-xs uppercase tracking-[0.22em] text-ink/45">Upcoming</p>
           <p className="mt-2 font-display text-4xl text-ink">{series.stats?.upcomingEvents || 0}</p>
         </div>
@@ -314,16 +409,18 @@ const SeriesDetailPage = () => {
       ) : null}
 
       {checkoutSession && checkoutOpen ? (
-        <StripeCheckoutModal
-          session={checkoutSession}
-          onClose={handleCheckoutClose}
-          onComplete={(paymentIntentId) =>
-            finalizeMembershipPayment({
-              purchaseId: checkoutSession.resourceId,
-              paymentIntentId
-            })
-          }
-        />
+        <Suspense fallback={<DeferredCheckoutFallback label="Loading series checkout..." />}>
+          <StripeCheckoutModal
+            session={checkoutSession}
+            onClose={handleCheckoutClose}
+            onComplete={(paymentIntentId) =>
+              finalizeMembershipPayment({
+                purchaseId: checkoutSession.resourceId,
+                paymentIntentId
+              })
+            }
+          />
+        </Suspense>
       ) : null}
     </div>
   );

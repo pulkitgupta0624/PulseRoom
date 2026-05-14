@@ -1,21 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import SectionHeader from '../components/SectionHeader';
 import MetricCard from '../components/MetricCard';
-import EventEditModal from '../components/EventEditModal';
-import EventBookingsModal from '../components/EventBookingsModal';
-import SponsorManagerModal from '../components/SponsorManagerModal';
-import PromoCodeManagerModal from '../components/PromoCodeManagerModal';
-import WebhookManagerModal from '../components/WebhookManagerModal';
-import NetworkingManagerModal from '../components/NetworkingManagerModal';
-import EngagementHeatmapModal from '../components/EngagementHeatmapModal';
-import EventRecapStudioModal from '../components/EventRecapStudioModal';
-import EventFeedbackInsightsModal from '../components/EventFeedbackInsightsModal';
-import AudienceCrmModal from '../components/AudienceCrmModal';
-import SeriesManagerModal from '../components/SeriesManagerModal';
-import AnalyticsCharts from '../components/AnalyticsCharts';
-import OrganizerGrowthDashboard from '../components/OrganizerGrowthDashboard';
 import ModalShell from '../components/ModalShell';
 import EventThemeFields from '../components/EventThemeFields';
 import {
@@ -30,6 +17,21 @@ import { downloadEventBookingsCsv } from '../lib/downloads';
 import { normalizeEventTheme } from '../lib/eventTheme';
 import { formatCurrency, formatDate } from '../lib/formatters';
 import { createSocket } from '../lib/socket';
+
+const EventEditModal = lazy(() => import('../components/EventEditModal'));
+const EventBookingsModal = lazy(() => import('../components/EventBookingsModal'));
+const SponsorManagerModal = lazy(() => import('../components/SponsorManagerModal'));
+const PromoCodeManagerModal = lazy(() => import('../components/PromoCodeManagerModal'));
+const WebhookManagerModal = lazy(() => import('../components/WebhookManagerModal'));
+const NetworkingManagerModal = lazy(() => import('../components/NetworkingManagerModal'));
+const EngagementHeatmapModal = lazy(() => import('../components/EngagementHeatmapModal'));
+const EventRecapStudioModal = lazy(() => import('../components/EventRecapStudioModal'));
+const EventFeedbackInsightsModal = lazy(() => import('../components/EventFeedbackInsightsModal'));
+const AudienceCrmModal = lazy(() => import('../components/AudienceCrmModal'));
+const SeriesManagerModal = lazy(() => import('../components/SeriesManagerModal'));
+const SpeakerToolkitModal = lazy(() => import('../components/SpeakerToolkitModal'));
+const AnalyticsCharts = lazy(() => import('../components/AnalyticsCharts'));
+const OrganizerGrowthDashboard = lazy(() => import('../components/OrganizerGrowthDashboard'));
 
 const STATUS_STYLES = {
   draft: 'bg-amber-100 text-amber-700',
@@ -92,6 +94,30 @@ const createInitialForm = () => ({
   assumptions: [],
   suggestedFaq: []
 });
+
+const DeferredPanelFallback = ({ label = 'Loading dashboard panel...' }) => (
+  <div className="rounded-[32px] border border-ink/10 bg-white/70 px-6 py-14 text-center shadow-bloom">
+    <div className="mx-auto h-9 w-9 animate-spin rounded-full border-2 border-reef border-t-transparent" />
+    <p className="mt-4 text-sm text-ink/55">{label}</p>
+  </div>
+);
+
+const DeferredModalFallback = ({ label = 'Loading workspace...' }) => (
+  <ModalShell
+    onClose={() => {}}
+    labelledBy="dashboard-deferred-modal-title"
+    closeOnBackdrop={false}
+    panelClassName="w-full max-w-md rounded-[28px] border border-ink/10 bg-white px-6 py-10 shadow-bloom"
+  >
+    <div className="text-center">
+      <div className="mx-auto h-9 w-9 animate-spin rounded-full border-2 border-reef border-t-transparent" />
+      <h3 id="dashboard-deferred-modal-title" className="mt-4 font-display text-2xl text-ink">
+        Opening workspace
+      </h3>
+      <p className="mt-2 text-sm text-ink/60">{label}</p>
+    </div>
+  </ModalShell>
+);
 
 const toDatetimeLocal = (value) => {
   if (!value) return '';
@@ -280,6 +306,7 @@ const DashboardPage = () => {
   const [recapEvent, setRecapEvent] = useState(null);
   const [feedbackEvent, setFeedbackEvent] = useState(null);
   const [crmEvent, setCrmEvent] = useState(null);
+  const [speakerToolkitEvent, setSpeakerToolkitEvent] = useState(null);
   const [seriesManagerOpen, setSeriesManagerOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [uploadingCover, setUploadingCover] = useState(false);
@@ -678,13 +705,21 @@ const DashboardPage = () => {
         title="Command center"
         description="Create and publish events, manage ticket check-ins, sell sponsor placements, and track demand with real analytics."
         actions={
-          <button
-            type="button"
-            onClick={() => setSeriesManagerOpen(true)}
-            className="rounded-full border border-ink/12 bg-white px-4 py-2.5 text-sm font-semibold text-ink transition hover:bg-sand"
-          >
-            Open Series Studio
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <Link
+              to="/profile"
+              className="rounded-full border border-ink/12 bg-white px-4 py-2.5 text-sm font-semibold text-ink transition hover:bg-sand"
+            >
+              Open Brand Studio
+            </Link>
+            <button
+              type="button"
+              onClick={() => setSeriesManagerOpen(true)}
+              className="rounded-full border border-ink/12 bg-white px-4 py-2.5 text-sm font-semibold text-ink transition hover:bg-sand"
+            >
+              Open Series Studio
+            </button>
+          </div>
         }
       />
 
@@ -698,20 +733,24 @@ const DashboardPage = () => {
         <MetricCard label="Sponsor Revenue" value={formatCurrency(totals.sponsorRevenue || 0)} accent="text-reef" />
       </section>
 
-      <OrganizerGrowthDashboard
-        data={growthAnalytics}
-        loading={growthLoading}
-        error={growthError}
-        socketConnected={growthSocketConnected}
-        lastRealtimeBooking={lastRealtimeBooking}
-        spikeAlert={spikeAlert}
-      />
+      <Suspense fallback={<DeferredPanelFallback label="Loading growth telemetry..." />}>
+        <OrganizerGrowthDashboard
+          data={growthAnalytics}
+          loading={growthLoading}
+          error={growthError}
+          socketConnected={growthSocketConnected}
+          lastRealtimeBooking={lastRealtimeBooking}
+          spikeAlert={spikeAlert}
+        />
+      </Suspense>
 
-      <AnalyticsCharts
-        title="Revenue and demand"
-        description={analyticsLoading ? 'Loading organizer analytics...' : 'Real booking and attendee trends across your events.'}
-        analytics={organizerAnalytics}
-      />
+      <Suspense fallback={<DeferredPanelFallback label="Loading revenue and demand charts..." />}>
+        <AnalyticsCharts
+          title="Revenue and demand"
+          description={analyticsLoading ? 'Loading organizer analytics...' : 'Real booking and attendee trends across your events.'}
+          analytics={organizerAnalytics}
+        />
+      </Suspense>
 
       <section className="space-y-6">
         <SectionHeader
@@ -1394,6 +1433,13 @@ const DashboardPage = () => {
                       </Link>
                       <button
                         type="button"
+                        onClick={() => setSpeakerToolkitEvent(event)}
+                        className="rounded-full border border-reef/20 bg-reef/5 px-3 py-2 text-xs font-medium text-reef hover:bg-reef/10"
+                      >
+                        Speaker toolkit
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => setEditingEvent(event)}
                         className="rounded-full border border-ink/15 bg-white px-3 py-2 text-xs font-medium text-ink hover:bg-sand"
                       >
@@ -1429,45 +1475,74 @@ const DashboardPage = () => {
         </div>
       </section>
 
-      {editingEvent && <EventEditModal event={editingEvent} onClose={() => setEditingEvent(null)} />}
+      {editingEvent && (
+        <Suspense fallback={<DeferredModalFallback label="Loading the event editor..." />}>
+          <EventEditModal event={editingEvent} onClose={() => setEditingEvent(null)} />
+        </Suspense>
+      )}
       {bookingsEvent && (
-        <EventBookingsModal
-          event={bookingsEvent}
-          onClose={() => setBookingsEvent(null)}
-          onExport={() => handleExportBookings(bookingsEvent)}
-          exportLoading={exportingEventId === bookingsEvent._id}
-        />
+        <Suspense fallback={<DeferredModalFallback label="Loading bookings workspace..." />}>
+          <EventBookingsModal
+            event={bookingsEvent}
+            onClose={() => setBookingsEvent(null)}
+            onExport={() => handleExportBookings(bookingsEvent)}
+            exportLoading={exportingEventId === bookingsEvent._id}
+          />
+        </Suspense>
       )}
       {sponsorsEvent && (
-        <SponsorManagerModal event={sponsorsEvent} onClose={() => setSponsorsEvent(null)} onUpdated={refreshDashboard} />
+        <Suspense fallback={<DeferredModalFallback label="Loading sponsor manager..." />}>
+          <SponsorManagerModal event={sponsorsEvent} onClose={() => setSponsorsEvent(null)} onUpdated={refreshDashboard} />
+        </Suspense>
       )}
       {promoCodesEvent && (
-        <PromoCodeManagerModal event={promoCodesEvent} onClose={() => setPromoCodesEvent(null)} />
+        <Suspense fallback={<DeferredModalFallback label="Loading promo code controls..." />}>
+          <PromoCodeManagerModal event={promoCodesEvent} onClose={() => setPromoCodesEvent(null)} />
+        </Suspense>
       )}
       {webhooksEvent && (
-        <WebhookManagerModal event={webhooksEvent} onClose={() => setWebhooksEvent(null)} />
+        <Suspense fallback={<DeferredModalFallback label="Loading webhook manager..." />}>
+          <WebhookManagerModal event={webhooksEvent} onClose={() => setWebhooksEvent(null)} />
+        </Suspense>
       )}
       {networkingEvent && (
-        <NetworkingManagerModal event={networkingEvent} onClose={() => setNetworkingEvent(null)} />
+        <Suspense fallback={<DeferredModalFallback label="Loading networking controls..." />}>
+          <NetworkingManagerModal event={networkingEvent} onClose={() => setNetworkingEvent(null)} />
+        </Suspense>
       )}
       {crmEvent && (
-        <AudienceCrmModal event={crmEvent} onClose={() => setCrmEvent(null)} />
+        <Suspense fallback={<DeferredModalFallback label="Loading attendee CRM..." />}>
+          <AudienceCrmModal event={crmEvent} onClose={() => setCrmEvent(null)} />
+        </Suspense>
+      )}
+      {speakerToolkitEvent && (
+        <Suspense fallback={<DeferredModalFallback label="Loading speaker toolkit..." />}>
+          <SpeakerToolkitModal event={speakerToolkitEvent} onClose={() => setSpeakerToolkitEvent(null)} />
+        </Suspense>
       )}
       {seriesManagerOpen && (
-        <SeriesManagerModal
-          events={dashboard?.events || []}
-          onUpdated={refreshDashboard}
-          onClose={() => setSeriesManagerOpen(false)}
-        />
+        <Suspense fallback={<DeferredModalFallback label="Loading Series Studio..." />}>
+          <SeriesManagerModal
+            events={dashboard?.events || []}
+            onUpdated={refreshDashboard}
+            onClose={() => setSeriesManagerOpen(false)}
+          />
+        </Suspense>
       )}
       {engagementEvent && (
-        <EngagementHeatmapModal event={engagementEvent} onClose={() => setEngagementEvent(null)} />
+        <Suspense fallback={<DeferredModalFallback label="Loading engagement heatmap..." />}>
+          <EngagementHeatmapModal event={engagementEvent} onClose={() => setEngagementEvent(null)} />
+        </Suspense>
       )}
       {feedbackEvent && (
-        <EventFeedbackInsightsModal event={feedbackEvent} onClose={() => setFeedbackEvent(null)} />
+        <Suspense fallback={<DeferredModalFallback label="Loading feedback insights..." />}>
+          <EventFeedbackInsightsModal event={feedbackEvent} onClose={() => setFeedbackEvent(null)} />
+        </Suspense>
       )}
       {recapEvent && (
-        <EventRecapStudioModal event={recapEvent} onClose={() => setRecapEvent(null)} />
+        <Suspense fallback={<DeferredModalFallback label="Loading recap studio..." />}>
+          <EventRecapStudioModal event={recapEvent} onClose={() => setRecapEvent(null)} />
+        </Suspense>
       )}
 
       {confirmDelete && (

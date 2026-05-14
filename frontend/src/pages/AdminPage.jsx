@@ -7,7 +7,7 @@ import { api } from '../lib/api';
 import { createSocket } from '../lib/socket';
 import { formatDate, formatCurrency } from '../lib/formatters';
 
-const TABS = ['Overview', 'Users', 'Reports', 'Bans', 'Verifications'];
+const TABS = ['Overview', 'Safety', 'Users', 'Reports', 'Bans', 'Verifications'];
 
 const REPORT_STATUS_STYLES = {
   open: 'bg-ember/10 text-ember',
@@ -21,6 +21,19 @@ const VERIFICATION_STATUS_STYLES = {
   rejected: 'bg-ember/10 text-ember'
 };
 
+const INCIDENT_STATUS_STYLES = {
+  open: 'bg-ember/10 text-ember',
+  reviewing: 'bg-amber-100 text-amber-700',
+  resolved: 'bg-reef/10 text-reef'
+};
+
+const INCIDENT_SEVERITY_STYLES = {
+  low: 'bg-sand text-ink/60',
+  medium: 'bg-dusk/10 text-dusk',
+  high: 'bg-amber-100 text-amber-700',
+  critical: 'bg-ember text-white'
+};
+
 const AdminPage = () => {
   const [activeTab, setActiveTab] = useState('Overview');
   const [dashboard, setDashboard] = useState(null);
@@ -28,6 +41,9 @@ const AdminPage = () => {
   const [users, setUsers] = useState([]);
   const [reports, setReports] = useState([]);
   const [bans, setBans] = useState([]);
+  const [incidents, setIncidents] = useState([]);
+  const [safetySummary, setSafetySummary] = useState(null);
+  const [loadingIncidents, setLoadingIncidents] = useState(false);
   const [verifications, setVerifications] = useState([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [loadingVerifications, setLoadingVerifications] = useState(false);
@@ -53,6 +69,8 @@ const AdminPage = () => {
         setDashboard(dashboardRes.data.data);
         setReports(dashboardRes.data.data.recentReports || []);
         setBans(dashboardRes.data.data.activeBans || []);
+        setIncidents(dashboardRes.data.data.recentIncidents || []);
+        setSafetySummary(dashboardRes.data.data.safetySummary || null);
         setBookingAnalytics(analyticsRes.data.data);
       } catch {
         // handled silently
@@ -63,6 +81,40 @@ const AdminPage = () => {
     const socket = createSocket('/socket/admin');
     socket.on('admin:analytics', (snapshot) => {
       setDashboard((prev) => ({ ...prev, snapshot }));
+    });
+    socket.on('admin:safety-incident', (incident) => {
+      setIncidents((current) => [incident, ...current.filter((item) => item.incidentId !== incident.incidentId)].slice(0, 12));
+      setSafetySummary((current) => ({
+        total: (current?.total || 0) + 1,
+        open: (current?.open || 0) + 1,
+        reviewing: current?.reviewing || 0,
+        resolved: current?.resolved || 0,
+        highOrCritical:
+          (current?.highOrCritical || 0) + (['high', 'critical'].includes(incident.severity) ? 1 : 0),
+        bySeverity: {
+          low: current?.bySeverity?.low || 0,
+          medium: current?.bySeverity?.medium || 0,
+          high: current?.bySeverity?.high || 0,
+          critical: current?.bySeverity?.critical || 0,
+          [incident.severity]: (current?.bySeverity?.[incident.severity] || 0) + 1
+        },
+        byIncidentType: {
+          ...(current?.byIncidentType || {}),
+          [incident.incidentType]: (current?.byIncidentType?.[incident.incidentType] || 0) + 1
+        },
+        byCategory: {
+          ...(current?.byCategory || {}),
+          [incident.category]: (current?.byCategory?.[incident.category] || 0) + 1
+        },
+        hiddenMessages:
+          (current?.hiddenMessages || 0) +
+          (incident.incidentType === 'chat_message' &&
+          incident.autoActions?.includes('message_hidden')
+            ? 1
+            : 0),
+        bookingRisks:
+          (current?.bookingRisks || 0) + (incident.incidentType === 'booking' ? 1 : 0)
+      }));
     });
     return () => socket.disconnect();
   }, []);
@@ -108,6 +160,30 @@ const AdminPage = () => {
     if (activeTab === 'Verifications') loadVerifications();
   }, [activeTab]);
 
+  const loadIncidents = async () => {
+    setLoadingIncidents(true);
+    try {
+      const response = await api.get('/api/admin/incidents', {
+        params: {
+          limit: 80
+        }
+      });
+      setIncidents(response.data.data.incidents || []);
+      setSafetySummary(response.data.data.summary || null);
+    } catch {
+      setIncidents([]);
+      setSafetySummary(null);
+    } finally {
+      setLoadingIncidents(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'Safety') {
+      loadIncidents();
+    }
+  }, [activeTab]);
+
   // ── Actions ────────────────────────────────────────────────────────────────
   const handleBanUser = async () => {
     if (!banModal || !banReason.trim()) return;
@@ -143,6 +219,23 @@ const AdminPage = () => {
       flash(`Event ${action} action applied.`);
     } catch {
       flash('Action failed.', 'error');
+    }
+  };
+
+  const handleResolveIncident = async (incidentId, status) => {
+    try {
+      const response = await api.patch(`/api/admin/incidents/${incidentId}`, {
+        status,
+        resolutionNotes: ''
+      });
+      setIncidents((current) =>
+        current.map((incident) =>
+          incident.incidentId === incidentId ? response.data.data : incident
+        )
+      );
+      flash('Safety incident updated.');
+    } catch (error) {
+      flash(error.response?.data?.message || 'Failed to update safety incident.', 'error');
     }
   };
 
@@ -226,6 +319,13 @@ const AdminPage = () => {
             <MetricCard label="Live Interactions" value={metrics.liveInteractions || 0} accent="text-ember" />
           </section>
 
+          <section className="grid gap-4 md:grid-cols-4">
+            <MetricCard label="Open Safety" value={safetySummary?.open || 0} accent="text-ember" />
+            <MetricCard label="High Risk" value={safetySummary?.highOrCritical || 0} accent="text-dusk" />
+            <MetricCard label="Hidden Chat" value={safetySummary?.hiddenMessages || 0} accent="text-reef" />
+            <MetricCard label="Booking Risks" value={safetySummary?.bookingRisks || 0} />
+          </section>
+
           <AnalyticsCharts
             title="Platform business analytics"
             description="Revenue, booking velocity, attendee growth, and top events across the whole platform."
@@ -233,6 +333,41 @@ const AdminPage = () => {
           />
 
           <section className="grid gap-6 lg:grid-cols-2">
+            <div className="rounded-[28px] border border-ink/10 bg-white/80 p-5 shadow-bloom">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="font-display text-2xl">Recent safety incidents</h2>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('Safety')}
+                  className="text-xs text-reef hover:underline"
+                >
+                  View all
+                </button>
+              </div>
+              <div className="space-y-3">
+                {!incidents.length && (
+                  <p className="text-sm text-ink/50">No automated safety incidents yet.</p>
+                )}
+                {incidents.slice(0, 5).map((incident) => (
+                  <div key={incident.incidentId} className="rounded-2xl bg-sand p-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-semibold text-ink capitalize">
+                        {incident.category.replace(/_/g, ' ')}
+                      </p>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-xs font-semibold uppercase ${
+                          INCIDENT_SEVERITY_STYLES[incident.severity] || 'bg-ink/8 text-ink/50'
+                        }`}
+                      >
+                        {incident.severity}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-sm text-ink/70">{incident.summary}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
             {/* Recent reports */}
             <div className="rounded-[28px] border border-ink/10 bg-white/80 p-5 shadow-bloom">
               <div className="mb-4 flex items-center justify-between">
@@ -297,6 +432,115 @@ const AdminPage = () => {
       )}
 
       {/* ── USERS TAB ── */}
+      {activeTab === 'Safety' && (
+        <div className="space-y-5">
+          <section className="grid gap-4 md:grid-cols-4">
+            <MetricCard label="Open" value={safetySummary?.open || 0} accent="text-ember" />
+            <MetricCard label="Reviewing" value={safetySummary?.reviewing || 0} accent="text-dusk" />
+            <MetricCard label="Resolved" value={safetySummary?.resolved || 0} accent="text-reef" />
+            <MetricCard label="High / Critical" value={safetySummary?.highOrCritical || 0} />
+          </section>
+
+          <div className="overflow-hidden rounded-[28px] border border-ink/10 bg-white/80 shadow-bloom">
+            <div className="border-b border-ink/8 px-5 py-4">
+              <div className="flex items-center justify-between">
+                <h2 className="font-display text-2xl">Safety incident inbox</h2>
+                <button
+                  type="button"
+                  onClick={loadIncidents}
+                  className="rounded-full border border-ink/10 bg-sand px-3 py-1.5 text-xs font-medium text-ink hover:bg-white"
+                >
+                  Refresh
+                </button>
+              </div>
+            </div>
+
+            <div className="divide-y divide-ink/6">
+              {loadingIncidents && (
+                <div className="px-5 py-10 text-center">
+                  <p className="text-sm text-ink/50">Loading safety incidents...</p>
+                </div>
+              )}
+
+              {!loadingIncidents && !incidents.length && (
+                <div className="px-5 py-10 text-center">
+                  <p className="text-sm text-ink/50">No safety incidents yet.</p>
+                </div>
+              )}
+
+              {!loadingIncidents && incidents.map((incident) => (
+                <div key={incident.incidentId} className="space-y-3 px-5 py-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full bg-sand px-3 py-1 text-xs font-semibold uppercase tracking-[0.15em] text-ink/60">
+                          {incident.incidentType.replace(/_/g, ' ')}
+                        </span>
+                        <span
+                          className={`rounded-full px-3 py-1 text-xs font-semibold uppercase ${
+                            INCIDENT_SEVERITY_STYLES[incident.severity] || 'bg-ink/8 text-ink/50'
+                          }`}
+                        >
+                          {incident.severity}
+                        </span>
+                        <span
+                          className={`rounded-full px-3 py-1 text-xs font-semibold uppercase ${
+                            INCIDENT_STATUS_STYLES[incident.status] || 'bg-ink/8 text-ink/50'
+                          }`}
+                        >
+                          {incident.status}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-sm font-semibold text-ink">{incident.summary}</p>
+                      {incident.detail && (
+                        <p className="mt-1 text-sm text-ink/65">{incident.detail}</p>
+                      )}
+                      <p className="mt-2 text-xs text-ink/40">
+                        Risk score {incident.riskScore || 0} · {formatDate(incident.detectedAt || incident.createdAt)}
+                        {incident.eventTitle ? ` · ${incident.eventTitle}` : ''}
+                      </p>
+                      {incident.evidence?.length > 0 && (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {incident.evidence.slice(0, 4).map((item) => (
+                            <span
+                              key={`${incident.incidentId}-${item}`}
+                              className="rounded-full border border-ink/10 bg-white px-3 py-1 text-xs text-ink/55"
+                            >
+                              {item}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {incident.status !== 'resolved' && (
+                      <div className="flex gap-2">
+                        {incident.status === 'open' && (
+                          <button
+                            type="button"
+                            onClick={() => handleResolveIncident(incident.incidentId, 'reviewing')}
+                            className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100"
+                          >
+                            Mark reviewing
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleResolveIncident(incident.incidentId, 'resolved')}
+                          className="rounded-full border border-reef/20 bg-reef/5 px-3 py-1.5 text-xs font-medium text-reef hover:bg-reef/10"
+                        >
+                          Resolve
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {activeTab === 'Users' && (
         <div className="space-y-5">
           <div className="flex gap-3">

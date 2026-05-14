@@ -37,6 +37,18 @@ const MessagesPage = () => {
 
   const socketRef = useRef(null);
   const bottomRef = useRef(null);
+  const activeUserIdRef = useRef(activeUserId);
+
+  useEffect(() => {
+    activeUserIdRef.current = activeUserId;
+  }, [activeUserId]);
+
+  useEffect(() => {
+    setActiveUserId(targetUserId || null);
+    if (!targetUserId) {
+      setActiveUser(null);
+    }
+  }, [targetUserId]);
 
   // ── Fetch conversation list on mount ──────────────────────────────────────
   useEffect(() => {
@@ -82,8 +94,8 @@ const MessagesPage = () => {
 
     socket.on('chat:new-private-message', (message) => {
       const isRelevant =
-        (message.senderId === user?.id && message.recipientId === activeUserId) ||
-        (message.senderId === activeUserId && message.recipientId === user?.id);
+        (message.senderId === user?.id && message.recipientId === activeUserIdRef.current) ||
+        (message.senderId === activeUserIdRef.current && message.recipientId === user?.id);
 
       if (isRelevant) {
         setMessages((prev) => [...prev, message]);
@@ -114,11 +126,15 @@ const MessagesPage = () => {
     });
 
     return () => socket.disconnect();
-  }, [user, activeUserId]);
+  }, [user]);
 
   // ── Load messages when active user changes ────────────────────────────────
   useEffect(() => {
-    if (!activeUserId) return;
+    if (!activeUserId) {
+      setMessages([]);
+      setLoadingMessages(false);
+      return;
+    }
     setLoadingMessages(true);
     socketRef.current?.emit('chat:join-private', { participantId: activeUserId });
 

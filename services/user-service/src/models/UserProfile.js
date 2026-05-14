@@ -65,7 +65,19 @@ const userProfileSchema = new mongoose.Schema(
     organizerProfile: {
       companyName: String,
       website: String,
-      supportEmail: String
+      supportEmail: String,
+      branding: {
+        publicHandle: String,
+        heroTitle: String,
+        heroSubtitle: String,
+        logoUrl: String,
+        coverImageUrl: String,
+        primaryColor: String,
+        accentColor: String,
+        fontPairing: String,
+        ctaLabel: String,
+        ctaUrl: String
+      }
     },
     location: String,
     lastSeenAt: Date
@@ -77,5 +89,6 @@ const userProfileSchema = new mongoose.Schema(
 
 userProfileSchema.index({ displayName: 'text', bio: 'text', interests: 'text' });
 userProfileSchema.index({ followingOrganizerIds: 1 });
+userProfileSchema.index({ 'organizerProfile.branding.publicHandle': 1 });
 
 module.exports = mongoose.model('UserProfile', userProfileSchema);

@@ -12,7 +12,19 @@ const {
 const sanitizeHtml = require('sanitize-html');
 const Message = require('../models/Message');
 const ChatRestriction = require('../models/ChatRestriction');
-const { moderationSchema, sendMessageSchema } = require('../validators/chatSchemas');
+const EventChatPolicy = require('../models/EventChatPolicy');
+const {
+  moderationSchema,
+  sendMessageSchema,
+  chatPolicySchema
+} = require('../validators/chatSchemas');
+const {
+  analyzeChatMessage,
+  getSlowModeRetryMs,
+  isPrivilegedChatRole,
+  normalizeSlowModeSeconds
+} = require('../services/trustSafetyService');
+const { assertCanAccessEventRoom } = require('../services/eventRoomAccess');
 const { buildPrivateRoomId } = require('../services/roomUtils');
 
 const router = express.Router();
@@ -32,6 +44,14 @@ const checkRestriction = async (eventId, userId) => {
 };
 
 const sanitize = (text) => sanitizeHtml(text, { allowedTags: [], allowedAttributes: {} });
+
+const serializeChatPolicy = (policy = {}, eventId = '') => ({
+  eventId: eventId || policy.eventId || '',
+  slowModeSeconds: normalizeSlowModeSeconds(policy.slowModeSeconds),
+  active: normalizeSlowModeSeconds(policy.slowModeSeconds) > 0,
+  updatedAt: policy.updatedAt || null,
+  updatedBy: policy.updatedBy || ''
+});
 
 const loadEventMeta = async (req, eventId) => {
   try {
@@ -60,18 +80,104 @@ const assertCanManageEvent = async (req, eventId) => {
   throw new AppError('Forbidden', 403, 'forbidden');
 };
 
+const loadChatPolicy = async (eventId) => {
+  const policy = await EventChatPolicy.findOne({ eventId }).lean();
+  return serializeChatPolicy(policy || {}, eventId);
+};
+
+const enforceSlowMode = async ({ eventId, user }) => {
+  if (isPrivilegedChatRole(user.role)) {
+    return {
+      eventId,
+      slowModeSeconds: 0,
+      active: false,
+      updatedAt: null,
+      updatedBy: ''
+    };
+  }
+
+  const policy = await loadChatPolicy(eventId);
+  if (!policy.active) {
+    return policy;
+  }
+
+  const lastMessage = await Message.findOne({
+    roomType: 'event',
+    roomId: eventId,
+    senderId: user.sub
+  })
+    .sort({ createdAt: -1 })
+    .select('createdAt')
+    .lean();
+
+  const retryMs = getSlowModeRetryMs({
+    lastMessageAt: lastMessage?.createdAt || null,
+    slowModeSeconds: policy.slowModeSeconds
+  });
+
+  if (retryMs > 0) {
+    throw new AppError(
+      `Slow mode is active. Please wait ${Math.ceil(retryMs / 1000)}s before sending again.`,
+      429,
+      'chat_slow_mode'
+    );
+  }
+
+  return policy;
+};
+
+const publishSafetyIncident = async ({
+  req,
+  eventMeta,
+  message,
+  safetyAnalysis
+}) => {
+  await req.eventBus.publish(DomainEvents.SAFETY_INCIDENT_DETECTED, {
+    incidentType: 'chat_message',
+    category: safetyAnalysis.category,
+    severity: safetyAnalysis.severity,
+    sourceService: 'chat-service',
+    eventId: message.eventId,
+    organizerId: eventMeta?.organizerId || '',
+    eventTitle: eventMeta?.title || '',
+    targetId: message._id.toString(),
+    targetUserId: message.senderId,
+    summary:
+      safetyAnalysis.visibilityAction === 'hidden'
+        ? `Chat message auto-hidden in ${eventMeta?.title || 'event room'}`
+        : `Chat message flagged for review in ${eventMeta?.title || 'event room'}`,
+    detail: `A chat message triggered automated ${safetyAnalysis.category} detection with a ${safetyAnalysis.severity} severity score.`,
+    riskScore: safetyAnalysis.riskScore,
+    autoActions: safetyAnalysis.autoActions,
+    evidence: safetyAnalysis.evidence,
+    detectedAt: new Date(),
+    metadata: {
+      bodyPreview: String(message.body || '').slice(0, 220),
+      senderRole: message.senderRole || '',
+      moderationStatus: message.moderation?.status || 'visible'
+    }
+  });
+};
+
 // ── Event chat ────────────────────────────────────────────────────────────────
 router.get(
   '/event/:eventId/messages',
   authenticate(),
   asyncHandler(async (req, res) => {
+    const eventMeta = await loadEventMeta(req, req.params.eventId);
+    assertCanAccessEventRoom({
+      eventMeta,
+      user: req.user
+    });
+
     const limit = Math.min(Number(req.query.limit || 50), 100);
     const before = req.query.before ? new Date(req.query.before) : null;
 
     const filter = {
       roomType: 'event',
       roomId: req.params.eventId,
-      deletedAt: { $exists: false }
+      deletedAt: { $exists: false },
+      'moderation.status': { $ne: 'hidden' }
     };
     if (before) {
       filter.createdAt = { $lt: before };
@@ -86,15 +192,71 @@ router.get(
   })
 );
 
+router.get(
+  '/event/:eventId/policy',
+  authenticate(),
+  asyncHandler(async (req, res) => {
+    const eventMeta = await loadEventMeta(req, req.params.eventId);
+    assertCanAccessEventRoom({
+      eventMeta,
+      user: req.user
+    });
+
+    sendSuccess(res, await loadChatPolicy(req.params.eventId));
+  })
+);
+
+router.patch(
+  '/event/:eventId/policy',
+  authenticate(),
+  authorize(Roles.ORGANIZER, Roles.MODERATOR, Roles.ADMIN),
+  validateSchema(chatPolicySchema),
+  asyncHandler(async (req, res) => {
+    await assertCanManageEvent(req, req.params.eventId);
+
+    const policy = await EventChatPolicy.findOneAndUpdate(
+      { eventId: req.params.eventId },
+      {
+        $set: {
+          slowModeSeconds: normalizeSlowModeSeconds(req.body.slowModeSeconds),
+          updatedBy: req.user.sub
+        }
+      },
+      {
+        new: true,
+        upsert: true
+      }
+    ).lean();
+
+    const serialized = serializeChatPolicy(policy, req.params.eventId);
+    req.io.to(`event:${req.params.eventId}`).emit('chat:policy-updated', serialized);
+
+    sendSuccess(res, serialized);
+  })
+);
+
 router.post(
   '/event/:eventId/messages',
   authenticate(),
   validateSchema(sendMessageSchema),
   asyncHandler(async (req, res) => {
+    const eventMeta = await loadEventMeta(req, req.params.eventId);
+    assertCanAccessEventRoom({
+      eventMeta,
+      user: req.user
+    });
+
     const restriction = await checkRestriction(req.params.eventId, req.user.sub);
     if (restriction.isBanned || restriction.isMuted) {
       throw new AppError('Messaging restricted for this event', 403, 'chat_restricted');
     }
+
+    const policy = await enforceSlowMode({
+      eventId: req.params.eventId,
+      user: req.user
+    });
+    const body = sanitize(req.body.body);
+    const safetyAnalysis = analyzeChatMessage(body);
 
     const message = await Message.create({
       roomType: 'event',
@@ -102,17 +264,54 @@ router.post(
       eventId: req.params.eventId,
       senderId: req.user.sub,
       senderRole: req.user.role,
-      body: sanitize(req.body.body)
+      body,
+      moderation: {
+        status:
+          safetyAnalysis.visibilityAction === 'hidden'
+            ? 'hidden'
+            : safetyAnalysis.visibilityAction === 'flagged'
+              ? 'flagged'
+              : 'visible',
+        category: safetyAnalysis.category,
+        severity: safetyAnalysis.severity,
+        riskScore: safetyAnalysis.riskScore,
+        evidence: safetyAnalysis.evidence
+      }
     });
 
-    req.io.to(`event:${req.params.eventId}`).emit('chat:new-message', message);
-    await req.eventBus.publish(DomainEvents.CHAT_MESSAGE_SENT, {
-      messageId: message._id.toString(),
-      eventId: req.params.eventId,
-      senderId: req.user.sub
-    });
+    if (message.moderation?.status !== 'hidden') {
+      req.io.to(`event:${req.params.eventId}`).emit('chat:new-message', message);
+      await req.eventBus.publish(DomainEvents.CHAT_MESSAGE_SENT, {
+        messageId: message._id.toString(),
+        eventId: req.params.eventId,
+        senderId: req.user.sub
+      });
+    } else {
+      await req.eventBus.publish(DomainEvents.CHAT_MESSAGE_MODERATED, {
+        messageId: message._id.toString(),
+        eventId: req.params.eventId,
+        userId: req.user.sub,
+        type: 'auto_hidden'
+      });
+    }
 
-    sendSuccess(res, message, 201);
+    if (safetyAnalysis.shouldCreateIncident) {
+      await publishSafetyIncident({
+        req,
+        eventMeta,
+        message,
+        safetyAnalysis
+      });
+    }
+
+    sendSuccess(res, {
+      ...message.toObject(),
+      policy,
+      safety: {
+        moderated: message.moderation?.status !== 'visible',
+        moderationStatus: message.moderation?.status || 'visible'
+      }
+    }, 201);
   })
 );
 

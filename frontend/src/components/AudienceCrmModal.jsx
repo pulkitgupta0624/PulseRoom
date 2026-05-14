@@ -56,8 +56,15 @@ const AUTOMATION_TRIGGER_OPTIONS = [
   { value: 'event_starts_24h', label: '24 hours before event' },
   { value: 'event_starts_1h', label: '1 hour before event' },
   { value: 'replay_ready', label: 'Replay is ready' },
-  { value: 'event_completed_no_show', label: 'No-show follow-up after event' }
+  { value: 'booking_abandoned', label: 'Abandoned checkout recovery' },
+  { value: 'event_completed_no_show', label: 'No-show follow-up after event' },
+  { value: 'event_completed_next_drop', label: 'Next drop follow-up after event' }
 ];
+
+const JOURNEY_TRIGGER_VALUES = new Set([
+  'booking_abandoned',
+  'event_completed_next_drop'
+]);
 
 const TEMPLATE_LIBRARY = [
   {
@@ -88,6 +95,15 @@ const TEMPLATE_LIBRARY = [
     triggerType: 'replay_ready'
   },
   {
+    id: 'abandoned-checkout',
+    name: 'Checkout Rescue',
+    description: 'Recover attendees who dropped before finishing payment.',
+    title: 'Your spot is still warm',
+    body: 'You were close to checking out. Jump back in, complete your booking, and lock in your place before tickets move.',
+    channel: 'both',
+    triggerType: 'booking_abandoned'
+  },
+  {
     id: 'no-show',
     name: 'No-show Winback',
     description: 'Reconnect with people who missed the live event.',
@@ -95,6 +111,15 @@ const TEMPLATE_LIBRARY = [
     body: 'You missed the live room, but you are still part of the story. Jump into the replay and catch the sessions that mattered most.',
     channel: 'both',
     triggerType: 'event_completed_no_show'
+  },
+  {
+    id: 'next-drop',
+    name: 'Next Drop Follow-up',
+    description: 'Send attendees into the organizer\'s next published event after this one wraps.',
+    title: 'Keep the momentum going',
+    body: 'Thanks for showing up. The next room from this organizer is already live, so grab your seat while the energy is still high.',
+    channel: 'both',
+    triggerType: 'event_completed_next_drop'
   }
 ];
 
@@ -118,6 +143,91 @@ const loadCrmSnapshot = async (eventId, filters) => {
   return response.data.data;
 };
 
+const loadJourneyDetail = async (eventId, automationId) => {
+  const response = await api.get(
+    `/api/notifications/events/${eventId}/crm/automations/${automationId}/journey`
+  );
+  return response.data.data.journey;
+};
+
+const isJourneyTrigger = (triggerType) => JOURNEY_TRIGGER_VALUES.has(triggerType);
+
+const JOURNEY_DETAIL_TABS = [
+  { key: 'targetedRecipients', label: 'Targeted' },
+  { key: 'clickedRecipients', label: 'Clicked' },
+  { key: 'convertedRecipients', label: 'Converted' },
+  { key: 'skippedRecipients', label: 'Skipped' }
+];
+
+const createJourneySettings = (triggerType = '') => {
+  if (triggerType === 'booking_abandoned') {
+    return {
+      initialDelayMinutes: 30,
+      resendEnabled: true,
+      resendDelayHours: 12,
+      cooldownHours: 72,
+      stopOnGoal: true
+    };
+  }
+
+  if (triggerType === 'event_completed_next_drop') {
+    return {
+      initialDelayMinutes: 180,
+      resendEnabled: true,
+      resendDelayHours: 24,
+      cooldownHours: 168,
+      stopOnGoal: true
+    };
+  }
+
+  return {
+    initialDelayMinutes: 0,
+    resendEnabled: false,
+    resendDelayHours: 24,
+    cooldownHours: 72,
+    stopOnGoal: true
+  };
+};
+
+const createJourneyAbTest = (title = '', body = '') => ({
+  enabled: false,
+  autoWinnerEnabled: false,
+  minimumSampleSize: 50,
+  winnerVariantKey: '',
+  variants: [
+    {
+      key: 'A',
+      label: 'Variant A',
+      title,
+      body
+    },
+    {
+      key: 'B',
+      label: 'Variant B',
+      title: '',
+      body: ''
+    }
+  ]
+});
+
+const syncJourneyAbTestVariantA = (journeyAbTest, title, body) => ({
+  ...(journeyAbTest || createJourneyAbTest(title, body)),
+  variants: [
+    {
+      key: 'A',
+      label: 'Variant A',
+      title,
+      body
+    },
+    {
+      key: 'B',
+      label: 'Variant B',
+      title: journeyAbTest?.variants?.[1]?.title || '',
+      body: journeyAbTest?.variants?.[1]?.body || ''
+    }
+  ]
+});
+
 const createAutomationDraft = () => ({
   automationId: '',
   name: '',
@@ -125,7 +235,18 @@ const createAutomationDraft = () => ({
   body: '',
   channel: 'both',
   triggerType: 'event_starts_24h',
-  status: 'active'
+  status: 'active',
+  journeySettings: createJourneySettings('event_starts_24h'),
+  journeyAbTest: createJourneyAbTest('', '')
+});
+
+const createJourneyDetailState = () => ({
+  open: false,
+  loading: false,
+  error: null,
+  automationId: '',
+  tab: 'targetedRecipients',
+  data: null
 });
 
 const formatCampaignStatusLabel = (status) => {
@@ -143,6 +264,17 @@ const formatCampaignStatusLabel = (status) => {
 
 const formatAutomationStatusLabel = (status) =>
   status === 'paused' ? 'Paused' : 'Active';
+
+const formatPercent = (value) => `${Number(value || 0).toFixed(1).replace(/\.0$/, '')}%`;
+const formatOptionalDate = (value, fallback = 'Waiting for activity') =>
+  value ? formatDate(value) : fallback;
+
+const JourneyMetric = ({ label, value, accent = 'text-ink' }) => (
+  <div className="rounded-[22px] border border-ink/10 bg-white px-4 py-3">
+    <p className="text-[11px] uppercase tracking-[0.18em] text-ink/45">{label}</p>
+    <p className={`mt-2 font-display text-2xl ${accent}`}>{value}</p>
+  </div>
+);
 
 const MetricCard = ({ label, value, accent = 'text-ink' }) => (
   <div className="rounded-[24px] border border-ink/8 bg-white px-4 py-4">
@@ -163,6 +295,43 @@ const SegmentButton = ({ active, label, onClick }) => (
   >
     {label}
   </button>
+);
+
+const JourneyDetailTabButton = ({ active, label, count, onClick }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className={`rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] transition ${
+      active
+        ? 'bg-ink text-sand'
+        : 'border border-ink/10 bg-white text-ink/65 hover:bg-sand'
+    }`}
+  >
+    {label} {count ? `(${count})` : ''}
+  </button>
+);
+
+const JourneyRecipientCard = ({ title, subtitle, chips = [], detail = '' }) => (
+  <article className="rounded-[22px] border border-ink/10 bg-sand/45 p-4">
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <p className="font-semibold text-ink">{title}</p>
+        <p className="mt-1 text-xs text-ink/50">{subtitle}</p>
+      </div>
+      {!!chips.length && (
+        <div className="flex flex-wrap justify-end gap-2">
+          {chips.map((chip) => (
+            <span key={chip} className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-ink/60">
+              {chip}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+    {detail && (
+      <p className="mt-3 text-sm text-ink/65">{detail}</p>
+    )}
+  </article>
 );
 
 const AudienceCrmModal = ({ event, onClose }) => {
@@ -192,6 +361,10 @@ const AudienceCrmModal = ({ event, onClose }) => {
     audience: [],
     segments: [],
     automations: [],
+    journeys: {
+      summary: null,
+      items: []
+    },
     recentCampaigns: []
   });
   const [activeSegmentId, setActiveSegmentId] = useState(null);
@@ -204,6 +377,7 @@ const AudienceCrmModal = ({ event, onClose }) => {
     scheduledFor: buildScheduledInputValue()
   });
   const [automationDraft, setAutomationDraft] = useState(createAutomationDraft());
+  const [journeyDetail, setJourneyDetail] = useState(createJourneyDetailState());
 
   useEffect(() => {
     setFilters(FILTER_DEFAULTS);
@@ -217,6 +391,7 @@ const AudienceCrmModal = ({ event, onClose }) => {
       scheduledFor: buildScheduledInputValue()
     });
     setAutomationDraft(createAutomationDraft());
+    setJourneyDetail(createJourneyDetailState());
   }, [event._id]);
 
   useEffect(() => {
@@ -251,6 +426,9 @@ const AudienceCrmModal = ({ event, onClose }) => {
   const filteredSummary = data.summary?.filtered || {};
   const totalSummary = data.summary?.total || {};
   const recipientCount = filteredSummary.audienceCount || 0;
+  const journeySummary = data.journeys?.summary || {};
+  const journeyItems = data.journeys?.items || [];
+  const openJourney = journeyItems.find((item) => item.automationId === journeyDetail.automationId) || null;
 
   const updateFilter = (key, value) => {
     setActiveSegmentId(null);
@@ -349,7 +527,9 @@ const AudienceCrmModal = ({ event, onClose }) => {
       body: template.body,
       channel: template.channel,
       triggerType: template.triggerType,
-      status: 'active'
+      status: 'active',
+      journeySettings: createJourneySettings(template.triggerType),
+      journeyAbTest: createJourneyAbTest(template.title, template.body)
     });
     setStatus({
       tone: 'success',
@@ -408,6 +588,44 @@ const AudienceCrmModal = ({ event, onClose }) => {
     }
   };
 
+  const handleOpenJourneyDetail = async (automationId) => {
+    setJourneyDetail({
+      open: true,
+      loading: true,
+      error: null,
+      automationId,
+      tab: 'targetedRecipients',
+      data: null
+    });
+
+    try {
+      const detail = await loadJourneyDetail(event._id, automationId);
+      setJourneyDetail((current) =>
+        current.automationId === automationId
+          ? {
+              ...current,
+              loading: false,
+              data: detail
+            }
+          : current
+      );
+    } catch (detailError) {
+      setJourneyDetail((current) =>
+        current.automationId === automationId
+          ? {
+              ...current,
+              loading: false,
+              error: detailError.response?.data?.message || 'Unable to load journey detail right now.'
+            }
+          : current
+      );
+    }
+  };
+
+  const handleCloseJourneyDetail = () => {
+    setJourneyDetail(createJourneyDetailState());
+  };
+
   const handleSaveAutomation = async () => {
     if (!automationDraft.name.trim()) {
       setError('Give this automation a name first.');
@@ -415,6 +633,17 @@ const AudienceCrmModal = ({ event, onClose }) => {
     }
     if (!automationDraft.title.trim() || !automationDraft.body.trim()) {
       setError('Add both an automation title and message before saving.');
+      return;
+    }
+    if (
+      isJourneyTrigger(automationDraft.triggerType) &&
+      automationDraft.journeyAbTest.enabled &&
+      (
+        !automationDraft.journeyAbTest.variants?.[1]?.title?.trim() ||
+        !automationDraft.journeyAbTest.variants?.[1]?.body?.trim()
+      )
+    ) {
+      setError('Add both a title and message for Variant B before enabling A/B testing.');
       return;
     }
 
@@ -431,6 +660,8 @@ const AudienceCrmModal = ({ event, onClose }) => {
         channel: automationDraft.channel,
         triggerType: automationDraft.triggerType,
         status: automationDraft.status,
+        journeySettings: automationDraft.journeySettings,
+        journeyAbTest: automationDraft.journeyAbTest,
         filters: effectiveFilters,
         segmentId: activeSegmentId || ''
       });
@@ -443,6 +674,9 @@ const AudienceCrmModal = ({ event, onClose }) => {
       });
       setAutomationDraft(createAutomationDraft());
       setData(await loadCrmSnapshot(event._id, effectiveFilters));
+      if (journeyDetail.open && journeyDetail.automationId === savedAutomation.automationId) {
+        await handleOpenJourneyDetail(savedAutomation.automationId);
+      }
     } catch (saveError) {
       setError(saveError.response?.data?.message || 'Unable to save this automation right now.');
     } finally {
@@ -464,7 +698,9 @@ const AudienceCrmModal = ({ event, onClose }) => {
       body: automation.body,
       channel: automation.channel,
       triggerType: automation.triggerType,
-      status: automation.status
+      status: automation.status,
+      journeySettings: automation.journeySettings || createJourneySettings(automation.triggerType),
+      journeyAbTest: automation.journeyAbTest || createJourneyAbTest(automation.title, automation.body)
     });
     setStatus({
       tone: 'success',
@@ -482,6 +718,9 @@ const AudienceCrmModal = ({ event, onClose }) => {
       if (automationDraft.automationId === automationId) {
         setAutomationDraft(createAutomationDraft());
       }
+      if (journeyDetail.automationId === automationId) {
+        setJourneyDetail(createJourneyDetailState());
+      }
       setStatus({
         tone: 'success',
         message: 'Automation removed.'
@@ -494,11 +733,90 @@ const AudienceCrmModal = ({ event, onClose }) => {
     }
   };
 
+  const renderJourneyDetailList = (tabKey, items = []) => {
+    if (!items.length) {
+      return (
+        <div className="rounded-[24px] bg-sand/50 px-5 py-10 text-center">
+          <p className="text-sm text-ink/50">Nothing to show in this view yet.</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-3">
+        {items.map((item) => {
+          if (tabKey === 'clickedRecipients') {
+            return (
+              <JourneyRecipientCard
+                key={item.userId}
+                title={item.attendeeName || item.email || item.userId}
+                subtitle={item.email || item.userId}
+                chips={[
+                  `${item.clickedCount || 0} click${Number(item.clickedCount || 0) === 1 ? '' : 's'}`,
+                  ...((item.variantLabels || []).slice(0, 1)),
+                  ...((item.touchLabels || []).slice(0, 1))
+                ]}
+                detail={`First click ${formatOptionalDate(item.firstClickedAt)}${item.convertedAt ? ` | Converted ${formatDate(item.convertedAt)}` : ''}`}
+              />
+            );
+          }
+
+          if (tabKey === 'convertedRecipients') {
+            return (
+              <JourneyRecipientCard
+                key={item.recordId || item.userId}
+                title={item.attendeeName || item.email || item.userId}
+                subtitle={item.email || item.userId}
+                chips={[
+                  item.attributedVariantLabel || 'Variant',
+                  item.attributedTouchLabel || 'Converted',
+                  item.targetEventTitle || 'Target event'
+                ]}
+                detail={`Converted ${formatDate(item.convertedAt)}${item.targetEventTitle ? ` into ${item.targetEventTitle}` : ''}.`}
+              />
+            );
+          }
+
+          if (tabKey === 'skippedRecipients') {
+            return (
+              <JourneyRecipientCard
+                key={item.userId}
+                title={item.attendeeName || item.email || item.userId}
+                subtitle={item.email || item.userId}
+                chips={[
+                  ...((item.reasonLabels || []).slice(0, 2)),
+                  ...((item.variantLabels || []).slice(0, 1)),
+                  ...((item.touchLabels || []).slice(0, 1))
+                ]}
+                detail={`Last skipped ${formatOptionalDate(item.lastSkippedAt)}.`}
+              />
+            );
+          }
+
+          return (
+            <JourneyRecipientCard
+              key={item.userId}
+              title={item.attendeeName || item.email || item.userId}
+              subtitle={item.email || item.userId}
+              chips={[
+                `${item.touchCount || 0} touch${Number(item.touchCount || 0) === 1 ? '' : 'es'}`,
+                ...((item.variantLabels || []).slice(0, 1)),
+                `${item.deliveredCount || 0} delivered`,
+                item.clickedCount ? `${item.clickedCount} clicked` : 'No clicks yet'
+              ]}
+              detail={`First targeted ${formatOptionalDate(item.firstTargetedAt)}${item.convertedAt ? ` | Converted ${formatDate(item.convertedAt)}` : ''}`}
+            />
+          );
+        })}
+      </div>
+    );
+  };
+
   return (
     <ModalShell
       onClose={onClose}
       labelledBy="audience-crm-title"
-      panelClassName="flex max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-[32px] border border-ink/10 bg-white shadow-bloom"
+      panelClassName="relative flex max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-[32px] border border-ink/10 bg-white shadow-bloom"
     >
       <div className="sticky top-0 z-10 flex items-start justify-between border-b border-ink/10 bg-white px-6 py-5">
         <div>
@@ -629,6 +947,174 @@ const AudienceCrmModal = ({ event, onClose }) => {
                   </article>
                 ))}
               </div>
+            </section>
+
+            <section className="rounded-[28px] border border-ink/10 bg-white/80 p-5">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-ink/45">Journeys</p>
+                  <h3 className="mt-1 font-display text-2xl text-ink">Automation performance</h3>
+                  <p className="mt-2 max-w-3xl text-sm text-ink/55">
+                    Track recovery wins and next-drop conversions from the journeys running on this event.
+                  </p>
+                </div>
+                <div className="rounded-[24px] border border-ink/10 bg-sand/55 px-4 py-3 text-sm text-ink/60">
+                  {journeyItems.length
+                    ? `${journeySummary.activeJourneyCount || 0} live journey${journeySummary.activeJourneyCount === 1 ? '' : 's'}`
+                    : 'Journey reporting unlocks after you save a recovery or next-drop automation.'}
+                </div>
+              </div>
+
+              <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <JourneyMetric label="Live Journeys" value={journeySummary.activeJourneyCount || 0} accent="text-reef" />
+                <JourneyMetric label="Recovered" value={journeySummary.recoveredCount || 0} accent="text-ember" />
+                <JourneyMetric label="Next Drop" value={journeySummary.nextDropConversionCount || 0} accent="text-dusk" />
+                <JourneyMetric label="Click Rate" value={formatPercent(journeySummary.clickRate || 0)} />
+              </div>
+
+              {!journeyItems.length ? (
+                <div className="mt-5 rounded-[24px] bg-sand/50 px-5 py-10 text-center">
+                  <p className="text-sm text-ink/50">No journey automation data yet for this event.</p>
+                </div>
+              ) : (
+                <div className="mt-5 grid gap-4 xl:grid-cols-2">
+                  {journeyItems.map((journey) => {
+                    const linkedAutomation = data.automations?.find(
+                      (automation) => automation.automationId === journey.automationId
+                    );
+
+                    return (
+                      <article key={journey.automationId} className="rounded-[24px] border border-ink/10 bg-sand/50 p-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-semibold text-ink">{journey.name}</p>
+                          <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                            journey.status === 'paused'
+                              ? 'bg-white text-ink/60'
+                              : 'bg-reef/10 text-reef'
+                          }`}>
+                            {formatAutomationStatusLabel(journey.status)}
+                          </span>
+                          <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-dusk">
+                            {journey.triggerLabel}
+                          </span>
+                          {journey.targetEventTitle && (
+                            <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-ink/60">
+                              Target {journey.targetEventTitle}
+                            </span>
+                          )}
+                          {journey.abTestEnabled && (
+                            <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-dusk">
+                              A/B testing
+                            </span>
+                          )}
+                          {journey.winnerVariantKey && (
+                            <span className="rounded-full bg-reef/10 px-2.5 py-1 text-[11px] font-semibold text-reef">
+                              Winner {journey.winnerVariantKey}
+                            </span>
+                          )}
+                        </div>
+
+                        <p className="mt-3 text-sm text-ink/65">
+                          {journey.conversionGoalLabel}
+                          {journey.targetEventTitle ? ` into ${journey.targetEventTitle}` : ''}.
+                        </p>
+
+                        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                          <JourneyMetric label="Audience" value={journey.uniqueRecipientCount || 0} />
+                          <JourneyMetric label="Delivered" value={journey.deliveredCount || 0} accent="text-reef" />
+                          <JourneyMetric label="Clicked" value={journey.clickedCount || 0} accent="text-dusk" />
+                          <JourneyMetric label="Converted" value={journey.conversionCount || 0} accent="text-ember" />
+                        </div>
+
+                        <div className="mt-4 flex flex-wrap gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-ink/55">
+                          <span className="rounded-full bg-white px-2.5 py-1">
+                            {journey.campaignCount} send{journey.campaignCount === 1 ? '' : 's'}
+                          </span>
+                          <span className="rounded-full bg-white px-2.5 py-1">
+                            Open {formatPercent(journey.openRate || 0)}
+                          </span>
+                          <span className="rounded-full bg-white px-2.5 py-1">
+                            Click {formatPercent(journey.clickRate || 0)}
+                          </span>
+                          <span className="rounded-full bg-white px-2.5 py-1">
+                            Convert {formatPercent(journey.conversionRate || 0)}
+                          </span>
+                        </div>
+
+                        {journey.variantStats?.length > 0 && (
+                          <div className="mt-4 grid gap-3 md:grid-cols-2">
+                            {journey.variantStats.map((variant) => (
+                              <div key={variant.variantKey} className="rounded-[20px] border border-dusk/15 bg-white p-4">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <p className="font-semibold text-ink">{variant.variantLabel}</p>
+                                  {variant.winnerSelected && (
+                                    <span className="rounded-full bg-reef/10 px-2.5 py-1 text-[11px] font-semibold text-reef">
+                                      Winner
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-ink/55">
+                                  <span className="rounded-full bg-sand px-2.5 py-1">
+                                    {variant.uniqueRecipientCount || 0} targeted
+                                  </span>
+                                  <span className="rounded-full bg-sand px-2.5 py-1">
+                                    {variant.clickedCount || 0} clicked
+                                  </span>
+                                  <span className="rounded-full bg-sand px-2.5 py-1">
+                                    {variant.conversionCount || 0} converted
+                                  </span>
+                                </div>
+                                <p className="mt-3 text-xs text-ink/50">
+                                  Click {formatPercent(variant.clickRate || 0)} | Convert {formatPercent(variant.conversionRate || 0)}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        <p className="mt-3 text-xs uppercase tracking-[0.16em] text-ink/45">
+                          {journey.latestSentAt
+                            ? `Last send ${formatDate(journey.latestSentAt)}`
+                            : journey.lastTriggeredAt
+                              ? `Triggered ${formatDate(journey.lastTriggeredAt)}`
+                              : 'Waiting for first trigger'}
+                        </p>
+                        {journey.targetEventStartsAt && (
+                          <p className="mt-1 text-xs text-ink/45">
+                            Target starts {formatDate(journey.targetEventStartsAt)}
+                          </p>
+                        )}
+                        {journey.lastDispatchError && (
+                          <p className={`mt-2 text-xs ${
+                            journey.lastDispatchStatus === 'failed' ? 'text-ember' : 'text-ink/45'
+                          }`}>
+                            {journey.lastDispatchError}
+                          </p>
+                        )}
+
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenJourneyDetail(journey.automationId)}
+                            className="rounded-full bg-ink px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-sand transition hover:opacity-90"
+                          >
+                            View details
+                          </button>
+                          {linkedAutomation && (
+                            <button
+                              type="button"
+                              onClick={() => handleEditAutomation(linkedAutomation)}
+                              className="rounded-full border border-ink/10 bg-white px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-ink/70 transition hover:bg-sand"
+                            >
+                              Edit journey
+                            </button>
+                          )}
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
             </section>
 
             <section className="grid gap-6 xl:grid-cols-[0.95fr,1.05fr]">
@@ -806,10 +1292,18 @@ const AudienceCrmModal = ({ event, onClose }) => {
                   <input
                     value={automationDraft.title}
                     onChange={(inputEvent) =>
-                      setAutomationDraft((current) => ({
-                        ...current,
-                        title: inputEvent.target.value
-                      }))
+                      setAutomationDraft((current) => {
+                        const nextTitle = inputEvent.target.value;
+                        return {
+                          ...current,
+                          title: nextTitle,
+                          journeyAbTest: syncJourneyAbTestVariantA(
+                            current.journeyAbTest,
+                            nextTitle,
+                            current.body
+                          )
+                        };
+                      })
                     }
                     placeholder="Automation title"
                     className="w-full rounded-2xl border border-ink/10 bg-white px-4 py-3 text-sm outline-none focus:border-reef"
@@ -817,10 +1311,18 @@ const AudienceCrmModal = ({ event, onClose }) => {
                   <textarea
                     value={automationDraft.body}
                     onChange={(inputEvent) =>
-                      setAutomationDraft((current) => ({
-                        ...current,
-                        body: inputEvent.target.value
-                      }))
+                      setAutomationDraft((current) => {
+                        const nextBody = inputEvent.target.value;
+                        return {
+                          ...current,
+                          body: nextBody,
+                          journeyAbTest: syncJourneyAbTestVariantA(
+                            current.journeyAbTest,
+                            current.title,
+                            nextBody
+                          )
+                        };
+                      })
                     }
                     rows={4}
                     placeholder="What should this automation say when it fires?"
@@ -831,7 +1333,9 @@ const AudienceCrmModal = ({ event, onClose }) => {
                     onChange={(inputEvent) =>
                       setAutomationDraft((current) => ({
                         ...current,
-                        triggerType: inputEvent.target.value
+                        triggerType: inputEvent.target.value,
+                        journeySettings: createJourneySettings(inputEvent.target.value),
+                        journeyAbTest: createJourneyAbTest(current.title, current.body)
                       }))
                     }
                     className="w-full rounded-2xl border border-ink/10 bg-white px-4 py-3 text-sm outline-none focus:border-reef"
@@ -873,6 +1377,270 @@ const AudienceCrmModal = ({ event, onClose }) => {
                       <option value="paused">Paused</option>
                     </select>
                   </div>
+                  {isJourneyTrigger(automationDraft.triggerType) && (
+                    <div className="space-y-3 rounded-[22px] border border-dusk/15 bg-white/75 p-4">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.18em] text-dusk">Journey optimization</p>
+                        <p className="mt-2 text-sm text-ink/60">
+                          Add a delay, send one resend automatically, suppress repeat nudges with cooldowns, and stop the journey when the goal is already done.
+                        </p>
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <label className="space-y-2 text-sm text-ink/65">
+                          <span className="block text-xs uppercase tracking-[0.16em] text-ink/45">Initial delay (minutes)</span>
+                          <input
+                            type="number"
+                            min="0"
+                            max="10080"
+                            value={automationDraft.journeySettings.initialDelayMinutes}
+                            onChange={(inputEvent) =>
+                              setAutomationDraft((current) => ({
+                                ...current,
+                                journeySettings: {
+                                  ...current.journeySettings,
+                                  initialDelayMinutes: Number(inputEvent.target.value || 0)
+                                }
+                              }))
+                            }
+                            className="w-full rounded-2xl border border-ink/10 bg-white px-4 py-3 text-sm outline-none focus:border-reef"
+                          />
+                        </label>
+                        <label className="space-y-2 text-sm text-ink/65">
+                          <span className="block text-xs uppercase tracking-[0.16em] text-ink/45">Cooldown (hours)</span>
+                          <input
+                            type="number"
+                            min="0"
+                            max="720"
+                            value={automationDraft.journeySettings.cooldownHours}
+                            onChange={(inputEvent) =>
+                              setAutomationDraft((current) => ({
+                                ...current,
+                                journeySettings: {
+                                  ...current.journeySettings,
+                                  cooldownHours: Number(inputEvent.target.value || 0)
+                                }
+                              }))
+                            }
+                            className="w-full rounded-2xl border border-ink/10 bg-white px-4 py-3 text-sm outline-none focus:border-reef"
+                          />
+                        </label>
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <label className="space-y-2 text-sm text-ink/65">
+                          <span className="block text-xs uppercase tracking-[0.16em] text-ink/45">Resend</span>
+                          <select
+                            value={automationDraft.journeySettings.resendEnabled ? 'enabled' : 'disabled'}
+                            onChange={(inputEvent) =>
+                              setAutomationDraft((current) => ({
+                                ...current,
+                                journeySettings: {
+                                  ...current.journeySettings,
+                                  resendEnabled: inputEvent.target.value === 'enabled'
+                                }
+                              }))
+                            }
+                            className="w-full rounded-2xl border border-ink/10 bg-white px-4 py-3 text-sm outline-none focus:border-reef"
+                          >
+                            <option value="enabled">One resend</option>
+                            <option value="disabled">No resend</option>
+                          </select>
+                        </label>
+                        <label className="space-y-2 text-sm text-ink/65">
+                          <span className="block text-xs uppercase tracking-[0.16em] text-ink/45">Resend delay (hours)</span>
+                          <input
+                            type="number"
+                            min="1"
+                            max="168"
+                            value={automationDraft.journeySettings.resendDelayHours}
+                            onChange={(inputEvent) =>
+                              setAutomationDraft((current) => ({
+                                ...current,
+                                journeySettings: {
+                                  ...current.journeySettings,
+                                  resendDelayHours: Number(inputEvent.target.value || 1)
+                                }
+                              }))
+                            }
+                            disabled={!automationDraft.journeySettings.resendEnabled}
+                            className="w-full rounded-2xl border border-ink/10 bg-white px-4 py-3 text-sm outline-none focus:border-reef disabled:opacity-50"
+                          />
+                        </label>
+                      </div>
+                      <label className="flex items-center gap-3 rounded-2xl border border-ink/10 bg-sand/55 px-4 py-3 text-sm text-ink/65">
+                        <input
+                          type="checkbox"
+                          checked={automationDraft.journeySettings.stopOnGoal}
+                          onChange={(inputEvent) =>
+                            setAutomationDraft((current) => ({
+                              ...current,
+                              journeySettings: {
+                                ...current.journeySettings,
+                                stopOnGoal: inputEvent.target.checked
+                              }
+                            }))
+                          }
+                          className="h-4 w-4 rounded border-ink/20 text-reef focus:ring-reef"
+                        />
+                        Stop future touches after the attendee completes the journey goal.
+                      </label>
+
+                      <div className="space-y-3 rounded-[22px] border border-ink/10 bg-sand/40 p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.18em] text-dusk">A/B testing</p>
+                            <p className="mt-2 text-sm text-ink/60">
+                              The current title and message become Variant A. Add Variant B to split future journey sends and learn which copy converts harder.
+                            </p>
+                          </div>
+                          {automationDraft.journeyAbTest.winnerVariantKey && (
+                            <span className="rounded-full bg-reef/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-reef">
+                              Winner {automationDraft.journeyAbTest.winnerVariantKey}
+                            </span>
+                          )}
+                        </div>
+
+                        <label className="flex items-center gap-3 rounded-2xl border border-ink/10 bg-white px-4 py-3 text-sm text-ink/65">
+                          <input
+                            type="checkbox"
+                            checked={automationDraft.journeyAbTest.enabled}
+                            onChange={(inputEvent) =>
+                              setAutomationDraft((current) => ({
+                                ...current,
+                                journeyAbTest: {
+                                  ...syncJourneyAbTestVariantA(current.journeyAbTest, current.title, current.body),
+                                  enabled: inputEvent.target.checked,
+                                  winnerVariantKey: inputEvent.target.checked
+                                    ? current.journeyAbTest.winnerVariantKey || ''
+                                    : '',
+                                  autoWinnerEnabled: inputEvent.target.checked
+                                    ? current.journeyAbTest.autoWinnerEnabled
+                                    : false
+                                }
+                              }))
+                            }
+                            className="h-4 w-4 rounded border-ink/20 text-dusk focus:ring-dusk"
+                          />
+                          Split this journey between Variant A and Variant B.
+                        </label>
+
+                        {automationDraft.journeyAbTest.enabled && (
+                          <div className="space-y-3">
+                            <div className="rounded-[20px] border border-dusk/15 bg-white p-4">
+                              <p className="text-xs uppercase tracking-[0.16em] text-ink/45">Variant A</p>
+                              <p className="mt-2 text-sm text-ink/60">
+                                Uses the main title and message fields above.
+                              </p>
+                            </div>
+
+                            <div className="space-y-3 rounded-[20px] border border-dusk/15 bg-white p-4">
+                              <p className="text-xs uppercase tracking-[0.16em] text-dusk">Variant B</p>
+                              <input
+                                value={automationDraft.journeyAbTest.variants?.[1]?.title || ''}
+                                onChange={(inputEvent) =>
+                                  setAutomationDraft((current) => ({
+                                    ...current,
+                                    journeyAbTest: {
+                                      ...current.journeyAbTest,
+                                      winnerVariantKey: '',
+                                      variants: [
+                                        current.journeyAbTest.variants?.[0] || {
+                                          key: 'A',
+                                          label: 'Variant A',
+                                          title: current.title,
+                                          body: current.body
+                                        },
+                                        {
+                                          key: 'B',
+                                          label: 'Variant B',
+                                          title: inputEvent.target.value,
+                                          body: current.journeyAbTest.variants?.[1]?.body || ''
+                                        }
+                                      ]
+                                    }
+                                  }))
+                                }
+                                placeholder="Variant B title"
+                                className="w-full rounded-2xl border border-ink/10 bg-sand/20 px-4 py-3 text-sm outline-none focus:border-dusk"
+                              />
+                              <textarea
+                                value={automationDraft.journeyAbTest.variants?.[1]?.body || ''}
+                                onChange={(inputEvent) =>
+                                  setAutomationDraft((current) => ({
+                                    ...current,
+                                    journeyAbTest: {
+                                      ...current.journeyAbTest,
+                                      winnerVariantKey: '',
+                                      variants: [
+                                        current.journeyAbTest.variants?.[0] || {
+                                          key: 'A',
+                                          label: 'Variant A',
+                                          title: current.title,
+                                          body: current.body
+                                        },
+                                        {
+                                          key: 'B',
+                                          label: 'Variant B',
+                                          title: current.journeyAbTest.variants?.[1]?.title || '',
+                                          body: inputEvent.target.value
+                                        }
+                                      ]
+                                    }
+                                  }))
+                                }
+                                rows={4}
+                                placeholder="Variant B message"
+                                className="w-full rounded-[20px] border border-ink/10 bg-sand/20 px-4 py-3 text-sm outline-none focus:border-dusk"
+                              />
+                            </div>
+
+                            <div className="grid gap-3 md:grid-cols-2">
+                              <label className="flex items-center gap-3 rounded-2xl border border-ink/10 bg-white px-4 py-3 text-sm text-ink/65">
+                                <input
+                                  type="checkbox"
+                                  checked={automationDraft.journeyAbTest.autoWinnerEnabled}
+                                  onChange={(inputEvent) =>
+                                    setAutomationDraft((current) => ({
+                                      ...current,
+                                      journeyAbTest: {
+                                        ...current.journeyAbTest,
+                                        autoWinnerEnabled: inputEvent.target.checked,
+                                        winnerVariantKey: inputEvent.target.checked
+                                          ? current.journeyAbTest.winnerVariantKey || ''
+                                          : ''
+                                      }
+                                    }))
+                                  }
+                                  className="h-4 w-4 rounded border-ink/20 text-dusk focus:ring-dusk"
+                                />
+                                Auto-pick a winner once enough conversions land.
+                              </label>
+                              <label className="space-y-2 text-sm text-ink/65">
+                                <span className="block text-xs uppercase tracking-[0.16em] text-ink/45">Minimum sample per variant</span>
+                                <input
+                                  type="number"
+                                  min="10"
+                                  max="100000"
+                                  value={automationDraft.journeyAbTest.minimumSampleSize}
+                                  onChange={(inputEvent) =>
+                                    setAutomationDraft((current) => ({
+                                      ...current,
+                                      journeyAbTest: {
+                                        ...current.journeyAbTest,
+                                        minimumSampleSize: Number(inputEvent.target.value || 10),
+                                        winnerVariantKey: ''
+                                      }
+                                    }))
+                                  }
+                                  disabled={!automationDraft.journeyAbTest.autoWinnerEnabled}
+                                  className="w-full rounded-2xl border border-ink/10 bg-white px-4 py-3 text-sm outline-none focus:border-dusk disabled:opacity-50"
+                                />
+                              </label>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
@@ -1029,6 +1797,39 @@ const AudienceCrmModal = ({ event, onClose }) => {
                           </div>
                           <p className="mt-2 text-sm font-semibold text-ink">{automation.title}</p>
                           <p className="mt-1 text-sm text-ink/65">{automation.body}</p>
+                          {isJourneyTrigger(automation.triggerType) && automation.journeySettings && (
+                            <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-ink/55">
+                              <span className="rounded-full bg-white px-2.5 py-1">
+                                Delay {automation.journeySettings.initialDelayMinutes || 0}m
+                              </span>
+                              <span className="rounded-full bg-white px-2.5 py-1">
+                                Cooldown {automation.journeySettings.cooldownHours || 0}h
+                              </span>
+                              <span className="rounded-full bg-white px-2.5 py-1">
+                                {automation.journeySettings.resendEnabled
+                                  ? `1 resend / ${automation.journeySettings.resendDelayHours || 24}h`
+                                  : 'No resend'}
+                              </span>
+                              <span className="rounded-full bg-white px-2.5 py-1">
+                                {automation.journeySettings.stopOnGoal ? 'Stop on goal' : 'Keep going'}
+                              </span>
+                            </div>
+                          )}
+                          {isJourneyTrigger(automation.triggerType) && automation.journeyAbTest?.enabled && (
+                            <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-dusk">
+                              <span className="rounded-full bg-white px-2.5 py-1">A/B live</span>
+                              <span className="rounded-full bg-white px-2.5 py-1">
+                                {automation.journeyAbTest.autoWinnerEnabled
+                                  ? `Auto winner / ${automation.journeyAbTest.minimumSampleSize}`
+                                  : 'Balanced split'}
+                              </span>
+                              {automation.journeyAbTest.winnerVariantKey && (
+                                <span className="rounded-full bg-reef/10 px-2.5 py-1 text-reef">
+                                  Winner {automation.journeyAbTest.winnerVariantKey}
+                                </span>
+                              )}
+                            </div>
+                          )}
                           <p className="mt-3 text-xs uppercase tracking-[0.16em] text-ink/45">
                             {automation.scheduledFor
                               ? `Scheduled ${formatDate(automation.scheduledFor)}`
@@ -1109,6 +1910,11 @@ const AudienceCrmModal = ({ event, onClose }) => {
                             <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-ink/60">
                               {campaignItem.channel.replace('_', ' ')}
                             </span>
+                            {campaignItem.variantMeta?.variantLabel && (
+                              <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-dusk">
+                                {campaignItem.variantMeta.variantLabel}
+                              </span>
+                            )}
                           </div>
                           <p className="mt-2 text-sm text-ink/65">{campaignItem.body}</p>
                           <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-ink/55">
@@ -1152,6 +1958,206 @@ const AudienceCrmModal = ({ event, onClose }) => {
           </div>
         )}
       </div>
+
+      {journeyDetail.open && (
+        <>
+          <button
+            type="button"
+            onClick={handleCloseJourneyDetail}
+            aria-label="Close journey detail"
+            className="absolute inset-0 z-20 bg-ink/20 backdrop-blur-[2px]"
+          />
+          <aside className="absolute inset-y-0 right-0 z-30 flex w-full max-w-2xl flex-col border-l border-ink/10 bg-white shadow-bloom">
+            <div className="flex items-start justify-between gap-4 border-b border-ink/10 px-6 py-5">
+              <div>
+                <p className="text-xs uppercase tracking-[0.24em] text-dusk">Journey detail</p>
+                <h3 className="mt-1 font-display text-3xl text-ink">
+                  {journeyDetail.data?.automation?.name || openJourney?.name || 'Journey'}
+                </h3>
+                <p className="mt-2 text-sm text-ink/55">
+                  {journeyDetail.data?.automation?.conversionGoalLabel || openJourney?.conversionGoalLabel || 'Conversion goal'}
+                  {journeyDetail.data?.automation?.targetEventTitle || openJourney?.targetEventTitle
+                    ? ` into ${journeyDetail.data?.automation?.targetEventTitle || openJourney?.targetEventTitle}`
+                    : ''}
+                  .
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleCloseJourneyDetail}
+                className="rounded-full p-2 text-ink/50 transition hover:bg-sand hover:text-ink"
+              >
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-6 py-5">
+              {journeyDetail.loading ? (
+                <div className="flex items-center justify-center py-16">
+                  <div className="h-8 w-8 animate-spin rounded-full border-2 border-dusk border-t-transparent" />
+                </div>
+              ) : journeyDetail.error ? (
+                <div className="rounded-[24px] border border-ember/20 bg-ember/5 px-5 py-6 text-sm text-ember">
+                  {journeyDetail.error}
+                </div>
+              ) : journeyDetail.data ? (
+                <div className="space-y-6">
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <JourneyMetric
+                      label="Targeted"
+                      value={journeyDetail.data.summary?.targetedRecipientCount || 0}
+                    />
+                    <JourneyMetric
+                      label="Converted"
+                      value={journeyDetail.data.summary?.convertedRecipientCount || 0}
+                      accent="text-ember"
+                    />
+                    <JourneyMetric
+                      label="Skipped"
+                      value={journeyDetail.data.summary?.skippedRecipientCount || 0}
+                      accent="text-dusk"
+                    />
+                    <JourneyMetric
+                      label="Click Rate"
+                      value={formatPercent(journeyDetail.data.summary?.clickRate || 0)}
+                      accent="text-reef"
+                    />
+                  </div>
+
+                  {journeyDetail.data.variantSummaries?.length > 0 && (
+                    <section className="rounded-[28px] border border-ink/10 bg-white/90 p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.2em] text-ink/45">Variants</p>
+                          <h4 className="mt-1 font-display text-2xl text-ink">Experiment split</h4>
+                        </div>
+                        {journeyDetail.data.summary?.winnerVariantKey && (
+                          <span className="rounded-full bg-reef/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-reef">
+                            Winner {journeyDetail.data.summary.winnerVariantKey}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="mt-4 grid gap-3 md:grid-cols-2">
+                        {journeyDetail.data.variantSummaries.map((variant) => (
+                          <article key={variant.variantKey} className="rounded-[22px] border border-dusk/15 bg-sand/35 p-4">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="font-semibold text-ink">{variant.variantLabel}</p>
+                              {variant.winnerSelected && (
+                                <span className="rounded-full bg-reef/10 px-2.5 py-1 text-[11px] font-semibold text-reef">
+                                  Winner
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                              <JourneyMetric label="Targeted" value={variant.uniqueRecipientCount || 0} />
+                              <JourneyMetric label="Converted" value={variant.conversionCount || 0} accent="text-ember" />
+                            </div>
+                            <p className="mt-3 text-xs text-ink/50">
+                              Delivered {variant.deliveredCount || 0} | Clicked {variant.clickedCount || 0}
+                            </p>
+                            <p className="mt-1 text-xs text-ink/50">
+                              Click {formatPercent(variant.clickRate || 0)} | Convert {formatPercent(variant.conversionRate || 0)}
+                            </p>
+                          </article>
+                        ))}
+                      </div>
+                    </section>
+                  )}
+
+                  <section className="rounded-[28px] border border-ink/10 bg-sand/35 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-ink/45">Touches</p>
+                        <h4 className="mt-1 font-display text-2xl text-ink">Send timeline</h4>
+                      </div>
+                      <span className="rounded-full bg-white px-3 py-1 text-xs text-ink/50">
+                        {journeyDetail.data.touches?.length || 0} touch{journeyDetail.data.touches?.length === 1 ? '' : 'es'}
+                      </span>
+                    </div>
+
+                    <div className="mt-4 space-y-3">
+                      {journeyDetail.data.touches?.map((touch) => (
+                        <article key={touch.campaignId} className="rounded-[22px] border border-ink/10 bg-white p-4">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="font-semibold text-ink">{touch.touchLabel}</p>
+                            {touch.variantLabel && (
+                              <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-dusk">
+                                {touch.variantLabel}
+                              </span>
+                            )}
+                            {touch.winnerSelected && (
+                              <span className="rounded-full bg-reef/10 px-2.5 py-1 text-[11px] font-semibold text-reef">
+                                Winner
+                              </span>
+                            )}
+                            <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                              touch.status === 'failed'
+                                ? 'bg-ember/10 text-ember'
+                                : touch.status === 'scheduled'
+                                  ? 'bg-dusk/10 text-dusk'
+                                  : 'bg-reef/10 text-reef'
+                            }`}>
+                              {formatCampaignStatusLabel(touch.status)}
+                            </span>
+                          </div>
+
+                          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                            <JourneyMetric label="Targeted" value={touch.targetedRecipientCount || 0} />
+                            <JourneyMetric label="Delivered" value={touch.deliveredCount || 0} accent="text-reef" />
+                            <JourneyMetric label="Clicked" value={touch.clickedCount || 0} accent="text-dusk" />
+                            <JourneyMetric label="Converted" value={touch.convertedCount || 0} accent="text-ember" />
+                          </div>
+
+                          <p className="mt-3 text-xs uppercase tracking-[0.16em] text-ink/45">
+                            {touch.status === 'scheduled' && touch.scheduledFor
+                              ? `Scheduled ${formatDate(touch.scheduledFor)}`
+                              : touch.sentAt
+                                ? `Sent ${formatDate(touch.sentAt)}`
+                                : `Created ${formatDate(touch.createdAt)}`}
+                          </p>
+                          <p className="mt-1 text-xs text-ink/45">
+                            Click {formatPercent(touch.clickRate || 0)} | Convert {formatPercent(touch.conversionRate || 0)}
+                            {touch.skippedRecipientCount
+                              ? ` | Skipped ${touch.skippedRecipientCount} (${touch.cooldownSkippedCount || 0} cooldown, ${touch.goalSkippedCount || 0} goal)`
+                              : ''}
+                          </p>
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+
+                  <section className="rounded-[28px] border border-ink/10 bg-white/90 p-4">
+                    <div className="flex flex-wrap gap-2">
+                      {JOURNEY_DETAIL_TABS.map((tab) => (
+                        <JourneyDetailTabButton
+                          key={tab.key}
+                          active={journeyDetail.tab === tab.key}
+                          label={tab.label}
+                          count={journeyDetail.data?.[tab.key]?.length || 0}
+                          onClick={() => setJourneyDetail((current) => ({
+                            ...current,
+                            tab: tab.key
+                          }))}
+                        />
+                      ))}
+                    </div>
+
+                    <div className="mt-4">
+                      {renderJourneyDetailList(
+                        journeyDetail.tab,
+                        journeyDetail.data?.[journeyDetail.tab] || []
+                      )}
+                    </div>
+                  </section>
+                </div>
+              ) : null}
+            </div>
+          </aside>
+        </>
+      )}
     </ModalShell>
   );
 };
