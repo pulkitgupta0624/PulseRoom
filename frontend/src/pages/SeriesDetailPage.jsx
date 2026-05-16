@@ -315,9 +315,12 @@ const SeriesDetailPage = () => {
                 Series
               </span>
               {organizerProfile?.organizerProfile?.branding?.publicHandle ? (
-                <span className="rounded-full border border-white/18 bg-white/8 px-3 py-1 text-xs uppercase tracking-[0.24em]">
+                <Link
+                  to={organizerHubPath}
+                  className="rounded-full border border-white/18 bg-white/8 px-3 py-1 text-xs uppercase tracking-[0.24em] transition hover:bg-white/14"
+                >
                   /studio/{organizerProfile.organizerProfile.branding.publicHandle}
-                </span>
+                </Link>
               ) : null}
             </div>
 
@@ -339,7 +342,7 @@ const SeriesDetailPage = () => {
                   to={organizerHubPath}
                   className="rounded-full border border-white/18 bg-white/8 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/14"
                 >
-                  View organizer studio
+                  View organizer profile
                 </Link>
               ) : null}
             </div>

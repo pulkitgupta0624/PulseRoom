@@ -1,4 +1,4 @@
-const FOLLOWABLE_ORGANIZER_ROLES = new Set(['organizer', 'admin']);
+const FOLLOWABLE_ORGANIZER_ROLES = new Set(['organizer']);
 
 export const deriveOrganizerFollowState = ({
   organizerProfile,

@@ -1480,7 +1480,7 @@ const EventDetailPage = () => {
                     to={getOrganizerPublicPath(organizerProfile, event.organizerId)}
                     className="rounded-full border border-white/18 bg-white/10 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/16"
                   >
-                    View studio
+                    View organizer profile
                   </Link>
                   {canFollowOrganizer ? (
                     <button
@@ -1572,9 +1572,12 @@ const EventDetailPage = () => {
                   </a>
                 )}
                 {organizerProfile.organizerProfile?.branding?.publicHandle ? (
-                  <span className="rounded-full border border-white/16 bg-white/8 px-4 py-2 text-xs uppercase tracking-[0.24em]">
+                  <Link
+                    to={getOrganizerPublicPath(organizerProfile, event.organizerId)}
+                    className="rounded-full border border-white/16 bg-white/8 px-4 py-2 text-xs uppercase tracking-[0.24em] transition hover:bg-white/14"
+                  >
                     /studio/{organizerProfile.organizerProfile.branding.publicHandle}
-                  </span>
+                  </Link>
                 ) : null}
               </div>
 

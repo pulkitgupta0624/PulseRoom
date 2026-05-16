@@ -16,6 +16,7 @@ import { parseCurrencyCodesInput } from '../lib/currency';
 import { downloadEventBookingsCsv } from '../lib/downloads';
 import { normalizeEventTheme } from '../lib/eventTheme';
 import { formatCurrency, formatDate } from '../lib/formatters';
+import { getOrganizerPublicPath } from '../lib/organizerBranding';
 import { createSocket } from '../lib/socket';
 
 const EventEditModal = lazy(() => import('../components/EventEditModal'));
@@ -328,6 +329,7 @@ const DashboardPage = () => {
   const [copiedReferralEventId, setCopiedReferralEventId] = useState(null);
   const [regeneratingReferralEventId, setRegeneratingReferralEventId] = useState(null);
   const [exportingEventId, setExportingEventId] = useState(null);
+  const [publicStudioPath, setPublicStudioPath] = useState('');
   const coverInputRef = useRef(null);
 
   const refreshOrganizerAnalytics = async () => {
@@ -380,6 +382,33 @@ const DashboardPage = () => {
   useEffect(() => {
     refreshDashboard();
   }, [dispatch]);
+
+  useEffect(() => {
+    if (!authUser?.id || !['organizer', 'admin'].includes(authUser.role)) {
+      setPublicStudioPath('');
+      return;
+    }
+
+    let active = true;
+
+    api.get('/api/users/me')
+      .then((response) => {
+        if (!active) {
+          return;
+        }
+
+        setPublicStudioPath(getOrganizerPublicPath(response.data.data, authUser.id));
+      })
+      .catch(() => {
+        if (active) {
+          setPublicStudioPath(`/organizers/${authUser.id}`);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [authUser?.id, authUser?.role]);
 
   useEffect(() => {
     if (!authUser?.id || !['organizer', 'admin'].includes(authUser.role)) {
@@ -706,6 +735,14 @@ const DashboardPage = () => {
         description="Create and publish events, manage ticket check-ins, sell sponsor placements, and track demand with real analytics."
         actions={
           <div className="flex flex-wrap gap-2">
+            {publicStudioPath ? (
+              <Link
+                to={publicStudioPath}
+                className="rounded-full border border-ink/12 bg-white px-4 py-2.5 text-sm font-semibold text-ink transition hover:bg-sand"
+              >
+                Open organizer profile
+              </Link>
+            ) : null}
             <Link
               to="/profile"
               className="rounded-full border border-ink/12 bg-white px-4 py-2.5 text-sm font-semibold text-ink transition hover:bg-sand"

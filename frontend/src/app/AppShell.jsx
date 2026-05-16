@@ -11,15 +11,28 @@ import {
 } from '../features/notifications/notificationsSlice';
 import ToastContainer from '../components/ToastContainer';
 import { showToast, toggleTheme } from '../features/ui/uiSlice';
+import { getOrganizerPublicPath } from '../lib/organizerBranding';
 
 const AppShell = () => {
   const theme = useSelector((state) => state.ui.theme);
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const { user } = useSelector((state) => state.auth);
+  const userProfile = useSelector((state) => state.user.profile);
   const { unreadCount, isOpen: notificationsOpen } = useSelector((state) => state.notifications);
   const [mobileOpen, setMobileOpen] = useState(false);
   const previousUnreadCountRef = useRef(null);
+  const organizerPublicPath =
+    user && (user.role === 'organizer' || user.role === 'admin')
+      ? getOrganizerPublicPath(
+          {
+            userId: user.id,
+            publicHubPath: userProfile?.publicHubPath,
+            organizerProfile: userProfile?.organizerProfile
+          },
+          user.id
+        )
+      : '';
 
   useEffect(() => { dispatch(bootstrapSession()); }, [dispatch]);
   useEffect(() => {
@@ -148,6 +161,9 @@ const AppShell = () => {
             {user && (user.role === 'organizer' || user.role === 'admin') && (
               <NavLink to="/dashboard" className={navLinkClass}>Organizer</NavLink>
             )}
+            {organizerPublicPath && (
+              <NavLink to={organizerPublicPath} className={navLinkClass}>Organizer Profile</NavLink>
+            )}
             {user && user.role === 'admin' && (
               <NavLink to="/admin" className={navLinkClass}>Admin</NavLink>
             )}
@@ -210,6 +226,13 @@ const AppShell = () => {
                         onClick={() => setMobileOpen(false)}
                         className="block px-4 py-3 text-sm text-ink hover:bg-sand/60 rounded-t-2xl"
                       >My Profile</Link>
+                      {organizerPublicPath ? (
+                        <Link
+                          to={organizerPublicPath}
+                          onClick={() => setMobileOpen(false)}
+                          className="block px-4 py-3 text-sm text-ink hover:bg-sand/60"
+                        >Organizer Profile</Link>
+                      ) : null}
                       <Link
                         to="/my-bookings"
                         onClick={() => setMobileOpen(false)}
@@ -257,6 +280,9 @@ const AppShell = () => {
             <NavLink to="/" end className={navLinkClass}>Browse</NavLink>
             {(user.role === 'organizer' || user.role === 'admin') && (
               <NavLink to="/dashboard" className={navLinkClass}>Organizer</NavLink>
+            )}
+            {organizerPublicPath && (
+              <NavLink to={organizerPublicPath} className={navLinkClass}>Organizer Profile</NavLink>
             )}
             {user.role === 'admin' && (
               <NavLink to="/admin" className={navLinkClass}>Admin</NavLink>

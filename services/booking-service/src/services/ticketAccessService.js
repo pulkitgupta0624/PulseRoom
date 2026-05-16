@@ -51,7 +51,7 @@ const assertTicketTierAccessible = ({ tier, entitlements = null, now = new Date(
   }
 
   throw new AppError(
-    `Ticket sales open on ${formatDateTime(saleStart)}. Power Attendees unlock ${windowHours}-hour early access.`,
+    `Ticket sales open on ${formatDateTime(saleStart)}. Eligible members unlock ${windowHours}-hour early access.`,
     409,
     'tier_sale_not_started'
   );

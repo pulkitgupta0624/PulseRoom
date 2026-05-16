@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { Link } from 'react-router-dom';
+import FollowersTab from '../components/FollowersTab';
 import GamificationShowcase from '../components/GamificationShowcase';
 import OrganizerBrandingFields from '../components/OrganizerBrandingFields';
 import SectionHeader from '../components/SectionHeader';
@@ -341,7 +342,7 @@ const ProfilePage = () => {
     gamificationError
   } = useSelector((state) => state.user);
   const { user } = useSelector((state) => state.auth);
-  const [activeTab, setActiveTab] = useState('profile'); // 'profile' | 'following'
+  const [activeTab, setActiveTab] = useState('profile'); // 'profile' | 'following' | 'followers'
   const [form, setForm] = useState(null);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [uploadError, setUploadError] = useState(null);
@@ -442,9 +443,13 @@ const ProfilePage = () => {
     : '';
 
   // ── Tab nav ────────────────────────────────────────────────────────────────
+  const isOrganizerAccount = profile?.role === 'organizer';
   const TABS = [
     { key: 'profile', label: 'My Profile' },
-    { key: 'following', label: 'Following' }
+    { key: 'following', label: 'Following' },
+    ...(isOrganizerAccount
+      ? [{ key: 'followers', label: `Followers (${profile?.followersCount || 0})` }]
+      : [])
   ];
 
   return (
@@ -471,8 +476,29 @@ const ProfilePage = () => {
         ))}
       </div>
 
+      {activeTab === 'profile' && ['organizer', 'admin'].includes(profile?.role) ? (
+        <div className="flex flex-wrap gap-3">
+          <Link
+            to={publicHubPath}
+            className="inline-flex rounded-full border border-ink/12 bg-white px-4 py-2.5 text-sm font-semibold text-ink transition hover:bg-sand"
+          >
+            Open organizer profile
+          </Link>
+          <p className="self-center text-sm text-ink/55">
+            Live route:{' '}
+            <Link to={publicHubPath} className="font-medium text-ink underline-offset-4 hover:underline">
+              {publicHubPath}
+            </Link>
+            .
+          </p>
+        </div>
+      ) : null}
+
       {/* ── FOLLOWING TAB ─────────────────────────────────────────────────── */}
       {activeTab === 'following' && <FollowingTab />}
+      {activeTab === 'followers' && isOrganizerAccount && (
+        <FollowersTab organizerId={user?.id} followersCount={profile?.followersCount || 0} />
+      )}
 
       {/* ── PROFILE TAB ───────────────────────────────────────────────────── */}
       {activeTab === 'profile' && (
@@ -600,7 +626,7 @@ const ProfilePage = () => {
                     to={publicHubPath}
                     className="mt-3 inline-flex items-center gap-1.5 text-xs text-reef hover:underline"
                   >
-                    View your public organizer page →
+                    View your organizer profile →
                   </Link>
                 )}
               </div>

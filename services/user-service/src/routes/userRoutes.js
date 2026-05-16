@@ -28,7 +28,7 @@ const {
 
 const router = express.Router();
 
-const FOLLOWABLE_ROLES = new Set([Roles.ORGANIZER, Roles.ADMIN]);
+const FOLLOWABLE_ROLES = new Set([Roles.ORGANIZER]);
 const PUBLIC_PROFILE_FIELDS = [
   'userId',
   'displayName',
@@ -43,9 +43,26 @@ const PUBLIC_PROFILE_FIELDS = [
   'organizerProfile',
   'followersCount'
 ].join(' ');
+const FOLLOWER_PUBLIC_FIELDS = [
+  'userId',
+  'displayName',
+  'avatarUrl',
+  'bio',
+  'role',
+  'location'
+].join(' ');
 
 const isFollowableOrganizer = (profile) =>
   Boolean(profile && profile.isActive !== false && FOLLOWABLE_ROLES.has(profile.role));
+
+const serializeFollowerProfile = (profile) => ({
+  userId: profile.userId,
+  displayName: profile.displayName || '',
+  avatarUrl: profile.avatarUrl || '',
+  bio: profile.bio || '',
+  role: profile.role || Roles.ATTENDEE,
+  location: profile.location || ''
+});
 
 const getFollowState = async ({ viewerId, organizerId }) => {
   if (!viewerId || !organizerId || viewerId === organizerId) {
@@ -127,6 +144,34 @@ router.get(
         canFollowOrganizer: true
       }))
     );
+  })
+);
+
+router.get(
+  '/me/followers',
+  authenticate(),
+  authorize(Roles.ORGANIZER),
+  asyncHandler(async (req, res) => {
+    const organizerProfile = await getOrganizerProfileOrThrow(req.user.sub);
+
+    const followers = await UserProfile.find({
+      followingOrganizerIds: req.user.sub,
+      isActive: true
+    })
+      .select(FOLLOWER_PUBLIC_FIELDS)
+      .sort({ displayName: 1 })
+      .lean();
+
+    sendSuccess(res, {
+      organizer: {
+        ...serializePublicProfile(organizerProfile),
+        followersCount: organizerProfile.followersCount || 0,
+        isFollowableOrganizer: true,
+        canFollowOrganizer: false,
+        isFollowingOrganizer: false
+      },
+      followers: followers.map(serializeFollowerProfile)
+    });
   })
 );
 

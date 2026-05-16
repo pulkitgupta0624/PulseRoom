@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { buildOrganizerBrandTheme, normalizeOrganizerBranding } from '../lib/organizerBranding';
 
 const OrganizerBrandingFields = ({ value, onChange, userId = '' }) => {
@@ -19,6 +20,17 @@ const OrganizerBrandingFields = ({ value, onChange, userId = '' }) => {
         <p className="mt-1 text-sm text-ink/60">
           Shape your public organizer hub, custom share URL, and the visual language attendees see before they ever book.
         </p>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <Link
+            to={publicPath}
+            className="inline-flex rounded-full border border-ink/12 bg-white px-4 py-2 text-sm font-semibold text-ink transition hover:bg-sand"
+          >
+            Open organizer profile
+          </Link>
+          <p className="text-xs text-ink/45">
+            Save your profile first if you just changed the handle above.
+          </p>
+        </div>
       </div>
 
       <div className="grid gap-3 md:grid-cols-2">
@@ -178,9 +190,12 @@ const OrganizerBrandingFields = ({ value, onChange, userId = '' }) => {
                 }}
               />
             ) : null}
-            <span className="rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs uppercase tracking-[0.24em]">
+            <Link
+              to={publicPath}
+              className="rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs uppercase tracking-[0.24em] transition hover:bg-white/16"
+            >
               {publicPath}
-            </span>
+            </Link>
           </div>
           <div className="space-y-2">
             <h3

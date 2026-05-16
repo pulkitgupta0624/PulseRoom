@@ -91,6 +91,14 @@ const OrganizerProfilePage = () => {
           return;
         }
 
+        if (!publicHandle) {
+          const canonicalPublicPath = getOrganizerPublicPath(data, data.userId || organizerId || '');
+          if (canonicalPublicPath.startsWith('/studio/')) {
+            navigate(canonicalPublicPath, { replace: true });
+            return;
+          }
+        }
+
         setProfile(data);
         setResolvedOrganizerId(data.userId || organizerId || '');
       })
