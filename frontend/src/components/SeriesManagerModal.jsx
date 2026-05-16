@@ -55,6 +55,18 @@ const SeriesManagerModal = ({ events = [], onClose, onUpdated = null }) => {
   const [cloneDrafts, setCloneDrafts] = useState({});
   const [activeSeriesCrm, setActiveSeriesCrm] = useState(null);
 
+  const statusBadgeClassName = (status = '') => {
+    if (status === 'published') {
+      return 'border-reef/20 bg-reef/10 text-reef';
+    }
+
+    if (status === 'draft') {
+      return 'border-dusk/20 bg-dusk/10 text-dusk';
+    }
+
+    return 'border-ink/10 bg-sand text-ink/55';
+  };
+
   const loadData = async () => {
     setLoading(true);
     try {
@@ -461,12 +473,22 @@ const SeriesManagerModal = ({ events = [], onClose, onUpdated = null }) => {
 
                     <div className="mt-5 space-y-3">
                       <p className="text-xs uppercase tracking-[0.2em] text-ink/45">Linked events</p>
+                      <p className="text-sm text-ink/55">
+                        Attendees only see published events. Draft drops stay private until you publish them from the dashboard.
+                      </p>
                       {series.events?.length ? (
                         <div className="space-y-3">
                           {series.events.map((event) => (
                             <div key={event._id} className="flex flex-col gap-3 rounded-[22px] border border-ink/8 bg-sand/35 p-4 lg:flex-row lg:items-center lg:justify-between">
                               <div>
-                                <p className="font-semibold text-ink">{event.title}</p>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <p className="font-semibold text-ink">{event.title}</p>
+                                  <span
+                                    className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.18em] ${statusBadgeClassName(event.status)}`}
+                                  >
+                                    {event.status || 'draft'}
+                                  </span>
+                                </div>
                                 <p className="mt-1 text-sm text-ink/58">{formatDate(event.startsAt)}</p>
                               </div>
                               <div className="flex flex-wrap gap-2">
@@ -508,7 +530,7 @@ const SeriesManagerModal = ({ events = [], onClose, onUpdated = null }) => {
                             <option value="">Choose an event</option>
                             {availableEvents.map((event) => (
                               <option key={event._id} value={event._id}>
-                                {event.title}
+                                {event.title} ({event.status || 'draft'})
                               </option>
                             ))}
                           </select>

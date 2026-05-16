@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { Navigate } from 'react-router-dom';
+import { Navigate, useLocation } from 'react-router-dom';
 import {
   clearTwoFactorChallenge,
   login,
@@ -17,13 +17,15 @@ const baseForm = {
 
 const AuthPage = () => {
   const dispatch = useDispatch();
+  const location = useLocation();
   const { user, loading, error, twoFactorChallenge } = useSelector((state) => state.auth);
   const [mode, setMode] = useState('login');
   const [form, setForm] = useState(baseForm);
   const [twoFactorCode, setTwoFactorCode] = useState('');
+  const redirectTo = location.state?.from || '/';
 
   if (user) {
-    return <Navigate to="/" replace />;
+    return <Navigate to={redirectTo} replace />;
   }
 
   const updateField = (key, value) => {

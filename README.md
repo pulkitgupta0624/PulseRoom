@@ -262,12 +262,17 @@ flowchart LR
 ```bash
 npm test
 npm run build --workspace frontend
+npm run smoke:control-room
 docker compose config
 ```
+
+The control-room smoke check assumes the local stack is already running on `http://localhost:8080` and creates disposable users plus a temporary event record in the local databases.
 
 ## Current Test Coverage
 
 - Auth service API smoke test with `supertest`
+- Full-stack control-room smoke covering refresh rotation, event publication, live safety sockets, chat moderation, booking-risk detection, and incident resolution
+- Regression tests for organizer/admin safety incident fanout, auth refresh rotation, private room access, checkout retry reuse, and reminder scheduling
 - Unit tests for organizer permission mapping
 - Unit tests for event slug generation
 - Unit tests for invoice number generation

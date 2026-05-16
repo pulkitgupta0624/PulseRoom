@@ -2,9 +2,22 @@ const jwt = require('jsonwebtoken');
 const request = require('supertest');
 const { buildExpressApp, errorHandler, notFoundHandler } = require('@pulseroom/common');
 
-jest.mock('../models/Event', () => ({
-  find: jest.fn()
-}));
+jest.mock('../models/Event', () => {
+  const Event = jest.fn().mockImplementation(function Event(payload) {
+    return {
+      ...payload,
+      _id: payload?._id || 'event-new',
+      save: jest.fn().mockResolvedValue(undefined)
+    };
+  });
+
+  Event.find = jest.fn();
+  Event.findById = jest.fn();
+  Event.findOne = jest.fn();
+  Event.countDocuments = jest.fn();
+
+  return Event;
+});
 
 jest.mock('../models/EventSeries', () => ({
   findById: jest.fn()
@@ -54,9 +67,13 @@ jest.mock('../services/referralService', () => ({
 }));
 
 const EventSeries = require('../models/EventSeries');
+const Event = require('../models/Event');
 const SeriesMembership = require('../models/SeriesMembership');
 const SeriesMembershipPurchase = require('../models/SeriesMembershipPurchase');
-const { normalizeSeriesMembershipSettings } = require('../services/seriesService');
+const {
+  cloneEventForSeries,
+  normalizeSeriesMembershipSettings
+} = require('../services/seriesService');
 const { createSeriesPaymentIntent } = require('../services/seriesPaymentService');
 const seriesRoutes = require('./seriesRoutes');
 
@@ -177,5 +194,80 @@ describe('seriesRoutes checkout reuse', () => {
     });
     expect(SeriesMembershipPurchase.create).not.toHaveBeenCalled();
     expect(createSeriesPaymentIntent).not.toHaveBeenCalled();
+  });
+
+  it('persists a cloned draft event for a series before returning it', async () => {
+    const sourceEvent = {
+      _id: 'event-source-1',
+      organizerId: 'organizer-1',
+      title: 'Launch Night',
+      startsAt: '2026-05-20T12:00:00.000Z',
+      endsAt: '2026-05-20T13:00:00.000Z',
+      status: 'published'
+    };
+    const series = {
+      _id: 'series-1',
+      organizerId: 'organizer-1',
+      name: 'Launch Series'
+    };
+    const clonedPayload = {
+      organizerId: 'organizer-1',
+      title: 'Launch Night',
+      startsAt: new Date('2026-06-20T12:00:00.000Z'),
+      endsAt: new Date('2026-06-20T13:00:00.000Z'),
+      status: 'draft',
+      series: {
+        seriesId: 'series-1',
+        name: 'Launch Series'
+      }
+    };
+
+    EventSeries.findById.mockResolvedValue(series);
+    Event.findOne.mockReturnValue({
+      sort: jest.fn().mockResolvedValue(sourceEvent)
+    });
+    Event.countDocuments.mockResolvedValue(1);
+    cloneEventForSeries.mockReturnValue(clonedPayload);
+
+    const createdEvent = {
+      ...clonedPayload,
+      _id: 'event-new',
+      save: jest.fn().mockResolvedValue(undefined)
+    };
+    Event.mockImplementationOnce(function Event(payload) {
+      return {
+        ...payload,
+        _id: 'event-new',
+        save: createdEvent.save
+      };
+    });
+
+    const organizerToken = jwt.sign(
+      {
+        sub: 'organizer-1',
+        role: 'organizer',
+        email: 'organizer@example.com',
+        name: 'Organizer One'
+      },
+      process.env.JWT_ACCESS_SECRET
+    );
+
+    const app = buildApp();
+    const response = await request(app)
+      .post('/api/events/series/series-1/events/clone')
+      .set('Authorization', `Bearer ${organizerToken}`)
+      .send({
+        startsAt: '2026-06-20T12:00:00.000Z'
+      });
+
+    expect(response.status).toBe(201);
+    expect(Event).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Launch Night',
+        status: 'draft'
+      })
+    );
+    expect(createdEvent.save).toHaveBeenCalledTimes(1);
+    expect(response.body.data._id).toBe('event-new');
   });
 });

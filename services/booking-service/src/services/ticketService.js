@@ -34,21 +34,26 @@ const buildBookingTickets = (booking, { assignTokens = false } = {}) => {
     const existingTicket = existingTickets[index] || {};
     const hasAssignedAttendee = Boolean(defaultAttendee.name || defaultAttendee.email);
     const qrCodeToken =
-      existingTicket.qrCodeToken ||
-      (index === 0 ? booking?.qrCodeToken || null : null) ||
-      (assignTokens ? buildTicketToken() : null);
+      normalizePersistedQrCodeToken(existingTicket.qrCodeToken) ||
+      (index === 0 ? normalizePersistedQrCodeToken(booking?.qrCodeToken) : undefined) ||
+      (assignTokens ? buildTicketToken() : undefined);
 
-    return {
+    const nextTicket = {
       ticketId: existingTicket.ticketId || buildTicketId(),
       position: index + 1,
       attendee: normalizeAttendee(existingTicket.attendee, defaultAttendee),
-      qrCodeToken,
       assignedAt:
         existingTicket.assignedAt || (hasAssignedAttendee ? assignmentTime : null),
       transferredAt: existingTicket.transferredAt || null,
       checkedInAt: existingTicket.checkedInAt || legacyCheckedInAt,
       checkedInBy: existingTicket.checkedInBy || legacyCheckedInBy
     };
+
+    if (qrCodeToken) {
+      nextTicket.qrCodeToken = qrCodeToken;
+    }
+
+    return nextTicket;
   });
 };
 

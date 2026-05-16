@@ -55,17 +55,27 @@ const createRefreshSession = async (user, req) => {
 
 const rotateRefreshToken = async (token, user, req) => {
   const tokenHash = hashToken(token);
-  const existingSession = await RefreshToken.findOne({
-    tokenHash,
-    revokedAt: { $exists: false }
-  });
+  const existingSession = await RefreshToken.findOneAndUpdate(
+    {
+      tokenHash,
+      revokedAt: { $exists: false },
+      expiresAt: {
+        $gt: new Date()
+      }
+    },
+    {
+      $set: {
+        revokedAt: new Date()
+      }
+    },
+    {
+      new: true
+    }
+  );
 
-  if (!existingSession || existingSession.expiresAt < new Date()) {
+  if (!existingSession) {
     return null;
   }
-
-  existingSession.revokedAt = new Date();
-  await existingSession.save();
 
   return createRefreshSession(user, req);
 };

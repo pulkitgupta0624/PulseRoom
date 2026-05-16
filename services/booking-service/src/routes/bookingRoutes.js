@@ -218,6 +218,8 @@ const canAccessBooking = (booking, user) =>
 const getReportingAmount = (booking) =>
   Number(booking?.pricing?.reportingAmount ?? booking?.amount ?? 0);
 
+const isVersionConflictError = (error) => error?.name === 'VersionError';
+
 const syncPersistedBookingTickets = async (booking, options = {}) => {
   if (!booking) {
     return booking;
@@ -341,7 +343,26 @@ const finalizeSuccessfulPayment = async ({ booking, payment, req, providerPaymen
     invoiceNumber: booking.invoice?.invoiceNumber || buildInvoiceNumber(),
     issuedAt: new Date()
   };
-  await booking.save();
+  try {
+    await booking.save();
+  } catch (error) {
+    if (!isVersionConflictError(error)) {
+      throw error;
+    }
+
+    const freshBooking = await Booking.findById(booking._id);
+    const freshPayment = await Payment.findById(payment._id);
+
+    if (
+      freshBooking?.status === BookingStatus.CONFIRMED &&
+      freshPayment?.status === PaymentStatus.SUCCEEDED
+    ) {
+      await syncPersistedBookingTickets(freshBooking, { assignTokens: true });
+      return freshBooking;
+    }
+
+    throw error;
+  }
 
   payment.status = PaymentStatus.SUCCEEDED;
   if (providerPaymentId) {
@@ -412,7 +433,7 @@ const loadActivePendingStripeCheckout = async ({ userId, eventId }) => {
 
 const resumePendingStripeCheckout = async ({ booking, payment, req }) => {
   if (payment.status === PaymentStatus.SUCCEEDED) {
-    await finalizeSuccessfulPayment({
+    const finalizedBooking = await finalizeSuccessfulPayment({
       booking,
       payment,
       req,
@@ -420,7 +441,7 @@ const resumePendingStripeCheckout = async ({ booking, payment, req }) => {
     });
 
     return {
-      booking,
+      booking: finalizedBooking,
       payment,
       paymentIntentMeta: null,
       paymentIntentStatus: 'succeeded'
@@ -472,7 +493,7 @@ const resumePendingStripeCheckout = async ({ booking, payment, req }) => {
   await payment.save();
 
   if (intent.status === 'succeeded') {
-    await finalizeSuccessfulPayment({
+    const finalizedBooking = await finalizeSuccessfulPayment({
       booking,
       payment,
       req,
@@ -480,7 +501,7 @@ const resumePendingStripeCheckout = async ({ booking, payment, req }) => {
     });
 
     return {
-      booking,
+      booking: finalizedBooking,
       payment,
       paymentIntentMeta: null,
       paymentIntentStatus: intent.status
@@ -1634,7 +1655,7 @@ router.post(
     await payment.save();
 
     if (intent.status === 'succeeded') {
-      await finalizeSuccessfulPayment({
+      const finalizedBooking = await finalizeSuccessfulPayment({
         booking,
         payment,
         req,
@@ -1642,7 +1663,7 @@ router.post(
       });
 
       return sendSuccess(res, {
-        booking: serializeBooking(booking),
+        booking: serializeBooking(finalizedBooking),
         payment: buildPaymentResponse(payment, intent.status),
         paymentIntent: {
           id: intent.id,

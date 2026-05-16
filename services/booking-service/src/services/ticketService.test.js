@@ -75,4 +75,28 @@ describe('ticketService', () => {
     const serialized = serializeBooking(booking);
     expect(serialized.ticket.qrCodeValue).toBeNull();
   });
+
+  it('leaves pending ticket qr tokens unset until payment is confirmed', () => {
+    const booking = {
+      _id: 'booking-4',
+      eventId: 'event-4',
+      bookingNumber: 'BK-104',
+      quantity: 2,
+      attendee: {
+        name: 'Casey',
+        email: 'casey@example.com'
+      },
+      tickets: []
+    };
+
+    syncBookingTickets(booking, { assignTokens: false });
+
+    expect(booking.tickets[0].qrCodeToken).toBeUndefined();
+    expect(booking.tickets[1].qrCodeToken).toBeUndefined();
+    expect(JSON.stringify(booking.tickets)).not.toContain('qrCodeToken');
+
+    const serialized = serializeBooking(booking);
+    expect(serialized.tickets[0].qrCodeValue).toBeNull();
+    expect(serialized.tickets[1].qrCodeValue).toBeNull();
+  });
 });

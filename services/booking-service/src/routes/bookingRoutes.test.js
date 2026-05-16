@@ -55,7 +55,10 @@ jest.mock('../services/ticketService', () => ({
 
 const Booking = require('../models/Booking');
 const Payment = require('../models/Payment');
-const { createPaymentIntent } = require('../services/paymentService');
+const {
+  createPaymentIntent,
+  retrievePaymentIntent
+} = require('../services/paymentService');
 const bookingRoutes = require('./bookingRoutes');
 
 const logger = {
@@ -289,5 +292,90 @@ describe('bookingRoutes checkout resume', () => {
     expect(pendingPayment.save).toHaveBeenCalled();
     expect(Booking.create).not.toHaveBeenCalled();
     expect(eventServiceClient.get).not.toHaveBeenCalled();
+  });
+
+  it('treats a stale booking version during confirm-payment as already finalized when another request won the race', async () => {
+    const versionConflict = Object.assign(
+      new Error(
+        'No matching document found for id "booking-3" version 0 modifiedPaths "status, confirmedAt"'
+      ),
+      {
+        name: 'VersionError'
+      }
+    );
+
+    const staleBooking = {
+      _id: 'booking-3',
+      paymentId: 'payment-3',
+      userId: 'user-1',
+      eventId: 'event-1',
+      tierId: 'general-tier',
+      tierName: 'General',
+      quantity: 1,
+      amount: 499,
+      currency: 'INR',
+      status: 'pending',
+      attendee: {
+        name: 'User One',
+        email: 'user@example.com'
+      },
+      eventSnapshot: {
+        title: 'Pulse Summit',
+        organizerId: 'organizer-1',
+        startsAt: '2026-05-20T12:00:00.000Z'
+      },
+      save: jest.fn().mockRejectedValue(versionConflict)
+    };
+
+    const freshBooking = {
+      ...staleBooking,
+      status: 'confirmed',
+      confirmedAt: '2026-05-16T08:22:14.000Z',
+      save: jest.fn()
+    };
+
+    const stalePayment = {
+      _id: 'payment-3',
+      bookingId: 'booking-3',
+      provider: 'stripe',
+      providerPaymentId: 'pi_123',
+      clientSecret: 'pi_123_secret_456',
+      status: 'requires_action',
+      amount: 499,
+      currency: 'INR',
+      save: jest.fn().mockResolvedValue(undefined)
+    };
+
+    const freshPayment = {
+      ...stalePayment,
+      status: 'succeeded'
+    };
+
+    Booking.findById
+      .mockResolvedValueOnce(staleBooking)
+      .mockResolvedValueOnce(freshBooking);
+    Payment.findById
+      .mockResolvedValueOnce(stalePayment)
+      .mockResolvedValueOnce(freshPayment);
+    retrievePaymentIntent.mockResolvedValue({
+      id: 'pi_123',
+      status: 'succeeded'
+    });
+
+    const app = buildApp();
+
+    const response = await request(app)
+      .post('/api/bookings/booking-3/confirm-payment')
+      .set('Authorization', authHeader())
+      .send({
+        paymentIntentId: 'pi_123'
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.booking._id).toBe('booking-3');
+    expect(response.body.data.booking.status).toBe('confirmed');
+    expect(response.body.data.bookingConfirmed).toBe(true);
+    expect(staleBooking.save).toHaveBeenCalled();
+    expect(stalePayment.save).toHaveBeenCalled();
   });
 });

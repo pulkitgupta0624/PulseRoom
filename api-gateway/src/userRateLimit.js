@@ -3,12 +3,23 @@ const { decodeOptionalToken } = require('@pulseroom/common');
 
 const buildUserRateLimitKey = (scope, userId) => `gateway:user-rate-limit:${scope}:${userId}`;
 
-const createUserSlidingWindowRateLimiter = ({ cache, logger, scope, windowMs, maxRequests }) => {
+const createUserSlidingWindowRateLimiter = ({
+  cache,
+  logger,
+  scope,
+  windowMs,
+  maxRequests,
+  shouldApply
+}) => {
   if (!cache || !windowMs || !maxRequests) {
     return (_req, _res, next) => next();
   }
 
   return async (req, res, next) => {
+    if (typeof shouldApply === 'function' && !shouldApply(req)) {
+      return next();
+    }
+
     const tokenPayload = decodeOptionalToken(req);
     const userId = tokenPayload?.sub;
 

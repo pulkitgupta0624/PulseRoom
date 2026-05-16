@@ -2,18 +2,43 @@ import axios from 'axios';
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || 'http://localhost:8080',
-  withCredentials: true // sends the httpOnly refresh cookie automatically
+  withCredentials: true
 });
+
+const AUTH_REFRESH_BYPASS_PATHS = [
+  '/api/auth/login',
+  '/api/auth/register',
+  '/api/auth/refresh',
+  '/api/auth/logout'
+];
+
+const syncAccessTokenHeader = (token = '') => {
+  if (token) {
+    api.defaults.headers.common.Authorization = `Bearer ${token}`;
+    return;
+  }
+
+  delete api.defaults.headers.common.Authorization;
+};
+
+const shouldBypassAuthRefresh = (requestUrl = '') =>
+  AUTH_REFRESH_BYPASS_PATHS.some((path) => String(requestUrl || '').includes(path));
 
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('pulseroom.accessToken');
+  config.headers = config.headers || {};
+
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
+    syncAccessTokenHeader(token);
+  } else {
+    delete config.headers.Authorization;
+    syncAccessTokenHeader('');
   }
+
   return config;
 });
 
-// Track if a refresh is already in progress to avoid infinite loops
 let isRefreshing = false;
 let failedQueue = [];
 
@@ -31,23 +56,22 @@ const processQueue = (error, token = null) => {
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
-    const originalRequest = error.config;
+    const originalRequest = error.config || {};
 
-    // Only attempt refresh on 401 and only once per request
     if (error.response?.status === 401 && !originalRequest._retry) {
-      // Don't refresh on auth endpoints themselves (login/register/refresh)
-      if (originalRequest.url?.includes('/api/auth/')) {
+      if (shouldBypassAuthRefresh(originalRequest.url)) {
         localStorage.removeItem('pulseroom.accessToken');
         localStorage.removeItem('pulseroom.user');
+        syncAccessTokenHeader('');
         return Promise.reject(error);
       }
 
       if (isRefreshing) {
-        // Queue this request until the refresh completes
         return new Promise((resolve, reject) => {
           failedQueue.push({ resolve, reject });
         })
           .then((token) => {
+            originalRequest.headers = originalRequest.headers || {};
             originalRequest.headers.Authorization = `Bearer ${token}`;
             return api(originalRequest);
           })
@@ -58,7 +82,6 @@ api.interceptors.response.use(
       isRefreshing = true;
 
       try {
-        // The refresh cookie is sent automatically via withCredentials
         const response = await axios.post(
           `${import.meta.env.VITE_API_URL || 'http://localhost:8080'}/api/auth/refresh`,
           {},
@@ -69,17 +92,18 @@ api.interceptors.response.use(
         localStorage.setItem('pulseroom.accessToken', accessToken);
         localStorage.setItem('pulseroom.user', JSON.stringify(user));
 
-        api.defaults.headers.common.Authorization = `Bearer ${accessToken}`;
+        syncAccessTokenHeader(accessToken);
+        originalRequest.headers = originalRequest.headers || {};
         originalRequest.headers.Authorization = `Bearer ${accessToken}`;
 
         processQueue(null, accessToken);
         return api(originalRequest);
       } catch (refreshError) {
-        // Refresh itself failed — session is truly dead
         processQueue(refreshError, null);
         localStorage.removeItem('pulseroom.accessToken');
         localStorage.removeItem('pulseroom.user');
-        window.location.href = '/auth'; // redirect to login
+        syncAccessTokenHeader('');
+        window.location.href = '/auth';
         return Promise.reject(refreshError);
       } finally {
         isRefreshing = false;
@@ -90,4 +114,4 @@ api.interceptors.response.use(
   }
 );
 
-export { api };
+export { api, syncAccessTokenHeader };

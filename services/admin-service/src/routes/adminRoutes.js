@@ -17,6 +17,7 @@ const {
   normalizeIncidentStatus,
   serializeSafetyIncident
 } = require('../services/safetyIncidentService');
+const { buildEventSafetyRoom } = require('../services/incidentSocketAccessService');
 const {
   reportSchema,
   reviewReportSchema,
@@ -67,17 +68,20 @@ router.get(
   authenticate(),
   authorize(Roles.ADMIN),
   asyncHandler(async (_req, res) => {
-    const snapshot = await AnalyticsSnapshot.findOne({ scope: 'global' }).lean();
-    const recentReports = await ModerationReport.find().sort({ createdAt: -1 }).limit(10).lean();
-    const activeBans = await BanRecord.find({ active: true }).sort({ createdAt: -1 }).limit(10).lean();
-    const recentIncidents = await SafetyIncident.find().sort({ createdAt: -1 }).limit(12).lean();
+    const [snapshot, recentReports, activeBans, recentIncidents, safetySummaryIncidents] = await Promise.all([
+      AnalyticsSnapshot.findOne({ scope: 'global' }).lean(),
+      ModerationReport.find().sort({ createdAt: -1 }).limit(10).lean(),
+      BanRecord.find({ active: true }).sort({ createdAt: -1 }).limit(10).lean(),
+      SafetyIncident.find().sort({ createdAt: -1 }).limit(12).lean(),
+      SafetyIncident.find({}, 'incidentType category severity status autoActions').lean()
+    ]);
 
     sendSuccess(res, {
       snapshot,
       recentReports,
       activeBans,
       recentIncidents: recentIncidents.map(serializeSafetyIncident),
-      safetySummary: buildSafetyIncidentSummary(recentIncidents)
+      safetySummary: buildSafetyIncidentSummary(safetySummaryIncidents)
     });
   })
 );
@@ -103,6 +107,28 @@ router.get(
   asyncHandler(async (_req, res) => {
     const reports = await ModerationReport.find().sort({ createdAt: -1 });
     sendSuccess(res, reports);
+  })
+);
+
+router.get(
+  '/bans',
+  authenticate(),
+  authorize(Roles.ADMIN),
+  asyncHandler(async (req, res) => {
+    const limit = Math.min(Math.max(Number(req.query.limit || 100), 1), 500);
+    const activeFilter = String(req.query.active || 'true').trim().toLowerCase();
+    const filter = {};
+
+    if (activeFilter === 'true' || activeFilter === 'false') {
+      filter.active = activeFilter === 'true';
+    }
+
+    const bans = await BanRecord.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+
+    sendSuccess(res, bans);
   })
 );
 
@@ -163,8 +189,17 @@ router.patch(
     incident.resolvedBy = incident.status === 'resolved' ? req.user.sub : '';
     incident.resolvedAt = incident.status === 'resolved' ? new Date() : null;
     await incident.save();
+    const serializedIncident = serializeSafetyIncident(incident);
 
-    sendSuccess(res, serializeSafetyIncident(incident));
+    req.io.to('admins').emit('admin:safety-incident-updated', serializedIncident);
+    if (serializedIncident.eventId) {
+      req.io.to(buildEventSafetyRoom(serializedIncident.eventId)).emit(
+        'event:safety-incident-updated',
+        serializedIncident
+      );
+    }
+
+    sendSuccess(res, serializedIncident);
   })
 );
 

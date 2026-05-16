@@ -507,7 +507,8 @@ router.post(
       ...eventPayload,
       slug: `${slugify(eventPayload.title)}-${crypto.randomBytes(3).toString('hex')}`
     });
-    await ensureActiveReferralCode(event);
+    await ensureActiveReferralCode(event, { persist: false });
+    await event.save();
     await syncSearchDocument(req, event);
 
     await req.eventBus.publish(DomainEvents.EVENT_CREATED, {

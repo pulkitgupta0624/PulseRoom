@@ -56,6 +56,11 @@ const buildAnnouncementFeedItem = (payload = {}) => ({
   isAnnouncement: true
 });
 
+const upsertSafetyIncident = (incidents = [], nextIncident) => [
+  nextIncident,
+  ...incidents.filter((incident) => incident.incidentId !== nextIncident.incidentId)
+].slice(0, 20);
+
 const ReplyComposer = ({
   value,
   onChange,
@@ -352,6 +357,42 @@ const LiveEventPage = () => {
     };
   }, [canManage, eventId]);
 
+  useEffect(() => {
+    if (!canManage) {
+      return undefined;
+    }
+
+    const nextAdminSocket = createSocket('/socket/admin');
+    nextAdminSocket.emit('admin:join-event', { eventId });
+
+    const handleSafetyIncident = (incident) => {
+      if (incident.eventId !== eventId) {
+        return;
+      }
+
+      setLoadingSafety(false);
+      setSafetyError(null);
+      setSafetyIncidents((current) => upsertSafetyIncident(current, incident));
+    };
+
+    const handleSafetySocketError = ({ message }) => {
+      setSafetyError(message || 'Unable to subscribe to live safety signals right now.');
+      setLoadingSafety(false);
+    };
+
+    nextAdminSocket.on('event:safety-incident', handleSafetyIncident);
+    nextAdminSocket.on('event:safety-incident-updated', handleSafetyIncident);
+    nextAdminSocket.on('admin:error', handleSafetySocketError);
+
+    return () => {
+      nextAdminSocket.emit('admin:leave-event', { eventId });
+      nextAdminSocket.off('event:safety-incident', handleSafetyIncident);
+      nextAdminSocket.off('event:safety-incident-updated', handleSafetyIncident);
+      nextAdminSocket.off('admin:error', handleSafetySocketError);
+      nextAdminSocket.disconnect();
+    };
+  }, [canManage, eventId]);
+
   const sendMessage = async (eventInput) => {
     eventInput.preventDefault();
     if (!chatMessage.trim()) return;
@@ -585,11 +626,7 @@ const LiveEventPage = () => {
         status,
         resolutionNotes: ''
       });
-      setSafetyIncidents((current) =>
-        current.map((incident) =>
-          incident.incidentId === incidentId ? response.data.data : incident
-        )
-      );
+      setSafetyIncidents((current) => upsertSafetyIncident(current, response.data.data));
     } catch (error) {
       setSafetyError(error.response?.data?.message || 'Unable to update this incident right now.');
     } finally {

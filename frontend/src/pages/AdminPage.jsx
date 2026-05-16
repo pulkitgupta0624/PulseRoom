@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import MetricCard from '../components/MetricCard';
 import SectionHeader from '../components/SectionHeader';
 import AnalyticsCharts from '../components/AnalyticsCharts';
@@ -34,24 +34,132 @@ const INCIDENT_SEVERITY_STYLES = {
   critical: 'bg-ember text-white'
 };
 
+const upsertByKey = (items = [], nextItem, key) => [
+  nextItem,
+  ...items.filter((item) => item?.[key] !== nextItem?.[key])
+];
+
+const buildIncidentSummary = (incidents = []) =>
+  incidents.reduce(
+    (summary, incident) => {
+      summary.total += 1;
+      summary[incident.status] = (summary[incident.status] || 0) + 1;
+      summary.bySeverity[incident.severity] = (summary.bySeverity[incident.severity] || 0) + 1;
+      summary.byIncidentType[incident.incidentType] =
+        (summary.byIncidentType[incident.incidentType] || 0) + 1;
+      summary.byCategory[incident.category] = (summary.byCategory[incident.category] || 0) + 1;
+
+      if (['high', 'critical'].includes(incident.severity)) {
+        summary.highOrCritical += 1;
+      }
+
+      if (
+        incident.incidentType === 'chat_message' &&
+        incident.autoActions?.includes('message_hidden')
+      ) {
+        summary.hiddenMessages += 1;
+      }
+
+      if (incident.incidentType === 'booking') {
+        summary.bookingRisks += 1;
+      }
+
+      return summary;
+    },
+    {
+      total: 0,
+      open: 0,
+      reviewing: 0,
+      resolved: 0,
+      highOrCritical: 0,
+      bySeverity: {
+        low: 0,
+        medium: 0,
+        high: 0,
+        critical: 0
+      },
+      byIncidentType: {},
+      byCategory: {},
+      hiddenMessages: 0,
+      bookingRisks: 0
+    }
+  );
+
+const applyIncidentSummaryUpdate = (summary, previousIncident, nextIncident) => {
+  if (!summary || !previousIncident) {
+    return summary;
+  }
+
+  const nextSummary = {
+    ...summary,
+    bySeverity: {
+      ...(summary.bySeverity || {})
+    },
+    byIncidentType: {
+      ...(summary.byIncidentType || {})
+    },
+    byCategory: {
+      ...(summary.byCategory || {})
+    }
+  };
+
+  if (previousIncident.status !== nextIncident.status) {
+    nextSummary[previousIncident.status] = Math.max(
+      0,
+      Number(nextSummary[previousIncident.status] || 0) - 1
+    );
+    nextSummary[nextIncident.status] = Number(nextSummary[nextIncident.status] || 0) + 1;
+  }
+
+  if (previousIncident.severity !== nextIncident.severity) {
+    nextSummary.bySeverity[previousIncident.severity] = Math.max(
+      0,
+      Number(nextSummary.bySeverity[previousIncident.severity] || 0) - 1
+    );
+    nextSummary.bySeverity[nextIncident.severity] =
+      Number(nextSummary.bySeverity[nextIncident.severity] || 0) + 1;
+
+    if (!['high', 'critical'].includes(previousIncident.severity) && ['high', 'critical'].includes(nextIncident.severity)) {
+      nextSummary.highOrCritical = Number(nextSummary.highOrCritical || 0) + 1;
+    }
+
+    if (['high', 'critical'].includes(previousIncident.severity) && !['high', 'critical'].includes(nextIncident.severity)) {
+      nextSummary.highOrCritical = Math.max(0, Number(nextSummary.highOrCritical || 0) - 1);
+    }
+  }
+
+  return nextSummary;
+};
+
 const AdminPage = () => {
   const [activeTab, setActiveTab] = useState('Overview');
   const [dashboard, setDashboard] = useState(null);
   const [bookingAnalytics, setBookingAnalytics] = useState(null);
   const [users, setUsers] = useState([]);
+  const [overviewReports, setOverviewReports] = useState([]);
+  const [overviewBans, setOverviewBans] = useState([]);
+  const [overviewIncidents, setOverviewIncidents] = useState([]);
   const [reports, setReports] = useState([]);
   const [bans, setBans] = useState([]);
   const [incidents, setIncidents] = useState([]);
-  const [safetySummary, setSafetySummary] = useState(null);
+  const [dashboardSafetySummary, setDashboardSafetySummary] = useState(null);
   const [loadingIncidents, setLoadingIncidents] = useState(false);
+  const [loadingReports, setLoadingReports] = useState(false);
+  const [loadingBans, setLoadingBans] = useState(false);
   const [verifications, setVerifications] = useState([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [loadingVerifications, setLoadingVerifications] = useState(false);
+  const [hasLoadedIncidents, setHasLoadedIncidents] = useState(false);
   const [userSearch, setUserSearch] = useState('');
   const [banModal, setBanModal] = useState(null);
   const [banReason, setBanReason] = useState('');
   const [banning, setBanning] = useState(false);
   const [actionFeedback, setActionFeedback] = useState(null);
+  const overviewIncidentsRef = useRef([]);
+  const incidentsRef = useRef([]);
+  const incidentSummary = buildIncidentSummary(incidents);
+  overviewIncidentsRef.current = overviewIncidents;
+  incidentsRef.current = incidents;
 
   const flash = (msg, tone = 'success') => {
     setActionFeedback({ msg, tone });
@@ -66,11 +174,17 @@ const AdminPage = () => {
           api.get('/api/admin/dashboard'),
           api.get('/api/bookings/analytics/admin')
         ]);
+        const recentReports = dashboardRes.data.data.recentReports || [];
+        const activeBans = dashboardRes.data.data.activeBans || [];
+        const recentIncidents = dashboardRes.data.data.recentIncidents || [];
         setDashboard(dashboardRes.data.data);
-        setReports(dashboardRes.data.data.recentReports || []);
-        setBans(dashboardRes.data.data.activeBans || []);
-        setIncidents(dashboardRes.data.data.recentIncidents || []);
-        setSafetySummary(dashboardRes.data.data.safetySummary || null);
+        setOverviewReports(recentReports);
+        setOverviewBans(activeBans);
+        setOverviewIncidents(recentIncidents);
+        setReports((current) => (current.length ? current : recentReports));
+        setBans((current) => (current.length ? current : activeBans));
+        setIncidents((current) => (current.length ? current : recentIncidents));
+        setDashboardSafetySummary(dashboardRes.data.data.safetySummary || null);
         setBookingAnalytics(analyticsRes.data.data);
       } catch {
         // handled silently
@@ -82,9 +196,12 @@ const AdminPage = () => {
     socket.on('admin:analytics', (snapshot) => {
       setDashboard((prev) => ({ ...prev, snapshot }));
     });
-    socket.on('admin:safety-incident', (incident) => {
-      setIncidents((current) => [incident, ...current.filter((item) => item.incidentId !== incident.incidentId)].slice(0, 12));
-      setSafetySummary((current) => ({
+    const handleSafetyIncidentCreated = (incident) => {
+      setOverviewIncidents((current) => upsertByKey(current, incident, 'incidentId').slice(0, 12));
+      if (hasLoadedIncidents) {
+        setIncidents((current) => upsertByKey(current, incident, 'incidentId'));
+      }
+      setDashboardSafetySummary((current) => ({
         total: (current?.total || 0) + 1,
         open: (current?.open || 0) + 1,
         reviewing: current?.reviewing || 0,
@@ -115,9 +232,41 @@ const AdminPage = () => {
         bookingRisks:
           (current?.bookingRisks || 0) + (incident.incidentType === 'booking' ? 1 : 0)
       }));
-    });
-    return () => socket.disconnect();
-  }, []);
+    };
+    const handleSafetyIncidentUpdated = (incident) => {
+      const previousIncident =
+        incidentsRef.current.find((item) => item.incidentId === incident.incidentId) ||
+        overviewIncidentsRef.current.find((item) => item.incidentId === incident.incidentId) ||
+        null;
+
+      setOverviewIncidents((current) =>
+        current.some((item) => item.incidentId === incident.incidentId)
+          ? current.map((item) => (item.incidentId === incident.incidentId ? incident : item))
+          : current
+      );
+      if (hasLoadedIncidents) {
+        setIncidents((current) =>
+          current.some((item) => item.incidentId === incident.incidentId)
+            ? current.map((item) => (item.incidentId === incident.incidentId ? incident : item))
+            : current
+        );
+      }
+      if (previousIncident) {
+        setDashboardSafetySummary((current) =>
+          applyIncidentSummaryUpdate(current, previousIncident, incident)
+        );
+      }
+    };
+
+    socket.on('admin:safety-incident', handleSafetyIncidentCreated);
+    socket.on('admin:safety-incident-updated', handleSafetyIncidentUpdated);
+
+    return () => {
+      socket.off('admin:safety-incident', handleSafetyIncidentCreated);
+      socket.off('admin:safety-incident-updated', handleSafetyIncidentUpdated);
+      socket.disconnect();
+    };
+  }, [hasLoadedIncidents]);
 
   // ── Load users ─────────────────────────────────────────────────────────────
   const loadUsers = async (q = '') => {
@@ -162,6 +311,7 @@ const AdminPage = () => {
 
   const loadIncidents = async () => {
     setLoadingIncidents(true);
+    setHasLoadedIncidents(true);
     try {
       const response = await api.get('/api/admin/incidents', {
         params: {
@@ -169,10 +319,8 @@ const AdminPage = () => {
         }
       });
       setIncidents(response.data.data.incidents || []);
-      setSafetySummary(response.data.data.summary || null);
     } catch {
       setIncidents([]);
-      setSafetySummary(null);
     } finally {
       setLoadingIncidents(false);
     }
@@ -184,12 +332,51 @@ const AdminPage = () => {
     }
   }, [activeTab]);
 
+  const loadReports = async () => {
+    setLoadingReports(true);
+    try {
+      const response = await api.get('/api/admin/reports');
+      setReports(response.data.data || []);
+    } catch {
+      setReports([]);
+    } finally {
+      setLoadingReports(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'Reports') {
+      loadReports();
+    }
+  }, [activeTab]);
+
+  const loadBans = async () => {
+    setLoadingBans(true);
+    try {
+      const response = await api.get('/api/admin/bans');
+      setBans(response.data.data || []);
+    } catch {
+      setBans([]);
+    } finally {
+      setLoadingBans(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'Bans') {
+      loadBans();
+    }
+  }, [activeTab]);
+
   // ── Actions ────────────────────────────────────────────────────────────────
   const handleBanUser = async () => {
     if (!banModal || !banReason.trim()) return;
     setBanning(true);
     try {
-      await api.post(`/api/admin/users/${banModal.userId}/ban`, { reason: banReason });
+      const response = await api.post(`/api/admin/users/${banModal.userId}/ban`, { reason: banReason });
+      const nextBan = response.data.data;
+      setOverviewBans((current) => upsertByKey(current, nextBan, '_id').slice(0, 10));
+      setBans((current) => upsertByKey(current, nextBan, '_id'));
       flash(`${banModal.displayName} has been banned.`);
       setBanModal(null);
       setBanReason('');
@@ -204,8 +391,11 @@ const AdminPage = () => {
   const handleResolveReport = async (reportId, status) => {
     try {
       await api.patch(`/api/admin/reports/${reportId}`, { status, resolutionNotes: '' });
-      setReports((prev) =>
-        prev.map((r) => (r._id === reportId ? { ...r, status } : r))
+      setOverviewReports((current) =>
+        current.map((report) => (report._id === reportId ? { ...report, status } : report))
+      );
+      setReports((current) =>
+        current.map((report) => (report._id === reportId ? { ...report, status } : report))
       );
       flash('Report updated.');
     } catch {
@@ -228,6 +418,11 @@ const AdminPage = () => {
         status,
         resolutionNotes: ''
       });
+      setOverviewIncidents((current) =>
+        current.map((incident) =>
+          incident.incidentId === incidentId ? response.data.data : incident
+        )
+      );
       setIncidents((current) =>
         current.map((incident) =>
           incident.incidentId === incidentId ? response.data.data : incident
@@ -320,10 +515,10 @@ const AdminPage = () => {
           </section>
 
           <section className="grid gap-4 md:grid-cols-4">
-            <MetricCard label="Open Safety" value={safetySummary?.open || 0} accent="text-ember" />
-            <MetricCard label="High Risk" value={safetySummary?.highOrCritical || 0} accent="text-dusk" />
-            <MetricCard label="Hidden Chat" value={safetySummary?.hiddenMessages || 0} accent="text-reef" />
-            <MetricCard label="Booking Risks" value={safetySummary?.bookingRisks || 0} />
+            <MetricCard label="Open Safety" value={dashboardSafetySummary?.open || 0} accent="text-ember" />
+            <MetricCard label="High Risk" value={dashboardSafetySummary?.highOrCritical || 0} accent="text-dusk" />
+            <MetricCard label="Hidden Chat" value={dashboardSafetySummary?.hiddenMessages || 0} accent="text-reef" />
+            <MetricCard label="Booking Risks" value={dashboardSafetySummary?.bookingRisks || 0} />
           </section>
 
           <AnalyticsCharts
@@ -345,10 +540,10 @@ const AdminPage = () => {
                 </button>
               </div>
               <div className="space-y-3">
-                {!incidents.length && (
+                {!overviewIncidents.length && (
                   <p className="text-sm text-ink/50">No automated safety incidents yet.</p>
                 )}
-                {incidents.slice(0, 5).map((incident) => (
+                {overviewIncidents.slice(0, 5).map((incident) => (
                   <div key={incident.incidentId} className="rounded-2xl bg-sand p-4">
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-sm font-semibold text-ink capitalize">
@@ -381,10 +576,10 @@ const AdminPage = () => {
                 </button>
               </div>
               <div className="space-y-3">
-                {!reports.length && (
+                {!overviewReports.length && (
                   <p className="text-sm text-ink/50">No reports found.</p>
                 )}
-                {reports.slice(0, 5).map((report) => (
+                {overviewReports.slice(0, 5).map((report) => (
                   <div key={report._id} className="rounded-2xl bg-sand p-4">
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-sm font-semibold text-ink capitalize">
@@ -417,8 +612,8 @@ const AdminPage = () => {
                 </button>
               </div>
               <div className="space-y-3">
-                {!bans.length && <p className="text-sm text-ink/50">No active bans.</p>}
-                {bans.slice(0, 5).map((ban) => (
+                {!overviewBans.length && <p className="text-sm text-ink/50">No active bans.</p>}
+                {overviewBans.slice(0, 5).map((ban) => (
                   <div key={ban._id} className="rounded-2xl bg-sand p-4">
                     <p className="font-mono text-sm font-semibold text-ink">{ban.userId}</p>
                     <p className="mt-1 text-sm text-ink/70">{ban.reason}</p>
@@ -435,10 +630,10 @@ const AdminPage = () => {
       {activeTab === 'Safety' && (
         <div className="space-y-5">
           <section className="grid gap-4 md:grid-cols-4">
-            <MetricCard label="Open" value={safetySummary?.open || 0} accent="text-ember" />
-            <MetricCard label="Reviewing" value={safetySummary?.reviewing || 0} accent="text-dusk" />
-            <MetricCard label="Resolved" value={safetySummary?.resolved || 0} accent="text-reef" />
-            <MetricCard label="High / Critical" value={safetySummary?.highOrCritical || 0} />
+            <MetricCard label="Open" value={incidentSummary.open || 0} accent="text-ember" />
+            <MetricCard label="Reviewing" value={incidentSummary.reviewing || 0} accent="text-dusk" />
+            <MetricCard label="Resolved" value={incidentSummary.resolved || 0} accent="text-reef" />
+            <MetricCard label="High / Critical" value={incidentSummary.highOrCritical || 0} />
           </section>
 
           <div className="overflow-hidden rounded-[28px] border border-ink/10 bg-white/80 shadow-bloom">
@@ -620,15 +815,29 @@ const AdminPage = () => {
         <div className="space-y-4">
           <div className="overflow-hidden rounded-[28px] border border-ink/10 bg-white/80 shadow-bloom">
             <div className="border-b border-ink/8 px-5 py-4">
-              <h2 className="font-display text-2xl">All moderation reports</h2>
+              <div className="flex items-center justify-between">
+                <h2 className="font-display text-2xl">All moderation reports</h2>
+                <button
+                  type="button"
+                  onClick={loadReports}
+                  className="rounded-full border border-ink/10 bg-sand px-3 py-1.5 text-xs font-medium text-ink hover:bg-white"
+                >
+                  Refresh
+                </button>
+              </div>
             </div>
             <div className="divide-y divide-ink/6">
-              {!reports.length && (
+              {loadingReports && (
+                <div className="px-5 py-10 text-center">
+                  <p className="text-sm text-ink/50">Loading reports...</p>
+                </div>
+              )}
+              {!loadingReports && !reports.length && (
                 <div className="px-5 py-10 text-center">
                   <p className="text-sm text-ink/50">No reports yet.</p>
                 </div>
               )}
-              {reports.map((report) => (
+              {!loadingReports && reports.map((report) => (
                 <div key={report._id} className="space-y-2 px-5 py-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
@@ -692,15 +901,29 @@ const AdminPage = () => {
         <div className="space-y-4">
           <div className="overflow-hidden rounded-[28px] border border-ink/10 bg-white/80 shadow-bloom">
             <div className="border-b border-ink/8 px-5 py-4">
-              <h2 className="font-display text-2xl">Active bans</h2>
+              <div className="flex items-center justify-between">
+                <h2 className="font-display text-2xl">Active bans</h2>
+                <button
+                  type="button"
+                  onClick={loadBans}
+                  className="rounded-full border border-ink/10 bg-sand px-3 py-1.5 text-xs font-medium text-ink hover:bg-white"
+                >
+                  Refresh
+                </button>
+              </div>
             </div>
             <div className="divide-y divide-ink/6">
-              {!bans.length && (
+              {loadingBans && (
+                <div className="px-5 py-10 text-center">
+                  <p className="text-sm text-ink/50">Loading bans...</p>
+                </div>
+              )}
+              {!loadingBans && !bans.length && (
                 <div className="px-5 py-10 text-center">
                   <p className="text-sm text-ink/50">No active bans.</p>
                 </div>
               )}
-              {bans.map((ban) => (
+              {!loadingBans && bans.map((ban) => (
                 <div key={ban._id} className="px-5 py-4">
                   <div className="flex items-start justify-between gap-3">
                     <div>

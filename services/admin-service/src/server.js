@@ -3,12 +3,17 @@ const jwt = require('jsonwebtoken');
 const Redis = require('ioredis');
 const { Server } = require('socket.io');
 const { createAdapter } = require('@socket.io/redis-adapter');
-const { connectMongo, RedisEventBus, DomainEvents } = require('@pulseroom/common');
+const { connectMongo, RedisEventBus, DomainEvents, createServiceClient } = require('@pulseroom/common');
 const { createApp, logger } = require('./app');
 const config = require('./config');
 const AnalyticsSnapshot = require('./models/AnalyticsSnapshot');
 const SafetyIncident = require('./models/SafetyIncident');
 const { serializeSafetyIncident } = require('./services/safetyIncidentService');
+const {
+  buildEventSafetyRoom,
+  canSubscribeToEventIncidents,
+  canUseIncidentSocket
+} = require('./services/incidentSocketAccessService');
 
 const metricsByEvent = {
   [DomainEvents.USER_REGISTERED]: { users: 1 },
@@ -49,6 +54,11 @@ const applyMetricDelta = async (event, payload, io) => {
   io.to('admins').emit('admin:analytics', snapshot);
 };
 
+const loadEventMeta = async (eventServiceClient, eventId) => {
+  const response = await eventServiceClient.get(`/api/events/${eventId}/internal-meta`);
+  return response.data.data;
+};
+
 const persistSafetyIncident = async (payload = {}, io) => {
   const incident = await SafetyIncident.create({
     incidentType: payload.incidentType,
@@ -70,7 +80,12 @@ const persistSafetyIncident = async (payload = {}, io) => {
     detectedAt: payload.detectedAt || new Date()
   });
 
-  io.to('admins').emit('admin:safety-incident', serializeSafetyIncident(incident));
+  const serializedIncident = serializeSafetyIncident(incident);
+  io.to('admins').emit('admin:safety-incident', serializedIncident);
+
+  if (serializedIncident.eventId) {
+    io.to(buildEventSafetyRoom(serializedIncident.eventId)).emit('event:safety-incident', serializedIncident);
+  }
 };
 
 const start = async () => {
@@ -84,6 +99,7 @@ const start = async () => {
 
   const pubClient = new Redis(config.redisUrl);
   const subClient = pubClient.duplicate();
+  const eventServiceClient = createServiceClient(config.eventServiceUrl, 'admin-service');
 
   const io = new Server({
     path: '/socket/admin',
@@ -102,8 +118,8 @@ const start = async () => {
       }
 
       const payload = jwt.verify(token, config.jwtAccessSecret);
-      if (payload.role !== 'admin') {
-        return next(new Error('Admin access required'));
+      if (!canUseIncidentSocket(payload)) {
+        return next(new Error('Organizer, moderator, or admin access required'));
       }
 
       socket.user = payload;
@@ -114,7 +130,53 @@ const start = async () => {
   });
 
   io.on('connection', (socket) => {
-    socket.join('admins');
+    if (socket.user.role === 'admin') {
+      socket.join('admins');
+    }
+
+    socket.on('admin:join-event', async ({ eventId }) => {
+      const normalizedEventId = String(eventId || '').trim();
+      if (!normalizedEventId) {
+        socket.emit('admin:error', {
+          message: 'Event id is required to subscribe to live safety incidents.'
+        });
+        return;
+      }
+
+      try {
+        const eventMeta = await loadEventMeta(eventServiceClient, normalizedEventId);
+
+        if (!canSubscribeToEventIncidents({
+          user: socket.user,
+          eventMeta
+        })) {
+          socket.emit('admin:error', {
+            message: 'You do not have access to this event safety feed.'
+          });
+          return;
+        }
+
+        socket.join(buildEventSafetyRoom(normalizedEventId));
+        socket.emit('admin:event-joined', {
+          eventId: normalizedEventId
+        });
+      } catch (error) {
+        socket.emit('admin:error', {
+          message: error.response?.status === 404
+            ? 'Event not found.'
+            : 'Unable to subscribe to this event safety feed right now.'
+        });
+      }
+    });
+
+    socket.on('admin:leave-event', ({ eventId }) => {
+      const normalizedEventId = String(eventId || '').trim();
+      if (!normalizedEventId) {
+        return;
+      }
+
+      socket.leave(buildEventSafetyRoom(normalizedEventId));
+    });
   });
 
   await eventBus.subscribe(

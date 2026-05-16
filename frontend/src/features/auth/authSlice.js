@@ -1,5 +1,5 @@
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
-import { api } from '../../lib/api';
+import { api, syncAccessTokenHeader } from '../../lib/api';
 
 const storedUser = localStorage.getItem('pulseroom.user');
 
@@ -22,11 +22,13 @@ const initialUser = parseStoredUser();
 const persistSession = (payload) => {
   localStorage.setItem('pulseroom.accessToken', payload.accessToken);
   localStorage.setItem('pulseroom.user', JSON.stringify(payload.user));
+  syncAccessTokenHeader(payload.accessToken);
 };
 
 const clearSession = () => {
   localStorage.removeItem('pulseroom.accessToken');
   localStorage.removeItem('pulseroom.user');
+  syncAccessTokenHeader('');
 };
 
 export const register = createAsyncThunk('auth/register', async (payload, thunkApi) => {
@@ -73,23 +75,35 @@ export const verifyTwoFactorLogin = createAsyncThunk('auth/verifyTwoFactorLogin'
 export const bootstrapSession = createAsyncThunk('auth/bootstrap', async (_, thunkApi) => {
   try {
     const token = localStorage.getItem('pulseroom.accessToken');
-    if (!token) {
+    const user = localStorage.getItem('pulseroom.user');
+    if (!token && !user) {
       return null;
     }
 
+    if (!token) {
+      const refreshResponse = await api.post('/api/auth/refresh');
+      const data = refreshResponse.data.data;
+      if (data.accessToken) {
+        persistSession(data);
+      }
+      return data;
+    }
+
     const response = await api.get('/api/auth/me');
-    const user = {
+    const hydratedUser = {
       id: response.data.data.id,
       email: response.data.data.email,
       role: response.data.data.role,
       permissions: response.data.data.permissions,
       twoFactorEnabled: Boolean(response.data.data.twoFactor?.enabled)
     };
-    localStorage.setItem('pulseroom.user', JSON.stringify(user));
-    return {
-      accessToken: token,
-      user
+    const activeToken = localStorage.getItem('pulseroom.accessToken') || token;
+    const nextSession = {
+      accessToken: activeToken,
+      user: hydratedUser
     };
+    persistSession(nextSession);
+    return nextSession;
   } catch (error) {
     clearSession();
     return thunkApi.rejectWithValue(error.response?.data?.message || 'Session expired');
@@ -102,6 +116,7 @@ export const logout = createAsyncThunk('auth/logout', async (_, thunkApi) => {
     clearSession();
     return true;
   } catch (error) {
+    clearSession();
     return thunkApi.rejectWithValue(error.response?.data?.message || 'Logout failed');
   }
 });
@@ -112,6 +127,7 @@ const authSlice = createSlice({
     user: initialUser,
     accessToken: localStorage.getItem('pulseroom.accessToken'),
     twoFactorChallenge: null,
+    sessionChecked: !(initialUser || localStorage.getItem('pulseroom.accessToken')),
     loading: false,
     error: null
   },
@@ -132,6 +148,7 @@ const authSlice = createSlice({
         state.user = action.payload.user;
         state.accessToken = action.payload.accessToken;
         state.twoFactorChallenge = null;
+        state.sessionChecked = true;
       })
       .addCase(register.rejected, (state, action) => {
         state.loading = false;
@@ -150,12 +167,14 @@ const authSlice = createSlice({
           };
           state.user = null;
           state.accessToken = null;
+          state.sessionChecked = true;
           return;
         }
 
         state.user = action.payload.user;
         state.accessToken = action.payload.accessToken;
         state.twoFactorChallenge = null;
+        state.sessionChecked = true;
       })
       .addCase(login.rejected, (state, action) => {
         state.loading = false;
@@ -170,6 +189,7 @@ const authSlice = createSlice({
         state.user = action.payload.user;
         state.accessToken = action.payload.accessToken;
         state.twoFactorChallenge = null;
+        state.sessionChecked = true;
       })
       .addCase(verifyTwoFactorLogin.rejected, (state, action) => {
         state.loading = false;
@@ -179,11 +199,25 @@ const authSlice = createSlice({
         state.user = action.payload?.user || null;
         state.accessToken = action.payload?.accessToken || null;
         state.twoFactorChallenge = null;
+        state.sessionChecked = true;
+      })
+      .addCase(bootstrapSession.rejected, (state) => {
+        state.user = null;
+        state.accessToken = null;
+        state.twoFactorChallenge = null;
+        state.sessionChecked = true;
       })
       .addCase(logout.fulfilled, (state) => {
         state.user = null;
         state.accessToken = null;
         state.twoFactorChallenge = null;
+        state.sessionChecked = true;
+      })
+      .addCase(logout.rejected, (state) => {
+        state.user = null;
+        state.accessToken = null;
+        state.twoFactorChallenge = null;
+        state.sessionChecked = true;
       });
   }
 });

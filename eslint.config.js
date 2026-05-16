@@ -30,6 +30,7 @@ module.exports = [
       'eslint.config.js',
       'api-gateway/**/*.js',
       'packages/**/*.js',
+      'scripts/**/*.js',
       'services/**/*.js',
       'frontend/*.config.js',
       'frontend/vite.config.js'

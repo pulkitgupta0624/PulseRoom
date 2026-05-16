@@ -1,5 +1,9 @@
 const mongoose = require('mongoose');
 const { BookingStatus } = require('@pulseroom/common');
+const {
+  bookingTicketQrCodeIndexKeys,
+  bookingTicketQrCodeIndexOptions
+} = require('./bookingIndexes');
 
 const savedAgendaSessionSchema = new mongoose.Schema(
   {
@@ -47,10 +51,7 @@ const bookingTicketSchema = new mongoose.Schema(
       email: String
     },
     qrCodeToken: {
-      type: String,
-      index: true,
-      sparse: true,
-      unique: true
+      type: String
     },
     assignedAt: Date,
     transferredAt: Date,
@@ -237,10 +238,12 @@ const bookingSchema = new mongoose.Schema(
     refundedAt: Date
   },
   {
-    timestamps: true
+    timestamps: true,
+    autoIndex: false
   }
 );
 
 bookingSchema.index({ eventId: 1, tierId: 1, status: 1 });
+bookingSchema.index(bookingTicketQrCodeIndexKeys, bookingTicketQrCodeIndexOptions);
 
 module.exports = mongoose.model('Booking', bookingSchema);

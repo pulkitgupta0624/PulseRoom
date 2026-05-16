@@ -35,6 +35,7 @@ const PUBLIC_PROFILE_FIELDS = [
   'avatarUrl',
   'bio',
   'role',
+  'isActive',
   'verifiedOrganizer',
   'interests',
   'socialLinks',
@@ -44,7 +45,7 @@ const PUBLIC_PROFILE_FIELDS = [
 ].join(' ');
 
 const isFollowableOrganizer = (profile) =>
-  Boolean(profile && profile.isActive && FOLLOWABLE_ROLES.has(profile.role));
+  Boolean(profile && profile.isActive !== false && FOLLOWABLE_ROLES.has(profile.role));
 
 const getFollowState = async ({ viewerId, organizerId }) => {
   if (!viewerId || !organizerId || viewerId === organizerId) {

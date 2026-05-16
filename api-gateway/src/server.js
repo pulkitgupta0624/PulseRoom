@@ -11,6 +11,7 @@ const {
 } = require('@pulseroom/common');
 const config = require('./config');
 const { createIpRiskAnalyzer } = require('./ipRiskAnalysis');
+const { shouldApplyBookingUserRateLimit } = require('./bookingRateLimit');
 const { createUserSlidingWindowRateLimiter } = require('./userRateLimit');
 
 const logger = buildLogger('api-gateway');
@@ -88,6 +89,7 @@ const bookingUserRateLimit = createUserSlidingWindowRateLimiter({
   cache,
   logger,
   scope: 'bookings',
+  shouldApply: shouldApplyBookingUserRateLimit,
   ...config.userRateLimiting.bookings
 });
 

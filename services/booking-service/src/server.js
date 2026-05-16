@@ -7,12 +7,18 @@ const {
 } = require('@pulseroom/common');
 const { createApp, logger } = require('./app');
 const config = require('./config');
+const Booking = require('./models/Booking');
 const { createBookingAutomationService } = require('./services/bookingAutomationService');
+const { syncBookingIndexes } = require('./services/bookingIndexService');
 const { createExchangeRateService } = require('./services/exchangeRateService');
 const { createTaxRuleService } = require('./services/taxRuleService');
 
 const start = async () => {
   await connectMongo(config.mongoUri, logger);
+  await syncBookingIndexes({
+    BookingModel: Booking,
+    logger
+  });
   const cache = createCacheClient(config.redisUrl);
   const eventBus = new RedisEventBus({
     redisUrl: config.redisUrl,
